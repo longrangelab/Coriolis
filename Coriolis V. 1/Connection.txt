@@ -1,0 +1,11 @@
+*Connection
+- Target: Button change channel: 38
+
+- User: 
+	- Button change IMU: 38
+	- Encoder control Wind Direction
+		CLK (encoder) - GPIO 35
+		Data(encoder) - GPIO 15
+	- Encoder control Wind Speed
+		CLK (encoder) - GPIO 14
+		Data(encoder) - GPIO 25

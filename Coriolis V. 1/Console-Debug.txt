@@ -1,0 +1,2160 @@
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -28.00 dBm
+SNR: 10.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -27.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 13.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -25.00 dBm
+SNR: 10.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 13.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.50 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -25.00 dBm
+SNR: 10.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -26.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -26.00 dBm
+SNR: 14.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -28.00 dBm
+SNR: 13.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -28.00 dBm
+SNR: 13.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -28.00 dBm
+SNR: 13.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -27.00 dBm
+SNR: 13.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -29.00 dBm
+SNR: 13.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -29.00 dBm
+SNR: 13.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.62 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -29.00 dBm
+SNR: 13.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.62 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|30
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|30
+RSSI: -29.00 dBm
+SNR: 13.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|30
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 30
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 13.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|30
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|30
+RSSI: -30.00 dBm
+SNR: 10.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|30
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 30
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 13.50 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|30
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|30
+RSSI: -30.00 dBm
+SNR: 11.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|30
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 30
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 15.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|40
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|40
+RSSI: -30.00 dBm
+SNR: 12.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|40
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 40
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|40
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|40
+RSSI: -30.00 dBm
+SNR: 11.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|40
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 40
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 13.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|50
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|50
+RSSI: -30.00 dBm
+SNR: 10.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|50
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 50
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|50
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|50
+RSSI: -30.00 dBm
+SNR: 11.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|50
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 50
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -29.00 dBm
+SNR: 13.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -27.00 dBm
+SNR: 13.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 12.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+Target address changed to: 2
+button_channel pressed!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 13.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.25 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -32.00 dBm
+SNR: 13.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -31.00 dBm
+SNR: 14.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -35.00 dBm
+SNR: 10.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 9.75 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|20
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|20
+RSSI: -34.00 dBm
+SNR: 11.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|20
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 20
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|30
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|30
+RSSI: -34.00 dBm
+SNR: 11.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|30
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 30
+Invalid coordinates: Coordinates must not be zero.
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|30
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|30
+RSSI: -34.00 dBm
+SNR: 13.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|30
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 30
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|40
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|40
+RSSI: -34.00 dBm
+SNR: 13.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|40
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 40
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|40
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|40
+RSSI: -34.00 dBm
+SNR: 14.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|40
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 40
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 10.25 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|50
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|50
+RSSI: -34.00 dBm
+SNR: 13.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|50
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 50
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 9.75 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -34.00 dBm
+SNR: 13.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 9.75 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -35.00 dBm
+SNR: 10.75 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 10.25 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -31.00 dBm
+SNR: 14.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -24.00 dBm
+SNR: 10.00 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -31.00 dBm
+SNR: 12.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 9.75 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -30.00 dBm
+SNR: 10.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 9.75 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -31.00 dBm
+SNR: 14.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 10.25 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -30.00 dBm
+SNR: 10.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -25.00 dBm
+SNR: 9.75 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ALERT|2|0|Hit!!!
+
+[Received] From Node: 2
+Message Type: ALERT
+Payload: 0|Hit!!!
+RSSI: -30.00 dBm
+SNR: 13.50 dB
+Target was hit!!
+Payload: 0|Hit!!!
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 0
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 0
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -27.00 dBm
+SNR: 10.25 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ALERT|2|0|Hit!!!
+
+[Received] From Node: 2
+Message Type: ALERT
+Payload: 0|Hit!!!
+RSSI: -31.00 dBm
+SNR: 13.50 dB
+Payload: 0|Hit!!!
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 0
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 0
+Invalid coordinates: Coordinates must not be zero.
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -27.00 dBm
+SNR: 10.25 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -27.00 dBm
+SNR: 10.25 dB
+SenderAddress: 1
+Current Address: 2
+Skipped: Not current target!!!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 2
+ALERT|2|0|Hit!!!
+
+[Received] From Node: 2
+Message Type: ALERT
+Payload: 0|Hit!!!
+RSSI: -32.00 dBm
+SNR: 13.25 dB
+Target was hit!!
+Payload: 0|Hit!!!
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 0
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 0
+Invalid coordinates: Coordinates must not be zero.
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+Target address changed to: 1
+button_channel pressed!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -28.00 dBm
+SNR: 14.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -33.00 dBm
+SNR: 12.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -26.00 dBm
+SNR: 11.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -33.00 dBm
+SNR: 13.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -28.00 dBm
+SNR: 13.50 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -33.00 dBm
+SNR: 13.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -28.00 dBm
+SNR: 13.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -32.00 dBm
+SNR: 14.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.44 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -28.00 dBm
+SNR: 13.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.44 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -32.00 dBm
+SNR: 13.50 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.26 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -28.00 dBm
+SNR: 14.00 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.26 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -35.00 dBm
+SNR: 14.25 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.26 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -33.00 dBm
+SNR: 13.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.26 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -35.00 dBm
+SNR: 13.50 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.26 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ALERT|1|0|Hit!!!
+
+[Received] From Node: 1
+Message Type: ALERT
+Payload: 0|Hit!!!
+RSSI: -25.00 dBm
+SNR: 12.00 dB
+Target was hit!!
+Payload: 0|Hit!!!
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 0
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.26 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 0
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -36.00 dBm
+SNR: 13.50 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Tbeam:Battery not connected or PMU not initialized.
+Tbeam:Battery not connected or PMU not initialized.
+Battery: -1.00%, Voltage: -1.00V
+Temperature: 78.26 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -37.00 dBm
+SNR: 13.00 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.26 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|1|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 1
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -27.00 dBm
+SNR: 10.25 dB
+Payload: 0|0|0|12|0.000000|0.000000|60
+Wind Speed: 0
+Wind Mode: 0
+Wind Direction: 12
+Latitude: 0.000000
+Longitude: 0.000000
+Temperature: 78.26 °F
+Pressure: 29.47 inHg
+IMU Sensitivity: 60
+Invalid coordinates: Coordinates must not be zero.
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Received successfully!
+Current target: 1
+ENVIRONMENT|2|0|0|0|12|0.000000|0.000000|60
+
+[Received] From Node: 2
+Message Type: ENVIRONMENT
+Payload: 0|0|0|12|0.000000|0.000000|60
+RSSI: -37.00 dBm
+SNR: 10.75 dB
+SenderAddress: 2
+Current Address: 1
+Skipped: Not current target!!!
+Temperature: 78.26 F, Pressure: 29.47 inHg
+Scanning channel at 433.10 MHz...
+[RadioBoards] Initializing ... success!
+[RadioBoards] Receive timeout!
+Scanning channel at 433.35 MHz...
+[RadioBoards] Initializing ... success!
