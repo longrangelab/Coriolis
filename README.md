@@ -31,13 +31,13 @@ Automatic Dialing – The system transmits the calculated correction via Bluetoo
 Real-Time Interface (Planned) – A live dashboard will display wind readings, averages, and weighting adjustments for experimentation and tuning.
 
 ## Current Build
-Mounting – 3D-printed PLA bracket (Arken Optics LH4 6-24).
+Mounting – 3D-printed PLA bracket ([Arken Optics LH4 6-24](https://opticsforce.com/products/arken-optics-lh4-6-24x50-ffp-capped-tool-less-turrets-illuminated-vhr-vpr-30mm-tube), discontinued).
 
-Motion – Stepper motor + 5:1 gearbox for torque, driven by a DRV8825 driver.
+Motion – Stepper motor + 5:1 gearbox for torque, driven by a [DRV8825](https://www.pololu.com/product/2133) driver.
 
 Power – RC car battery.
 
-Control – Arduino microcontroller running simple but precise early-stage firmware.
+Control – [Arduino](https://www.arduino.cc/) microcontroller running simple but precise early-stage firmware.
 
 ## Applications
 Testing and refining the Corololis wind meter system.
