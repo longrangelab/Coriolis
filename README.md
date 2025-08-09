@@ -1,5 +1,5 @@
 # Coriolis
-Coriolis is open-source, fully automated windage adjustment system for rifle scopes. It integrates downrange wind meters, a ballistic solver, and a motorized scope dial to apply precise, real-time wind corrections for long-range precision shooting.
+Coriolis is open-source, fully automated windage adjustment system for rifle scopes. It integrates downrange wind meters, a ballistic solver, a motorized scope dial to apply precise, and real-time wind corrections for long-range precision shooting.
 
 <hr style="display: inline-block; width: 100%; border: 1px dotted #ff00cc;">
 
@@ -26,7 +26,7 @@ Wind Data Collection – Multiple long-range wind meters send live telemetry to 
 
 Ballistic Processing – A microcontroller processes the data through a ballistic solver, applying weighted influence based on meter placement (e.g., near max ordnance vs. in valleys).
 
-Automatic Dialing – The system transmits the calculated correction via Bluetooth to the scope-mounted motor, which physically turns the windage dial every 1–3 seconds as new data arrives.
+Automatic Dialing – The system transmits the calculated correction via [Bluetooth](https://en.wikipedia.org/wiki/Bluetooth) to the scope-mounted motor, which physically turns the windage dial every 1–3 seconds as new data arrives.
 
 Real-Time Interface (Planned) – A live dashboard will display wind readings, averages, and weighting adjustments for experimentation and tuning.
 
@@ -47,11 +47,9 @@ Pushing rimfire and .22 centerfire cartridges to extreme distances.
 Experimental research in wind reading placement, height, and configuration.
 
 ## Project Goals
-Achieve consistent 1,000-yard accuracy across all wind conditions.
-
-Shrink target size as wind-reading precision improves.
-
-Make all parts lists, code, diagrams, and STL files freely available for DIY builders.
+1. Achieve consistent 1,000-yard accuracy across all wind conditions.
+2. Shrink target size as wind-reading precision improves.
+3. Make all parts lists, code, diagrams, and STL files freely available for DIY builders.
 
 ## Contribution
 Looking for collaborators with skills in electronics, firmware, PCB design, 3D modeling, and software.
