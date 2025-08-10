@@ -21,6 +21,22 @@ Coriolis is open-source, fully automated windage adjustment system for rifle sco
 ## YouTube video
 [Here](https://www.youtube.com/watch?v=kEiZPHotwlk) is a YouTube video that explains the project.
 
+## Images
+### Base station:
+  <picture>
+    <img height=640 src="/assets/images/Base_Station.jpg" />
+  </picture>
+
+### FAWD (Fully Autonomous Wind Dial):
+  <picture>
+    <img height=640 src="/assets/images/fawd.jpg" />
+  </picture>
+
+### Target unit connect to weather meter:
+  <picture>
+    <img height=640 src="/assets/images/target_unit_connected_to_weather_meter.jpg" />
+  </picture>
+
 ## How It Works
 Wind Data Collection – Multiple long-range wind meters send live telemetry to a central base station.
 
