@@ -1,5 +1,5 @@
 # Coriolis
-Coriolis is open-source, fully automated windage adjustment system for rifle scopes. It integrates downrange wind meters, a ballistic solver, a motorized scope dial to apply precise, and real-time wind corrections for long-range precision shooting.
+Coriolis is an open-source, hit indicator, GPS range finder, and fully automated windage adjustment system for rifle scopes. It integrates downrange wind meters, a ballistic solver, a motorized scope dial to apply precise, and real-time wind corrections for long-range precision shooting.
 
 <hr style="display: inline-block; width: 100%; border: 1px dotted #ff00cc;">
 
@@ -83,3 +83,4 @@ All designs will remain open source; pre-built units may also be available for p
 2. Upload to device ,check serial log
 
 If there is anything unusual, please let me know and I will correct it for you immediately.
+
