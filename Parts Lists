@@ -1,1 +1,29 @@
+Coriolis System Parts List
 
+    Target Unit
+      - Lilygo T-Beam V1.2
+      - 18650 Flat Top Battery
+      - MPU6050 IMU 
+      - M20 Compression Cable Gland (Metal) 
+      - Coriolis V1.0 Target Unit Enclosure
+   
+    Weather Station
+      - Taiss/Incremental Rotary Encoder DC 5-24v Wide Voltage Power Supply 6mm Shaft Optical AB 600P/R (X2)
+      - M20 Compression Cable Gland (Metal) 
+      - Coriolis Weather Station V1.0 Enclosure
+      - 6 Wire, 16 Guage, 25' Exterior Rated Cable 
+      - 6 Pin, Waterproof Automotive Cable Connectors (2 Male ends and 2 Female Ends)
+
+    Base Station Unit
+      - Lilygo T-Beam V1.2
+      - 18650 Flat Top Battery
+      - BMP180 Sensor
+      - Any Small 3-12V Active Electronic Buzzer
+      - Coriolis V1.0 Base Station Enclosure
+
+    FAWD (TBD)
+
+
+
+    Touch Screen User Interface (TBD)
+    
