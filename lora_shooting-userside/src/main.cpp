@@ -42,7 +42,7 @@ unsigned long frame_id = 0;
 #define GPS_1PPS_PIN 6
 #endif
 // BUZZER_PORT
-#define BUZZER_PORT 32
+#define BUZZER_PORT 4
 // ENCODER_PORT
 #ifdef TTGO_T_BEAM_V1_1
 #define CHANNEL_A 15
@@ -527,5 +527,6 @@ for (int i = 1; i <= MAX_TARGETS; i++) {
 #ifdef TARGET
     delay(500); // Small delay to reduce processing load
 #endif
+
 
 
