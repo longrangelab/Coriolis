@@ -29,15 +29,15 @@
 #define GPS_1PPS_PIN 6
 #endif
 // BUZZER_PORT
-#define BUZZER_PORT 32
+#define BUZZER_PORT 4
 // ENCODER_PORT
 #ifdef TTGO_T_BEAM_V1_1
 // #define CHANNEL_A 15
 // #define CHANNEL_B 35
-#define DIRA 15 //
-#define DIRB 35
-#define SPDA 25
-#define SPDB 14
+#define DIRA 2 //
+#define DIRB 13
+#define SPDA 14
+#define SPDB 25
 #define BTN2 38 //Button to change IMU sensitivity
 
 // TDMA CONFIGURATION
@@ -479,3 +479,4 @@ void loop()
 
         // Main loop for dynamic updates
 }
+
