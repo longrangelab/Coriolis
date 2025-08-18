@@ -1,5 +1,5 @@
 # Coriolis
-Coriolis is an open-source, hit indicator, GPS range finder, and fully automated windage adjustment system for rifle scopes. It integrates downrange wind meters, a ballistic solver, a motorized scope dial to apply precise, and real-time wind corrections for long-range precision shooting.
+Coriolis is an open-source, hit indicator, GPS range finder, and long range weather center built for long range precision shooters. 
 
 <hr style="display: inline-block; width: 100%; border: 1px dotted #ff00cc;">
 
@@ -19,7 +19,7 @@ Coriolis is an open-source, hit indicator, GPS range finder, and fully automated
 </p>
 
 ## YouTube video
-[Here](https://www.youtube.com/watch?v=kEiZPHotwlk) is a YouTube video that explains the project.
+[Here]([https://www.youtube.com/watch?v=kEiZPHotwlk](https://youtu.be/ATcygOzGGM0?si=Pqs9k0MqwK54gkRT)) is a YouTube video that explains the project.
 
 ## Images
 ### Base station:
@@ -83,4 +83,5 @@ All designs will remain open source; pre-built units may also be available for p
 2. Upload to device ,check serial log
 
 If there is anything unusual, please let me know and I will correct it for you immediately.
+
 
