@@ -4,7 +4,7 @@ Coriolis is an open-source, hit indicator, GPS range finder, and long range weat
 <hr style="display: inline-block; width: 100%; border: 1px dotted #ff00cc;">
 
 <p align="center" style="margin-top: -2em;">
-  <a href="https://discord.gg/G65yBWfZ">
+  <a href="https://discord.gg/F3bu5rpBWY">
     <picture>
       <source height="24px" media="(prefers-color-scheme: dark)" srcset="/assets/icons/Discord.png" />
       <img height="24px" src="/assets/icons/Discord.png" />
@@ -83,5 +83,6 @@ All designs will remain open source; pre-built units may also be available for p
 2. Upload to device ,check serial log
 
 If there is anything unusual, please let me know and I will correct it for you immediately.
+
 
 
