@@ -1,0 +1,20 @@
+Weather meter components: 
+
+  1. Metal, Waterproof, M20 Cable Gland (6-12mm cable diameter)
+  2. Printed Enclosure
+  3. 6 wire, 16 Guage, 25' waterproof cable (Black, Red, White, Green, Orange, Yellow) 
+  4. Taiss Rotary Encoder 600 P (x2)
+  5. 6 pin automotive connector set
+
+Weather Meter Color Coding
+  - Direction Encoder
+    - Black to Black
+    - Red to Red 
+    - White to White 
+    - Green to Green
+
+  - Speed Encoder
+    - Black to Black 
+    - Red to Red 
+    - Green to Yellow
+    - White to orange
