@@ -10,11 +10,11 @@ Weather Meter Color Coding
   - Direction Encoder
     - Black to Black
     - Red to Red 
-    - White to White 
-    - Green to Green
+    - White to White (pin 13 on lilygo t beam) 
+    - Green to Green (pin 2 on lilygo t beam)
 
   - Speed Encoder
     - Black to Black 
     - Red to Red 
-    - Green to Yellow
-    - White to orange
+    - Green to Yellow (pin 14 on lilygo t beam)
+    - White to orange (pin 25 on lilygo t beam)
