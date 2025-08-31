@@ -78,11 +78,12 @@ public:
       125.0F,
       9,
       7,
-      18,
+      14,
       10,
       8,
       0
     );
+    radio.setCRC(2);
 
     if (state == RADIOLIB_ERR_NONE) {
       Serial.println(F("success!"));
