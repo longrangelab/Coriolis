@@ -120,7 +120,7 @@ public:
     display.printf("%d", windSpeed);
     display.setCursor(90, 40);
     display.setTextSize(1);
-    display.printf("RPM");
+    display.printf("MPH");
     // Loan added.. Display wind value and mode (line 6 of 6)
 
 
