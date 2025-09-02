@@ -362,8 +362,9 @@ void loop()
 
 #endif
     windDirection = environment->getWindDirection();
-    windSpeed = environment->getWindSpeed();
-   // Convert RPM to MPH
+windSpeed = environment->getWindSpeed();
+
+// Convert RPM to MPH
 float windSpeedMPH = 0.0384 * windSpeed - 1.613;
 if (windSpeedMPH < 0) windSpeedMPH = 0; // Avoid negative values
 
@@ -372,6 +373,7 @@ Serial.println(windDirection);
 Serial.print("Wind Speed: ");
 Serial.print(windSpeedMPH);
 Serial.println("mph");
+
     
      //Check if the motion object is initialized before using it
     if (changeSensitivityFlag && motion != nullptr) {
@@ -483,5 +485,4 @@ Serial.println("mph");
 
         // Main loop for dynamic updates
 }
-
 
