@@ -363,11 +363,15 @@ void loop()
 #endif
     windDirection = environment->getWindDirection();
     windSpeed = environment->getWindSpeed();
-    Serial.print("Wind Direction: ");
-    Serial.println(windDirection);
-    Serial.print("Wind Speed: ");
-    Serial.print(windSpeed);
-    Serial.println("rpm");
+   // Convert RPM to MPH
+float windSpeedMPH = 0.0384 * windSpeed - 1.613;
+if (windSpeedMPH < 0) windSpeedMPH = 0; // Avoid negative values
+
+Serial.print("Wind Direction: ");
+Serial.println(windDirection);
+Serial.print("Wind Speed: ");
+Serial.print(windSpeedMPH);
+Serial.println("mph");
     
      //Check if the motion object is initialized before using it
     if (changeSensitivityFlag && motion != nullptr) {
@@ -386,7 +390,7 @@ void loop()
     if(hit_count) hitFlag = true;
     screen->drawInterface(batteryPercentage, 0, hitFlag, 0, targetAddressStr, windDirection, windSpeed, currentIMUSensitivity);
     Serial.println("Sending environment data...");
-    loraModule->sendEnvironment(windSpeed, hitFlag, windDirection, current_latitude, current_longtitude, currentIMUSensitivity, USER_ADDRESS);
+    loraModule->sendEnvironment(windSpeedMPH, hitFlag, windDirection, current_latitude, current_longtitude, currentIMUSensitivity, USER_ADDRESS);
     Serial.println("Message sent!");
     hitTimestamp = millis();
     if(hitFlag & hit_count < 4)
@@ -479,4 +483,5 @@ void loop()
 
         // Main loop for dynamic updates
 }
+
 
