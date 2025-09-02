@@ -102,19 +102,23 @@ public:
     //Loan Add IMU Sensitivity (last line)
 
     // Add wind direction text
-    display.setTextSize(2);
+       display.setTextSize(2);
     display.setCursor(90, 15);
     display.printf("%d", windDirection);
     display.setCursor(54, 20);
     display.setTextSize(1);
     display.printf("Dir:");
+// Convert RPM to MPH using your formula
+float windSpeedMPH = 0.0384 * windSpeed - 1.613;
+if (windSpeedMPH < 0) windSpeedMPH = 0;  // Prevent negative display
 
-    display.setTextSize(2);
-    display.setCursor(54, 35);
-    display.printf("%d", windSpeed);
-    display.setCursor(90, 40);
-    display.setTextSize(1);
-    display.printf("RPM");
+// Display MPH value
+display.setCursor(54, 35);
+display.setTextSize(2);
+display.printf("%.1f", windSpeedMPH);  // Show one decimal place
+display.setCursor(105, 40);  // Shift further right (near edge of 128px width)
+display.setTextSize(1);
+display.print("MPH");
    
     // display.setTextSize(2);
     // display.setCursor(60, 20);
@@ -233,4 +237,5 @@ public:
       return new SH1106Screen(17, 18);
     }
   }
+
 };
