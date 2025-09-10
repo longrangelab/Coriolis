@@ -415,12 +415,22 @@ void loop()
     {
         Serial.println("Barometric sensor not initialized.");
     }
+
+const long baseFreq = 915E6;  // 915 MHz
+const long step = 200E3;      // 200 kHz
+const int MAX_TARGETS = 10;
+    
 for (int i = 1; i <= MAX_TARGETS; i++) {
     // float freq = frequencyList[i-1];
     // Serial.print("Scanning channel at ");
     // Serial.print(freq);
     // Serial.println(" MHz...");
     loraModule = new LoRaRadioBoards(String(USER_ADDRESS), i);
+
+    long freq = baseFreq + (i - 1) * step;
+    loraModule->setFrequency(freq);
+    Serial.printf("Listening on %.1f MHz for Target %d...\n", freq / 1e6, i);
+    
     // Switch to this frequency
     loraModule->begin();
 
@@ -527,6 +537,7 @@ for (int i = 1; i <= MAX_TARGETS; i++) {
 #ifdef TARGET
     delay(500); // Small delay to reduce processing load
 #endif
+
 
 
 
