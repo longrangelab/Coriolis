@@ -295,6 +295,15 @@ void setup()
 #endif
 #endif
     loraModule->begin();
+
+    // Set unique frequency for each target based on its address
+    // Example: base freq 915 MHz, step 200 kHz
+    long baseFreq = 915E6; 
+    long step = 200E3;     // 200 kHz spacing
+    long myFreq = baseFreq + (TARGET_ADDRESS - 1) * step;
+    loraModule->setFrequency(myFreq);
+
+    Serial.println("Target %d transmitting on %.1f MHz\n", TARGET_ADDRESS, myFreq / 1e6);
     Serial.println("LoRa module initialized");
 }
 int windSpeed = 0;
@@ -485,4 +494,5 @@ Serial.println("mph");
 
         // Main loop for dynamic updates
 }
+
 
