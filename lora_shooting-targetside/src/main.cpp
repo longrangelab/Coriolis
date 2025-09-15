@@ -295,6 +295,25 @@ void setup()
 #endif
 #endif
     loraModule->begin();
+
+    long baseFreq = 915E6;   // Hz
+    long step     = 200E3;   // Hz
+    long myFreq   = baseFreq + (TARGET_ADDRESS - 1) * step;
+    
+    int state = radio.begin(
+      myFreq / 1e6,  // RadioLib wants MHz (float), so convert Hz → MHz
+      125.0F,
+      9,
+      7,
+      18,
+      10,
+      8,
+      0
+    );
+
+    Serial.printf("Target %d transmitting on %.1f MHz\n", TARGET_ADDRESS, myFreq / 1e6);
+
+    
     Serial.println("LoRa module initialized");
 }
 int windSpeed = 0;
@@ -485,4 +504,5 @@ Serial.println("mph");
 
         // Main loop for dynamic updates
 }
+
 
