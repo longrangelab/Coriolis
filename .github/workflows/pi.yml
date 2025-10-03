@@ -1,0 +1,27 @@
+name: Build for Raspberry Pi (ARM64)
+
+on:
+  push:
+    branches: [ main, pi-build ]
+    tags: [ 'v*' ]
+  pull_request:
+
+jobs:
+  arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Build inside Docker (ARM64 cross-compile)
+        run: |
+          docker build -t coriolis-arm64 .
+          CID=$(docker create coriolis-arm64)
+          docker cp "$CID":/src/build ./build
+          docker rm "$CID"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coriolis-arm64
+          path: build/**
