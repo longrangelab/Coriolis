@@ -1,13 +1,41 @@
-- name: Build inside Docker (ARM64 cross-compile)
-  run: |
-    set -euxo pipefail
-    echo "Repo layout (top 2 levels):"
-    find . -maxdepth 2 -mindepth 1 -printf "%y %p\n" | sort
-    echo "CMakeLists I can see:"
-    find . -name CMakeLists.txt -printf "%p\n" | sort
+name: Build for Raspberry Pi (ARM64)
 
-    docker build -t coriolis-arm64 .
-    CID=$(docker create coriolis-arm64)
-    docker cp "$CID":/src/build ./build || true
-    docker logs "$CID" --tail 200 || true
-    docker rm "$CID" || true
+on:
+  push:
+    branches: [ "main", "pi-build" ]
+    tags: [ "v*" ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Show repo layout
+        run: |
+          set -euxo pipefail
+          echo "Top-level files:"
+          ls -la
+          echo "CMakeLists found (depth<=3):"
+          find . -maxdepth 3 -name CMakeLists.txt -print
+
+      - name: Build inside Docker (ARM64 cross-compile)
+        run: |
+          # Set SRC_DIR to the subfolder that has the CMakeLists.txt you want
+          # Common options: lora_shooting-userside  OR  lora_shooting-targetside
+          export SRC_DIR="lora_shooting-userside"
+          docker build --build-arg SRC_DIR="$SRC_DIR" -t coriolis-arm64 .
+          CID=$(docker create coriolis-arm64)
+          mkdir -p build
+          docker cp "$CID":/src/build ./build || true
+          docker logs "$CID" --tail 200 || true
+          docker rm "$CID" || true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coriolis-arm64
+          path: build
+
