@@ -1,27 +1,13 @@
-name: Build for Raspberry Pi (ARM64)
+- name: Build inside Docker (ARM64 cross-compile)
+  run: |
+    set -euxo pipefail
+    echo "Repo layout (top 2 levels):"
+    find . -maxdepth 2 -mindepth 1 -printf "%y %p\n" | sort
+    echo "CMakeLists I can see:"
+    find . -name CMakeLists.txt -printf "%p\n" | sort
 
-on:
-  push:
-    branches: [ main, pi-build ]
-    tags: [ 'v*' ]
-  pull_request:
-
-jobs:
-  arm64:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Build inside Docker (ARM64 cross-compile)
-        run: |
-          docker build -t coriolis-arm64 .
-          CID=$(docker create coriolis-arm64)
-          docker cp "$CID":/src/build ./build
-          docker rm "$CID"
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: coriolis-arm64
-          path: build/**
+    docker build -t coriolis-arm64 .
+    CID=$(docker create coriolis-arm64)
+    docker cp "$CID":/src/build ./build || true
+    docker logs "$CID" --tail 200 || true
+    docker rm "$CID" || true
