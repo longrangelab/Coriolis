@@ -1,24 +1,23 @@
-# Minimal Debian image with cross-compilers
 FROM debian:bookworm
 
-# Install cross toolchain and build tools
+ARG SRC_DIR="."
+
 RUN dpkg --add-architecture arm64 && apt-get update && \
     apt-get install -y --no-install-recommends \
       crossbuild-essential-arm64 cmake ninja-build git pkg-config \
       ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Build context lives here
 WORKDIR /src
 COPY . /src
 
-# If the project already has CMakeLists.txt at the top, this will just work.
-# If not, replace "-S ." with the path to the specific subfolder you want to build,
-# e.g. "-S lora_shooting-userside".
-# EXAMPLE: build the userside LoRa app
-RUN cmake -B build -S lora_shooting-userside -G Ninja \
-    -DCMAKE_SYSTEM_NAME=Linux \
-    -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-    -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-    -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
- && cmake --build build -j
+# Build the chosen subproject for ARM64
+RUN bash -lc 'set -eux; \
+    echo "Requested SRC_DIR: ${SRC_DIR}"; \
+    test -f "${SRC_DIR}/CMakeLists.txt" || { echo "No CMakeLists.txt in ${SRC_DIR}"; exit 1; }; \
+    cmake -B build -S "${SRC_DIR}" -G Ninja \
+      -DCMAKE_SYSTEM_NAME=Linux \
+      -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+      -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+      -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++; \
+    cmake --build build -j'
