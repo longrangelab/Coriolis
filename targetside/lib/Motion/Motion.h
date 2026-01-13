@@ -1,154 +1,125 @@
+#pragma once
+#include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <math.h>
+
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
-#include <SensorLib.h>
 #include "SensorQMI8658.hpp"
+#include "ICM_20948.h"   // SparkFun ICM-20948 library
 
 #define SPI_MOSI (35)
-
-#define SPI_SCK (36)
-
+#define SPI_SCK  (36)
 #define SPI_MISO (37)
+#define IMU_CS   (34)
+#define IMU_INT  (33)
 
-#define IMU_CS (34)
-
-#define IMU_INT (33)
-
-float impactThreshold = 5;
+// ======================================================
 // Abstract Motion class
+// ======================================================
 class Motion
 {
 public:
-    virtual void begin() = 0;                // Initialize the sensor
-    virtual bool detectMotion() = 0;         // Detect motion and return true if motion is detected
-    virtual void displayAccelerometer() = 0; // Display acceleration
-
-    //Loan added methods for sensitivity control
-    virtual void increaseSensitivity() = 0;     // Thêm vào lớp cơ sở
+    virtual ~Motion() {}
+    virtual bool begin() = 0;                // return false if device not present
+    virtual bool detectMotion() = 0;         // called at steady cadence; return true if hit
+    virtual void displayAccelerometer() = 0;
+    virtual void increaseSensitivity() = 0;
     virtual int  getSensitivity() const = 0;
-    // Loan added methods for sensitivity control
+    virtual void calibrate() {}              // optional calibration hook
+    virtual bool isConnected() const { return true; } // default: assume connected
 };
 
+// ======================================================
 // MPU6050 implementation
+// ======================================================
 class MPU6050Motion : public Motion
 {
 private:
     Adafruit_MPU6050 mpu;
-
-    float accelSamples[5];
-    int sampleIndex = 0;
-    
-    int sensitivity = 20; // Default sensitivity value
+    int sensitivity = 20;
 
 public:
-    void begin() override
+    bool begin() override
     {
         if (!mpu.begin())
         {
-            Serial.println("Tbeam:Failed to initialize MPU6050!");
-            while (true)
-                ; // Halt on failure
+            Serial.println("MPU6050 not detected.");
+            return false;
         }
-        Serial.println("Tbeam:MPU6050 initialized.");
-        // mpu.setMotionDetectionThreshold(5);
+
+        Serial.println("MPU6050 detected.");
+
         mpu.setHighPassFilter(MPU6050_HIGHPASS_0_63_HZ);
         mpu.setMotionDetectionThreshold(20);
         mpu.setMotionDetectionDuration(20);
-        mpu.setInterruptPinLatch(true); // Keep it latched.  Will turn off when reinitialized.
+        mpu.setInterruptPinLatch(true);
         mpu.setInterruptPinPolarity(true);
+
+        return true;
+    }
+
+    bool detectMotion() override
+    {
+        return mpu.getMotionInterruptStatus();
     }
 
     void displayAccelerometer() override {}
-    bool detectMotion() override
+
+    void increaseSensitivity() override
     {
-
-        Serial.println("Checking motion");
-        if (mpu.getMotionInterruptStatus())
-        {
-            Serial.println("Checking motion true");
-            return true;
-        }
-        else
-            return false;
-    }
-    // Loan added methods for sensitivity control
-    // void increaseSensitivity() override {
-    //     sensitivity += 10;
-    //     if (sensitivity > 100)
-    //         sensitivity = 20;
-    //     Serial.print("MPU6050 IMU Sensitivity: ");
-    //     Serial.println(sensitivity);
-    //     // Nếu cần áp dụng giá trị mới thì tùy thuộc vào API sensor
-    // }
-
-    void increaseSensitivity() override {
-    sensitivity += 10;
-    if (sensitivity > 100)
-        sensitivity = 20;
-
-    // Chuyển đổi độ nhạy sang ngưỡng threshold (10 ~ 50 là hợp lý)
-    uint8_t threshold = map(sensitivity, 20, 100, 50, 10); // nhạy hơn khi giá trị nhỏ hơn
-
-    mpu.setMotionDetectionThreshold(threshold);  // Áp dụng độ nhạy
-
-    Serial.print("MPU6050 IMU Sensitivity: ");
-    Serial.println(sensitivity);
-    Serial.print("Applied threshold: ");
-    Serial.println(threshold);
+        sensitivity += 10;
+        if (sensitivity > 100) sensitivity = 20;
+        uint8_t threshold = map(sensitivity, 20, 100, 50, 10);
+        mpu.setMotionDetectionThreshold(threshold);
+        Serial.print("MPU6050 Sensitivity: ");
+        Serial.println(sensitivity);
     }
 
+    int getSensitivity() const override { return sensitivity; }
 
-    int getSensitivity() const override {
-        return sensitivity;
+    bool isConnected() const override
+    {
+        // Lightweight sanity check: request a sample and ensure values are finite
+        sensors_event_t a, g, temp;
+        if (!const_cast<Adafruit_MPU6050&>(mpu).getEvent(&a, &g, &temp)) return false;
+        return isfinite(a.acceleration.x) && isfinite(a.acceleration.y) && isfinite(a.acceleration.z);
     }
-    // Loan added methods for sensitivity control
 };
 
+// ======================================================
 // QMI8658 implementation
-volatile bool interruptFlag = false;
-void setFlag()
-{
-    interruptFlag = true;
-}
+// ======================================================
+// Note: qmiInterruptFlag is defined here for simplicity; main.cpp attaches the ISR that sets it.
+volatile bool qmiInterruptFlag = false;
+void qmiSetFlag() { qmiInterruptFlag = true; }
+
 class QMI8658Motion : public Motion
 {
 private:
     SensorQMI8658 qmi;
-    IMUdata acc;
-    IMUdata gyr;
     int csPin, intPin;
-
-    // Loan added methods for sensitivity control
     int sensitivity = 20;
-    // Loan added methods for sensitivity control
 
 public:
-    QMI8658Motion(int cs, int irq) : csPin(cs), intPin(irq) {}
+    QMI8658Motion(int cs = IMU_CS, int irq = IMU_INT) : csPin(cs), intPin(irq) {}
 
-    void begin() override
+    bool begin() override
     {
-         qmi.setPins(IMU_INT);
+        qmi.setPins(IMU_INT);
         if (!qmi.begin(csPin, SPI_MOSI, SPI_MISO, SPI_SCK))
         {
-            Serial.println("Failed to find QMI8658 - check your wiring!");
-            while (true)
-            {
-                delay(1000);
-                Serial.println("Failed to find QMI8658 - check your wiring!");
-            }
+            Serial.println("QMI8658 not detected.");
+            return false;
         }
 
-        Serial.print("Device ID:");
-        Serial.println(qmi.getChipID(), HEX);
+        Serial.println("QMI8658 detected.");
 
-        //** The recommended output data rate for detection is higher than 500HZ
-        qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_4G, SensorQMI8658::ACC_ODR_500Hz);
-
-        // Enable the accelerometer
+        qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_4G,
+                                SensorQMI8658::ACC_ODR_500Hz);
         qmi.enableAccelerometer();
 
-        //* Configure the motion detection axis direction
         uint8_t modeCtrl = SensorQMI8658::ANY_MOTION_EN_X |
                            SensorQMI8658::ANY_MOTION_EN_Y |
                            SensorQMI8658::ANY_MOTION_EN_Z |
@@ -156,134 +127,291 @@ public:
                            SensorQMI8658::NO_MOTION_EN_Y |
                            SensorQMI8658::NO_MOTION_EN_Z;
 
-        //* Define the slope threshold of the x-axis for arbitrary motion detection
-        float AnyMotionXThr = 100.0; //  x-axis 100mg threshold
-        //* Define the slope threshold of the y-axis for arbitrary motion detection
-        float AnyMotionYThr = 100.0; //  y-axis 100mg threshold
-        //* Define the slope threshold of the z-axis for arbitrary motion detection
-        float AnyMotionZThr = 1.0; //  z-axis 1mg threshold
-        //* Defines the minimum number of consecutive samples (duration) that the absolute
-        //* of the slope of the enabled axis/axes data should keep higher than the threshold
-        uint8_t AnyMotionWindow = 1; //  1 samples
+        qmi.configMotion(
+            modeCtrl,
+            100.0, 100.0, 1.0, 1,
+            0.1, 0.1, 0.1, 1,
+            1, 1
+        );
 
-        // TODO: No motion detection does not work
-        //* Defines the slope threshold of the x-axis for no motion detection
-        float NoMotionXThr = 0.1;
-        //* Defines the slope threshold of the y-axis for no motion detection
-        float NoMotionYThr = 0.1;
-        //* Defines the slope threshold of the z-axis for no motion detection
-        float NoMotionZThr = 0.1;
-
-        //* Defines the minimum number of consecutive samples (duration) that the absolute
-        //* of the slope of the enabled axis/axes data should keep lower than the threshold
-        uint8_t NoMotionWindow = 1; //  1 samples
-        //* Defines the wait window (idle time) starts from the first Any-Motion event until
-        //* starting to detecting another Any-Motion event form confirmation
-        uint16_t SigMotionWaitWindow = 1; //  1 samples
-        //* Defines the maximum duration for detecting the other Any-Motion
-        //* event to confirm Significant-Motion, starts from the first Any -Motion event
-        uint16_t SigMotionConfirmWindow = 1; //  1 samples
-
-        qmi.configMotion(modeCtrl,
-                         AnyMotionXThr, AnyMotionYThr, AnyMotionZThr, AnyMotionWindow,
-                         NoMotionXThr, NoMotionYThr, NoMotionZThr, NoMotionWindow,
-                         SigMotionWaitWindow, SigMotionConfirmWindow);
-
-        // Enable the Motion Detection and enable the interrupt
         qmi.enableMotionDetect(SensorQMI8658::INTERRUPT_PIN_1);
+        // ISR attach is done in main.cpp to keep single definition of ISR
 
-        /*
-         * When the QMI8658 is configured as Wom, the interrupt level is arbitrary,
-         * not absolute high or low, and it is in the jump transition state
-         */
-        attachInterrupt(IMU_INT, setFlag, CHANGE);
+        return true;
     }
 
     bool detectMotion() override
     {
-        if (interruptFlag)
+        if (qmiInterruptFlag)
         {
-            interruptFlag = false;
+            qmiInterruptFlag = false;
             uint8_t status = qmi.getStatusRegister();
-
-            if (status & SensorQMI8658::EVENT_ANY_MOTION)
-            {
-                Serial.println("Motion detected: EVENT_ANY_MOTION");
-                return true;
-            }
-            else if (status & SensorQMI8658::EVENT_WOM_MOTION)
-            {
-                Serial.println("Motion detected: EVENT_WOM_MOTION");
-                return true;
-            }
+            if (status & SensorQMI8658::EVENT_ANY_MOTION) return true;
+            if (status & SensorQMI8658::EVENT_WOM_MOTION) return true;
         }
         return false;
     }
 
-    // Loan added methods for sensitivity control
-    void increaseSensitivity() override {
-        sensitivity += 10;
-        if (sensitivity > 100)
-            sensitivity = 20;
+    void displayAccelerometer() override {}
 
-        Serial.print("QMI8658 IMU Sensitivity updated: ");
-        Serial.println(sensitivity);
-
-        // Simplified threshold update - no complex reconfiguration
-        // Just store the new sensitivity value, actual threshold will be applied elsewhere if needed
-        // This prevents freezing during button press
-    }
-    int getSensitivity() const override {
-    return sensitivity;
-    }
-    // Loan added methods for sensitivity control
-
-    void displayAccelerometer() override
+    void increaseSensitivity() override
     {
-        // if (qmi.getDataReady())
-        // {
+        sensitivity += 10;
+        if (sensitivity > 100) sensitivity = 20;
+        Serial.print("QMI8658 Sensitivity: ");
+        Serial.println(sensitivity);
+    }
 
-        //     // Serial.print("Timestamp:");
-        //     // Serial.print(qmi.getTimestamp());
+    int getSensitivity() const override { return sensitivity; }
 
-        //     if (qmi.getAccelerometer(acc.x, acc.y, acc.z))
-        //     {
-
-        //         // Print to serial plotter
-        //         Serial.print("ACCEL.x:");
-        //         Serial.print(acc.x);
-        //         Serial.print(",");
-        //         Serial.print("ACCEL.y:");
-        //         Serial.print(acc.y);
-        //         Serial.print(",");
-        //         Serial.print("ACCEL.z:");
-        //         Serial.print(acc.z);
-        //         Serial.println();
-
-        //         /*
-        //         m2/s to mg
-        //         Serial.print(" ACCEL.x:"); Serial.print(acc.x * 1000); Serial.println(" mg");
-        //         Serial.print(",ACCEL.y:"); Serial.print(acc.y * 1000); Serial.println(" mg");
-        //         Serial.print(",ACCEL.z:"); Serial.print(acc.z * 1000); Serial.println(" mg");
-        //         */
-        //     }
-        // }
+    bool isConnected() const override
+    {
+        // Use chip ID or status register if available
+        uint8_t id = const_cast<SensorQMI8658&>(qmi).getChipID();
+        // Treat 0x00 or 0xFF as invalid/disconnected
+        return (id != 0x00 && id != 0xFF);
     }
 };
 
-// Motion factory to choose between MPU6050 and QMI8658
+// ======================================================
+// ICM-20948 implementation (tuned for robust hit detection)
+// ======================================================
+class ICM20948Motion : public Motion
+{
+private:
+    ICM_20948_I2C icm;
+    int sensitivity = 20;
+
+    // Calibration bias (captured at boot)
+    float biasX = 0, biasY = 0, biasZ = 0;
+    bool calibrated = false;
+
+    // Smoothing and two-stage detection state
+    float lastAx = 0, lastAy = 0, lastAz = 0;
+    float filteredDelta = 0;
+    unsigned long candidateTime = 0;
+    bool candidate = false;
+
+    // Tunable parameters
+    float smoothingAlpha = 0.4f; // 0..1 (higher = faster response)
+    unsigned long confirmWindowMs = 120; // confirmation window
+    float fastThresholdLow = 300.0f;
+    float fastThresholdHigh = 900.0f;
+    float confirmThresholdLow = 600.0f;
+    float confirmThresholdHigh = 1200.0f;
+
+    // I2C error tracking for robust disconnect detection
+    int i2cErrorCount = 0;
+    const int I2C_ERROR_THRESHOLD = 3;
+
+public:
+    bool begin() override
+    {
+        icm.begin(Wire, 0x68);
+
+        if (icm.status != ICM_20948_Stat_Ok)
+        {
+            Serial.println("ICM-20948 not detected.");
+            return false;
+        }
+
+        Serial.println("ICM-20948 detected.");
+
+        icm.setSampleMode(ICM_20948_Internal_Acc,
+                          ICM_20948_Sample_Mode_Continuous);
+
+        ICM_20948_fss_t fss;
+        fss.a = gpm4; // +/-4g
+        icm.setFullScale(ICM_20948_Internal_Acc, fss);
+
+        // reset state
+        calibrated = false;
+        biasX = biasY = biasZ = 0;
+        lastAx = lastAy = lastAz = 0;
+        filteredDelta = 0;
+        candidate = false;
+        candidateTime = 0;
+        i2cErrorCount = 0;
+
+        return true;
+    }
+
+    void calibrate() override
+    {
+        // Average a number of samples at boot to capture bias
+        const int N = 50;
+        float sumX = 0, sumY = 0, sumZ = 0;
+        for (int i = 0; i < N; ++i)
+        {
+            icm.getAGMT();
+            sumX += icm.accX();
+            sumY += icm.accY();
+            sumZ += icm.accZ();
+            delay(5);
+        }
+        biasX = sumX / N;
+        biasY = sumY / N;
+        biasZ = sumZ / N;
+        lastAx = biasX; lastAy = biasY; lastAz = biasZ;
+        calibrated = true;
+        i2cErrorCount = 0;
+        Serial.println("ICM-20948 calibrated.");
+    }
+
+    bool detectMotion() override
+    {
+        // Called at steady cadence from main loop
+        // If previous I2C errors exceeded threshold, skip reads and return false
+        if (i2cErrorCount >= I2C_ERROR_THRESHOLD) {
+            return false;
+        }
+
+        // Attempt read
+        icm.getAGMT();
+
+        float ax = icm.accX();
+        float ay = icm.accY();
+        float az = icm.accZ();
+
+        // Sanity check for I2C read success
+        if (!isfinite(ax) || !isfinite(ay) || !isfinite(az)) {
+            i2cErrorCount++;
+            Serial.print("[IMU] I2C read failed, count=");
+            Serial.println(i2cErrorCount);
+            return false;
+        } else {
+            // successful read, reset error counter
+            i2cErrorCount = 0;
+        }
+
+        if (!calibrated)
+        {
+            // if not calibrated, use first sample as baseline
+            biasX = ax; biasY = ay; biasZ = az;
+            lastAx = ax; lastAy = ay; lastAz = az;
+            calibrated = true;
+            return false;
+        }
+
+        // remove bias
+        ax -= biasX; ay -= biasY; az -= biasZ;
+
+        // delta from last sample
+        float dx = ax - lastAx;
+        float dy = ay - lastAy;
+        float dz = az - lastAz;
+
+        lastAx = ax; lastAy = ay; lastAz = az;
+
+        float delta = sqrtf(dx*dx + dy*dy + dz*dz);
+
+        // exponential smoothing
+        filteredDelta = (1.0f - smoothingAlpha) * filteredDelta + smoothingAlpha * delta;
+
+        // map sensitivity to thresholds
+        float fastThreshold = map(sensitivity, 20, 100, (int)fastThresholdHigh, (int)fastThresholdLow);
+        float confirmThreshold = map(sensitivity, 20, 100, (int)confirmThresholdHigh, (int)confirmThresholdLow);
+
+        unsigned long now = millis();
+
+        // two-stage detection
+        if (filteredDelta > fastThreshold)
+        {
+            candidate = true;
+            candidateTime = now;
+        }
+
+        if (candidate)
+        {
+            if (filteredDelta > confirmThreshold)
+            {
+                candidate = false;
+                // minimal debug
+                Serial.print("ICM-20948 motion confirmed: filt=");
+                Serial.print(filteredDelta);
+                Serial.print(" fastThr=");
+                Serial.print(fastThreshold);
+                Serial.print(" confThr=");
+                Serial.println(confirmThreshold);
+                return true;
+            }
+            if (now - candidateTime > confirmWindowMs)
+            {
+                candidate = false;
+            }
+        }
+
+        return false;
+    }
+
+    void displayAccelerometer() override
+    {
+        icm.getAGMT();
+        Serial.print("ICM Accel X:");
+        Serial.print(icm.accX());
+        Serial.print(" Y:");
+        Serial.print(icm.accY());
+        Serial.print(" Z:");
+        Serial.println(icm.accZ());
+    }
+
+    void increaseSensitivity() override
+    {
+        sensitivity += 10;
+        if (sensitivity > 100) sensitivity = 20;
+        Serial.print("ICM-20948 Sensitivity: ");
+        Serial.println(sensitivity);
+    }
+
+    int getSensitivity() const override { return sensitivity; }
+
+    bool isConnected() const override
+    {
+        // Check driver status and a quick sample sanity check
+        if (icm.status != ICM_20948_Stat_Ok) return false;
+        // call getAGMT and read values; remove const for call
+        const_cast<ICM_20948_I2C&>(icm).getAGMT();
+        float x = const_cast<ICM_20948_I2C&>(icm).accX();
+        float y = const_cast<ICM_20948_I2C&>(icm).accY();
+        float z = const_cast<ICM_20948_I2C&>(icm).accZ();
+        if (!isfinite(x) || !isfinite(y) || !isfinite(z)) return false;
+        // also ensure we haven't seen repeated I2C errors
+        return (i2cErrorCount < I2C_ERROR_THRESHOLD);
+    }
+};
+
+// ======================================================
+// AUTO-DETECT FACTORY
+// ======================================================
 class MotionFactory
 {
 public:
-    static Motion *createMotion(bool useMPU6050, int csPin = -1, int intPin = -1)
+    static Motion* autoDetect()
     {
-        if (useMPU6050)
+        Serial.println("Auto-detecting IMU...");
+
+        // 1. Try MPU6050
         {
-            return new MPU6050Motion();
+            MPU6050Motion* m = new MPU6050Motion();
+            if (m->begin()) return m;
+            delete m;
         }
-        else
+
+        // 2. Try ICM-20948
         {
-            return new QMI8658Motion(csPin, intPin);
+            ICM20948Motion* m = new ICM20948Motion();
+            if (m->begin()) return m;
+            delete m;
         }
+
+        // 3. Try QMI8658
+        {
+            QMI8658Motion* m = new QMI8658Motion(IMU_CS, IMU_INT);
+            if (m->begin()) return m;
+            delete m;
+        }
+
+        Serial.println("ERROR: No IMU detected!");
+        return nullptr;
     }
 };
