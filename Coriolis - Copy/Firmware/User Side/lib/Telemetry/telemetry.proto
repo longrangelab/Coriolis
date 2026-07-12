@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package telemetry;
+
+message TelemetryPacket {
+  int32 source_id = 1;        // Target ID (1-10)
+  int32 wind_speed = 2;       // Wind speed (-1 for alert)
+  int32 wind_mode = 3;        // Wind mode
+  int32 wind_direction = 4;   // Wind direction
+  double latitude = 5;        // GPS latitude
+  double longitude = 6;       // GPS longitude
+  int32 imu_sensitivity = 7;  // IMU sensitivity level
+}
