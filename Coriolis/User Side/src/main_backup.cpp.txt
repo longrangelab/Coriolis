@@ -1,0 +1,572 @@
+#include <Arduino.h>
+#include <Adafruit_I2CDevice.h>
+#include "Motion.h"
+#include <SPI.h>
+#include "Screen.h"
+#include <Adafruit_Sensor.h>
+#include "Environment.h"
+#include "Telemetry.h"
+#include "Location.h"
+#include "ExternalNotification.h"
+#include "Power.h"
+#include <Wire.h>
+#include "SensorQMI8658.hpp"
+#define TTGO_T_BEAM_V1_1 // comment this line if you want to use TTGO_TBEAM_SUPREME
+#include "BarometricPressure.h"
+
+// USER-SIDE CONFIGURATION - This is a user device, not a target
+// #define IS_TARGET               // Comment this line for user device
+constexpr const char* TARGET_ADDRESSES[10] = {
+  "1", "2", "3", "4", "5",
+  "6", "7", "8", "9", "10"
+};
+constexpr const char* USER_ADDRESS = "User";     // Set user device address
+
+// Performance optimization constants
+constexpr uint32_t BATTERY_UPDATE_INTERVAL = 2000;    // 2s
+constexpr uint32_t BUTTON_DEBOUNCE_TIME = 500;        // 500ms
+constexpr uint32_t ALERT_DISPLAY_TIME = 2000;         // 2s
+constexpr uint32_t SCREEN_UPDATE_INTERVAL = 1000;     // 1s for normal display
+constexpr uint32_t HIT_TIMEOUT = 5000;                // 5s timeout for hit flag
+constexpr uint8_t LORA_BUFFER_SIZE = 128;
+
+// Critical performance optimization: Minimize delays
+constexpr uint8_t MAIN_LOOP_DELAY = 5;                // Optimized for hit responsiveness
+constexpr uint32_t GPS_READ_INTERVAL = 1000;          // GPS update interval
+constexpr uint32_t BARO_READ_INTERVAL = 1000;         // Barometric sensor interval
+
+// Hardware pin definitions
+#define GPS_RX_PIN 34
+#define GPS_TX_PIN 12
+#define BUZZER_PORT 32
+#define CHANNEL_A 15
+#define CHANNEL_B 35
+#define button_channel 25
+#define PMU_SCL 22
+#define PMU_SDA 21
+#define SPI_MOSI (35)
+#define SPI_SCK (36)
+#define SPI_MISO (37)
+#define IMU_CS (34)
+#define IMU_INT (33)
+#define SPI_FREQ 4000000
+
+// Global state management
+struct SystemState {
+    uint8_t currentChannel = 0;
+    bool hitFlag = false;
+    bool buttonPressed = false;
+    bool systemInitialized = false;
+    uint32_t lastHitTime = 0;
+    uint32_t lastButtonTime = 0;
+    uint32_t lastBatteryUpdate = 0;
+    uint32_t lastGpsRead = 0;
+    uint32_t lastBaroRead = 0;
+    uint32_t lastScreenUpdate = 0;
+    String hitTargetAddress = "";
+    float batteryPercentage = 0.0f;
+    float batteryVoltage = 0.0f;
+    double currentLatitude = 0.0;
+    double currentLongitude = 0.0;
+    float temperatureF = 0.0f;
+    float pressureInHg = 0.0f;
+    int windSpeed = 0;
+    int windDirection = 0;
+    int windMode = 0;
+    int imuSensitivity = 0;
+};
+
+SystemState g_state;
+
+// Hardware objects - use direct types for better performance
+Screen *screen = nullptr;
+Motion *motion = nullptr;
+WindEnvironment *environment = nullptr;
+GPSModule *gps = nullptr;
+LoRaRadioBoards *loraModule = nullptr;  // Direct type - no casting needed
+ExternalNotification *externalNotification = nullptr;
+PowerManagement *pmu = nullptr;
+BarometricSensor* baroSensor = nullptr;
+
+// Optimized local variables - moved from global scope
+String TARGET_ADDRESS = TARGET_ADDRESSES[0]; // Current target being monitored
+
+// Remove duplicate global variables - use SystemState instead
+// bool hitFlag = false;  // Use g_state.hitFlag
+// String hitTargetAddress = "";  // Use g_state.hitTargetAddress
+// double current_longtitude = 0.0;  // Use g_state.currentLongitude
+// double current_latitude = 0.0;   // Use g_state.currentLatitude
+// float temperatureF = 0.0;        // Use g_state.temperatureF
+// float pressureInHg = 0.0;        // Use g_state.pressureInHg
+
+
+
+#define SPI_FREQ 4000000
+
+SPIClass LoRaSPI(HSPI);
+
+SPISettings spiSettings(SPI_FREQ, MSBFIRST, SPI_MODE0);
+
+
+volatile unsigned switch_channel = 0;
+volatile bool buttonPressed = false;
+unsigned long lastSensitivityChange = 0;
+
+void IRAM_ATTR handleSensitivityButton() {
+    // Simple flag setting in interrupt - avoid millis() in ISR
+    buttonPressed = true;
+}
+void setup()
+{
+    delay(2000);
+    Serial.begin(115200);
+    Serial.println("T-Beam User-Side Starting...");
+    
+    // Setup button for channel switching
+    pinMode(button_channel, INPUT_PULLUP); // Đặt chế độ input cho button_channel
+    attachInterrupt(digitalPinToInterrupt(button_channel), handleSensitivityButton, FALLING);
+    
+    Serial.printf("Button initialized on pin %d\n", button_channel);
+    Serial.printf("Initial channel: %d (Target: %s)\n", switch_channel, TARGET_ADDRESSES[switch_channel]);
+    Serial.printf("Button pin state: %d (should be HIGH when not pressed)\n", digitalRead(button_channel));
+
+    Wire.begin(21, 22);
+    externalNotification = new Buzzer(BUZZER_PORT);
+    // Create the appropriate screen instance
+
+    screen = ScreenFactory::createScreen();
+    screen->begin();
+    Serial.println("Screen instance created");
+    // Initialize the Power Management Unit (AXP202X)
+    pmu = new AXPManagement(PMU_SDA, PMU_SCL);
+    Serial.println("Power Management Unit initialized");
+    if (pmu->init())
+    {
+        Serial.println("Power Management Unit initialized successfully.");
+    }
+    else
+    {
+        Serial.println("Failed to initialize Power Management Unit.");
+    }
+
+    // Loan...Initialize barometric pressure sensor
+    baroSensor = new BMP085Sensor();
+    if (!baroSensor->init()) {
+        Serial.println("Failed to initialize BMP085 sensor.");
+    } else {
+        Serial.println("BMP085 sensor initialized successfully.");
+    }
+
+    // // Initialize the GPS module (use appropriate pins for your board)
+    gps = new GPSModule(Serial1, GPS_RX_PIN, GPS_TX_PIN); // Replace with your GPS module pins
+    Serial.println("GPS module initialized");
+    gps->begin();
+    
+    // SAFETY: Don't call getCoordinates immediately - GPS needs time to acquire satellites
+    // This could cause division by zero issues if invalid coordinates are returned
+    // gps->getCoordinates(current_latitude, current_longtitude);
+    Serial.println("GPS startup complete - coordinates will be acquired in main loop");
+
+     // Loan...Read barometric pressure and temperature
+    if (baroSensor)
+    {
+        g_state.temperatureF = baroSensor->readTemperatureF();
+        g_state.pressureInHg = baroSensor->readPressureInHg();
+        Serial.printf("Temperature: %.2f F, Pressure: %.2f inHg\n", g_state.temperatureF, g_state.pressureInHg);
+    }
+    else
+    {
+        Serial.println("Barometric sensor not initialized.");
+    }
+
+    loraModule = new LoRaRadioBoards(USER_ADDRESS);
+    loraModule->begin();
+    Serial.println("LoRa module initialized");
+}
+int windSpeed = 0;
+double latitude = 0.0, longitude = 0.0;
+unsigned long previousMillis = 0;
+const unsigned long interval = 2000; // Update GPS and battery status every 2s (FASTER)
+float batteryPercentage = 0.0; // Initialize with safe value
+float batteryVoltage = 0.0;    // Initialize with safe value
+int windDirection = 0;
+int windMode = 0;
+int IMUsensitivity = 0; // Initialize IMU sensitivity
+unsigned long lastTargetData = 0; // Track when we last received target data
+unsigned long lastScreenUpdate = 0; // Global screen update timer for immediate refresh
+void loop()
+{
+    unsigned long currentMillis = millis();
+    
+    // CRITICAL SAFETY CHECK: Ensure all objects are properly initialized before proceeding
+    if (!loraModule || !screen || !pmu) {
+        Serial.println("ERROR: Critical objects not initialized - skipping loop iteration");
+        delay(1000);
+        return;
+    }
+    
+    
+    if (currentMillis - previousMillis >= interval)
+    {
+        previousMillis = currentMillis; // Cập nhật thời gian lần chạy cuối
+
+        float tempBatteryPercentage = pmu->getBatteryPercentage();
+        float tempBatteryVoltage = pmu->getBatteryVoltage();
+        
+        // Validate battery readings
+        if (tempBatteryPercentage >= 0.0 && tempBatteryPercentage <= 100.0) {
+            batteryPercentage = tempBatteryPercentage;
+        }
+        if (tempBatteryVoltage >= 0.0 && tempBatteryVoltage <= 5.0) {
+            batteryVoltage = tempBatteryVoltage;
+        }
+
+        Serial.printf("Battery: %.2f%%, Voltage: %.2fV\n", batteryPercentage, batteryVoltage);
+    }
+    if (gps->getCoordinates(g_state.currentLatitude, g_state.currentLongitude))
+    {
+        Serial.print("Latitude: ");
+        Serial.print(g_state.currentLatitude, 6);
+        Serial.print(", Longitude: ");
+        Serial.println(g_state.currentLongitude, 6);
+    }
+    
+    // Handle button press for TARGET CHANNEL SWITCHING
+    if (buttonPressed) {
+        unsigned long now = millis();
+        if (now - lastSensitivityChange > 500) { // 500ms debounce for reliability
+            int oldChannel = switch_channel;
+            switch_channel++;
+            if(switch_channel > 9) switch_channel = 0;
+            lastSensitivityChange = now;
+            
+            Serial.printf("🔘 [UserSide] BUTTON: Channel %d→%d (Target %s→%s)\n", 
+                         oldChannel, switch_channel, TARGET_ADDRESSES[oldChannel], TARGET_ADDRESSES[switch_channel]);
+            Serial.printf("   *** ENVIRONMENT data will now come from TARGET %s ***\n", TARGET_ADDRESSES[switch_channel]);
+            Serial.printf("   *** ALERT messages still received from ALL targets ***\n");
+            
+            // No screen notification for channel switching - just switch quietly
+            Serial.printf("✅ [UserSide] Channel switched to TARGET %s\n", TARGET_ADDRESSES[switch_channel]);
+            
+        } else {
+            Serial.printf("[UserSide] Button press debounced (%lu ms since last)\n", 
+                         now - lastSensitivityChange);
+        }
+        buttonPressed = false; // Clear the flag
+    }
+    
+    // Update TARGET_ADDRESS based on current channel for ENVIRONMENT data filtering
+    static String lastTargetAddress = "";
+    TARGET_ADDRESS = TARGET_ADDRESSES[switch_channel];
+    
+    // Debug when target address changes
+    if (TARGET_ADDRESS != lastTargetAddress) {
+        Serial.printf("🎯 [UserSide] TARGET FOR ENVIRONMENT SWITCHED: %s → %s (Channel: %d)\n", 
+                     lastTargetAddress.c_str(), TARGET_ADDRESS.c_str(), switch_channel);
+        Serial.printf("   📊 Environment data will be filtered to show only TARGET %s\n", TARGET_ADDRESS.c_str());
+        Serial.printf("   🚨 Alert messages will still be received from ALL targets\n");
+        
+        // Show status of new target
+        if (loraModule) {
+            TargetInfo* newTarget = loraModule->getTargetInfo(TARGET_ADDRESS);
+            if (newTarget && newTarget->isActive) {
+                Serial.printf("   ✅ New selected target is ACTIVE (last seen: %lu ms ago)\n", 
+                             millis() - newTarget->lastSeen);
+            } else {
+                Serial.printf("   ⏳ New selected target is INACTIVE or NEW\n");
+            }
+        }
+        lastTargetAddress = TARGET_ADDRESS;
+    }
+    
+    // Read local barometric sensor periodically
+    static unsigned long lastBaroRead = 0;
+    if (millis() - lastBaroRead > 1000) { // Read every 1 second (OPTIMIZED for 10s cycle)
+        if (baroSensor) {
+            float localTempF = baroSensor->readTemperatureF();
+            float localPressInHg = baroSensor->readPressureInHg();
+            
+            // Use local readings if not receiving data from selected target for too long
+            if (millis() - lastTargetData > 12000) { // If no target data for 12 seconds (1.2x cycle time)
+                temperatureF = localTempF;
+                pressureInHg = localPressInHg;
+                // Serial.printf("[UserSide] Using local sensor: %.2f°F, %.2f inHg (no target data)\n", 
+                //              temperatureF, pressureInHg);
+            } else {
+                // Serial.printf("[UserSide] Local sensor: %.2f°F, %.2f inHg (target data active)\n", 
+                //              localTempF, localPressInHg);
+            }
+        }
+        lastBaroRead = millis();
+    }
+
+
+    // USER-SIDE MAIN LOGIC
+    
+    // USER-SIDE MAIN LOGIC: Monitor and receive messages from all targets
+    
+    // Check for incoming protobuf messages from ANY target
+    // Remove duplicate local variables - use SystemState
+    uint8_t buffer[LORA_BUFFER_SIZE];
+    size_t length = LORA_BUFFER_SIZE;
+    
+    // Reset hit flag only on timeout, not every loop
+    uint32_t currentMillis = millis();
+    if (g_state.hitFlag && (currentMillis - g_state.lastHitTime > HIT_TIMEOUT)) {
+        g_state.hitFlag = false;
+        Serial.println("Hit timeout - clearing hit flag");
+    }
+    
+    // PRIORITY #1: Check for LoRa messages FIRST (Hit messages have highest priority)    if (loraModule && loraModule->receiveMessage(buffer, length))
+    {
+        Serial.println("🔔 [UserSide] Message received - processing...");
+        // Parse protobuf message to get source ID and data
+        String sourceId = ""; // Initialize with empty string for safety
+        int protobufWindSpeed = 0, protobufWindMode = 0, protobufWindDirection = 0, protobufIMU = 0;
+        double protobufLatitude = 0.0, protobufLongitude = 0.0;
+        
+        // Get signal strength immediately after receiving
+        float currentRssi, currentSnr;
+        loraModule->getSignalStrength(currentRssi, currentSnr);
+        
+        // CRITICAL: Validate buffer and length before parsing
+        if (buffer == nullptr || length == 0 || length > 128) {
+            Serial.printf("ERROR: Invalid buffer (ptr=%p, len=%d) - skipping message\n", buffer, length);
+            return; // Skip this loop iteration
+        }
+        
+        // PRIORITY PROCESSING: Give priority to messages from currently selected target
+        if (sourceId == TARGET_ADDRESS) {
+            Serial.printf("🚀 [UserSide] PRIORITY MESSAGE from selected TARGET %s - processing immediately\n", sourceId.c_str());
+        }
+        
+        if (loraModule->parseProtobufMessage(buffer, length, sourceId, 
+                                            protobufWindSpeed, protobufWindMode, protobufWindDirection,
+                                            protobufLatitude, protobufLongitude, protobufIMU))
+        {
+            Serial.println("✅ [UserSide] Protobuf parsed successfully");
+            Serial.printf("   Source ID: '%s'\n", sourceId.c_str());
+            Serial.printf("   Wind: Speed=%d, Mode=%d, Direction=%d°\n", 
+                         protobufWindSpeed, protobufWindMode, protobufWindDirection);
+            // CRITICAL VALIDATION: Ensure sourceId is valid before proceeding
+            if (sourceId.length() == 0 || sourceId.length() > 10) {
+                Serial.printf("ERROR: Invalid sourceId (empty or too long: '%s') - skipping message\n", sourceId.c_str());
+                return; // Skip this loop iteration
+            }
+            
+            Serial.printf("📡 [UserSide] Received protobuf from TARGET %s (RSSI: %.1f dBm, SNR: %.1f dB)\n", 
+                         sourceId.c_str(), currentRssi, currentSnr);
+            
+            if (protobufWindSpeed == -1) {
+                // *** ALERT MESSAGES: ALWAYS PROCESS FROM ANY TARGET ***
+                g_state.hitFlag = true;
+                g_state.hitTargetAddress = sourceId; // Store which target caused the HIT
+                g_state.lastHitTime = currentMillis;
+                Serial.printf("[UserSide] *** ALERT RECEIVED from TARGET %s *** (ANY TARGET ALERT)\n", sourceId.c_str());
+                
+                // Trigger external notification (buzzer)
+                externalNotification->notify();
+                
+                // The alert will be displayed by the main screen update logic
+                Serial.printf("[UserSide] Alert from TARGET %s will be displayed for 2 seconds\n", sourceId.c_str());
+                
+            } else {
+                // *** ENVIRONMENT MESSAGES: ONLY UPDATE DISPLAY FROM SELECTED TARGET ***
+                Serial.printf("[UserSide] Environment data from TARGET %s:\n", sourceId.c_str());
+                Serial.printf("Wind: Speed=%d, Mode=%d, Direction=%d°\n", 
+                             protobufWindSpeed, protobufWindMode, protobufWindDirection);
+                Serial.printf("GPS: (%.6f, %.6f), IMU: %d\n", 
+                             protobufLatitude, protobufLongitude, protobufIMU);
+                
+                // *** IMPORTANT: Only update display data if this is the currently selected target ***
+                if (sourceId == TARGET_ADDRESS) {
+                    // Validate data before assigning
+                    if (protobufWindSpeed >= 0 && protobufWindSpeed <= 200) {
+                        windSpeed = protobufWindSpeed;
+                    }
+                    if (protobufWindMode >= 0) {
+                        windMode = protobufWindMode;
+                    }
+                    if (protobufWindDirection >= 0 && protobufWindDirection <= 360) {
+                        windDirection = protobufWindDirection;
+                    }
+                    if (protobufLatitude >= -90.0 && protobufLatitude <= 90.0 && 
+                        protobufLongitude >= -180.0 && protobufLongitude <= 180.0) {
+                        latitude = protobufLatitude;
+                        longitude = protobufLongitude;
+                    }
+                    if (protobufIMU >= 0 && protobufIMU <= 100) {
+                        IMUsensitivity = protobufIMU;
+                    }
+                    
+                    // Update timestamp for target data reception
+                    lastTargetData = millis();
+                    
+                    // IMMEDIATE SCREEN UPDATE: Force immediate screen refresh for new environment data
+                    lastScreenUpdate = 0; // Reset to force immediate update
+                    
+                    Serial.printf("\n[UserSide] *** DISPLAY UPDATED *** from selected TARGET %s (IMMEDIATE REFRESH)\n", sourceId.c_str());
+                } else {
+                    Serial.printf("[UserSide] Data from TARGET %s (not selected, current: %s) - IGNORED FOR DISPLAY\n", 
+                                 sourceId.c_str(), TARGET_ADDRESS.c_str());
+                }
+
+                // Calculate distance from current position if we have GPS data
+                if (protobufLatitude != 0.0 && protobufLongitude != 0.0 && 
+                    current_latitude != 0.0 && current_longtitude != 0.0) {
+                    double distance = GPS::calculateDistance(current_latitude, current_longtitude,
+                                                           protobufLatitude, protobufLongitude);
+                    // Validate distance result to prevent issues
+                    if (distance >= 0 && distance < 1000000) { // Reasonable distance check
+                        Serial.printf("Distance: %.2f meters from user\n", distance);
+                    } else {
+                        Serial.printf("Distance calculation error: %.2f (invalid result)\n", distance);
+                    }
+                }
+            }
+            Serial.println("--------------------------------------------------");
+            // Always update target info for tracking purposes (regardless of selected target)
+            telemetry_TelemetryPacket packet = telemetry_TelemetryPacket_init_zero;
+            // CRITICAL FIX: Protect against division by zero in sourceId.toInt()
+            if (sourceId.length() > 0) {
+                packet.source_id = sourceId.toInt();
+            } else {
+                packet.source_id = 0; // Default to 0 for empty sourceId
+            }
+            Serial.printf("   Updating target info for TARGET %s (ID: %d)\n", sourceId.c_str(), packet.source_id);
+            packet.wind_speed = protobufWindSpeed;
+            packet.wind_mode = protobufWindMode;
+            packet.wind_direction = protobufWindDirection;
+            packet.latitude = protobufLatitude;
+            packet.longitude = protobufLongitude;
+            packet.imu_sensitivity = protobufIMU;
+            Serial.println("   Target info populated");
+            // CRITICAL: Additional safety check before updateTargetInfo
+            if (loraModule && sourceId.length() > 0) {
+                Serial.print("Update interface with latest data...\n");
+                // loraModule->updateTargetInfo(sourceId, packet, currentRssi, currentSnr);
+                screen->drawInterface((int)batteryPercentage, (int)currentRssi, false, (int)0, 
+                                sourceId.c_str(), packet.wind_direction, packet.wind_speed, temperatureF, pressureInHg, packet.imu_sensitivity);
+            } else {
+                Serial.println("ERROR: Cannot update target info - invalid loraModule or sourceId");
+            }
+        }
+    }
+    
+    // Debug and status reporting
+    static unsigned long lastDebugReport = 0;
+    if (millis() - lastDebugReport > 20000) { // Report every 3 seconds (OPTIMIZED for 10s cycle)
+        Serial.printf("\n[UserSide] STATUS REPORT:\n");
+        Serial.printf("   Current Target: %s (Channel: %d)\n", TARGET_ADDRESS.c_str(), switch_channel);
+        Serial.printf("   Battery: %.1f%%, GPS: (%.6f, %.6f)\n", 
+                     batteryPercentage, current_latitude, current_longtitude);
+        
+        if (loraModule) {
+            int activeCount = loraModule->getActiveTargetsCount();
+            Serial.printf("   Active Targets: %d/10\n", activeCount);
+            
+            // Show info about currently selected target
+            TargetInfo* selectedTarget = loraModule->getTargetInfo(TARGET_ADDRESS);
+            if (selectedTarget && selectedTarget->isActive) {
+                unsigned long timeSince = millis() - selectedTarget->lastSeen;
+                Serial.printf("   Selected Target Status: ACTIVE (last seen: %lu ms ago)\n", timeSince);
+                Serial.printf("   Data: Wind=%d°@%d, GPS=(%.6f,%.6f), RSSI=%.1f dBm\n",
+                             selectedTarget->windDirection, selectedTarget->windSpeed,
+                             selectedTarget->latitude, selectedTarget->longitude, selectedTarget->rssi);
+            } else {
+                Serial.printf("   Selected Target Status: INACTIVE or NOT FOUND\n");
+            }
+        }
+        
+        lastDebugReport = millis();
+    }
+    
+    // Process periodic tasks using existing loraModule pointer
+    if (loraModule) {
+        loraModule->processPeriodicTasks();
+    }
+    
+    // Screen display management with improved target tracking
+    static unsigned long alertStartTime = 0;
+    static bool alertScreenActive = false;
+    
+    // Handle alert display timing
+    if (hitFlag && !alertScreenActive) {
+        alertStartTime = millis(); // Record when alert was set
+        alertScreenActive = true;
+        Serial.println("🚨 [UserSide] Alert display started - showing for 2 seconds");
+    }
+    
+    // Auto-reset alert after 2 seconds and return to normal display
+    if (alertScreenActive && millis() - alertStartTime > 2000) {
+        hitFlag = false;
+        hitTargetAddress = ""; // Clear the HIT target address
+        alertScreenActive = false;
+        alertStartTime = 0;
+        Serial.printf("⏰ [UserSide] Alert timeout - returning to normal display for target %s\n", TARGET_ADDRESS.c_str());
+        // Force immediate screen update to return to normal view
+        lastScreenUpdate = 0;
+    }
+    
+    // Screen update logic - handle both alert and normal display
+    bool shouldUpdateScreen = false;
+    
+    if (alertScreenActive) {
+        // During alert: update immediately to show alert
+        shouldUpdateScreen = true;
+    } else {
+        // Normal operation: update every 200ms (SUPER FAST for 10s environment cycle)
+        shouldUpdateScreen = (millis() - lastScreenUpdate > 200);
+    }
+    
+    if (shouldUpdateScreen) {
+        // Get signal strength for currently selected target
+        float currentRssi = 0;
+        float currentSnr = 0;
+        TargetInfo* selectedTarget = nullptr;
+        
+        if (loraModule) {
+            selectedTarget = loraModule->getTargetInfo(TARGET_ADDRESS);
+            if (selectedTarget && selectedTarget->isActive) {
+                currentRssi = selectedTarget->rssi;
+                currentSnr = selectedTarget->snr;
+            }
+        }
+        
+        // Calculate distance if we have GPS data from selected target
+        double currentDistance = 0;
+        if (latitude != 0.0 && longitude != 0.0 && current_latitude != 0.0 && current_longtitude != 0.0) {
+            double tempDistance = GPS::calculateDistance(current_latitude, current_longtitude, latitude, longitude);
+            // Validate distance result to prevent display issues
+            if (tempDistance >= 0 && tempDistance < 1000000) { // Reasonable distance check
+                currentDistance = tempDistance;
+            } else {
+                Serial.printf("ERROR: Invalid distance calculation result: %.2f\n", tempDistance);
+                currentDistance = 0; // Default to 0 for invalid results
+            }
+        }
+        
+        // Determine what to display based on windMode
+        int displayValue = (windMode == 0) ? windDirection : windSpeed;
+        
+        // Create target display string with "From:" format
+        char targetDisplay[20];
+        int activeTargets = loraModule ? loraModule->getActiveTargetsCount() : 0;
+        
+        // Show target address in "From: X" format
+        snprintf(targetDisplay, sizeof(targetDisplay), "%s", TARGET_ADDRESS.c_str());
+        
+        if (alertScreenActive) {
+            Serial.printf("[UserSide] Alert screen update: Battery=%d%%, Target=%s, Alert=ACTIVE\n", 
+                         (int)batteryPercentage, hitTargetAddress.c_str());
+            
+            // Show dedicated HIT screen with target address
+            screen->drawHitNotification(hitTargetAddress.c_str());
+            
+        } 
+        lastScreenUpdate = millis();
+    }
+
+    // Small delay to prevent excessive processing
+    delay(10); // SUPER FAST response for 10s target cycle - optimized for rapid environment updates
+}
