@@ -1,29 +1,99 @@
-Coriolis System Parts List
+# Coriolis — Bill of Materials
 
-    Target Unit
-      - Lilygo T-Beam V1.2
-      - 18650 Flat Top Battery
-      - MPU6050 IMU 
-      - M20 Compression Cable Gland (Metal) 
-      - Coriolis V1.0 Target Unit Enclosure
-   
-    Weather Station
-      - Taiss/Incremental Rotary Encoder DC 5-24v Wide Voltage Power Supply 6mm Shaft Optical AB 600P/R (X2)
-      - M20 Compression Cable Gland (Metal) 
-      - Coriolis Weather Station V1.0 Enclosure
-      - 6 Wire, 16 Guage, 25' Exterior Rated Cable 
-      - 6 Pin, Waterproof Automotive Cable Connectors (2 Male ends and 2 Female Ends)
+Hardware parts list for the Wind Lab long-range wind-sensing system.
 
-    Base Station Unit
-      - Lilygo T-Beam V1.2
-      - 18650 Flat Top Battery
-      - BMP180 Sensor
-      - Any Small 3-12V Active Electronic Buzzer
-      - Coriolis V1.0 Base Station Enclosure
+**System shape**
 
-    FAWD (TBD)
+- **N sensor nodes** — each = one T-Beam + one wind meter + the daughterboard, deployed downrange.
+- **1 base station / receiver** — a T-Beam that coordinates the nodes over LoRa, runs the ballistic solver, and serves the phone dashboard over its own WiFi AP. No wind meter of its own. The daughterboard is not required for the base station, but is recommended. If the daughterboard is not used, the user will have to source their own enclosure.
 
+Quantities are **per node** unless marked *(base)* or *(shared)*. Replace **N** with your node count; you buy **N + 1** T-Beams total. Prices are rough USD for planning only — **verify current pricing/availability at purchase.**
 
+> Everything below is matched to what the current firmware actually expects (chip identities, I²C addresses, radio, PMU). Substituting a part usually means a small firmware change — see [Notes & gotchas](#notes--gotchas).
 
-    Touch Screen User Interface (TBD)
-    
+---
+
+## 1. Core boards
+
+| Item | Qty | Key details | Approx. USD |
+|---|---|---|---|
+| **LilyGo T-Beam** (ESP32 · LoRa **SX1276** · GPS · 0.96" OLED · 18650 holder) — **915 MHz (US)** | **N + 1** | Get the **SX1276/SX1278** 915 MHz variant **with OLED**. PMU **AXP2101 (v1.2)** or **AXP192 (v1.1)** — firmware auto-detects either. Do **not** buy the SX1262 / ESP32-S3 "Supreme"/"1W" boards without a firmware radio-driver change. | ~$32–45 ea |
+
+Official board repo: `github.com/Xinyuan-LilyGO/LilyGO-T-Beam`
+
+---
+
+## 2. Wind meters — pick one type per node (firmware auto-detects at boot)
+
+| Option | Item | Qty | Details | Approx. USD |
+|---|---|---|---|---|
+| **A — SparkFun** | Weather Meter Parts | 0–N | Cup anemometer (1.492 mph/Hz) + 8-position resistor wind vane mast/clamps, RJ11 cables. Cheapest; direction resolves to ~8 points (~13° steps). | ~$60 |
+| **B — Inspeed** | Vortex Wind Speed Sensor (2.5 mph/Hz; reed or WS2 Hall, sensor-only) | 0–N | Rugged anemometer, 5–125 mph, 1 pulse/rev. | ~$70–100 |
+| **B — Inspeed** | e-Vane II (EV2) ratiometric Hall vane | 0–N | Continuous (high-res) direction, 5–95% Vcc analog out, near-zero deadband. Pairs with the Vortex. | ~$90–110 |
+
+Firmware detects SparkFun vs. Inspeed automatically (2 LED blinks = SparkFun, 3 = Inspeed) — no jumper, no per-node `#define`. SparkFun = one kit per node; Inspeed = Vortex + e-Vane II per node.
+
+Vendors: SparkFun (`sparkfun.com/weather-meter-kit.html`), Inspeed (`store.inspeed.com`).
+
+---
+
+## 3. Node sensor daughterboard — custom PCB, 1 per node
+
+Not a commercial board — this is the small carrier that holds the wind-sensor MCU + barometer and plugs onto the T-Beam's I²C bus (SDA/SCL/3V3/GND). Fab it from the repo's board files; it is populated with:
+
+| Component | Qty/board | Details | Approx. USD |
+|---|---|---|---|
+| **ATtiny85** (DIP-8 or SOIC-8) | 1 | Wind-sensor MCU, 3.3 V, 8 MHz internal, I²C addr `0x42`. Reads vane on PB3/ADC3, anemometer pulse on PB4, talks I²C to the T-Beam (PB0=SDA, PB2=SCL), boot LED on PB1. | ~$1–2 |
+| **BMP180 barometer/temp module** (GY-68) | 1 | I²C baro+temp (addr `0x77`), via `Adafruit_BMP085` library. Legacy part (see gotchas). | ~$3–6 |
+| **Wind-meter connector** | 1 | RJ11 6P jack for the SparkFun cable, or a 3-pos screw terminal for Inspeed's bare leads. | ~$1 |
+| Passives & I/O | — | I²C pull-ups 4.7 kΩ ×2, 0.1 µF decoupling, boot LED + ~330 Ω, vane input resistor, and a header to the T-Beam. Exact values/quantities come from the board schematic. | ~$1 |
+| **PCB fabrication** | 1 | From repo Gerbers. | ~$Unknown |
+
+---
+
+## 4. Base station *(×1, in addition to its T-Beam from §1)*
+
+| Item | Qty | Details | Approx. USD |
+|---|---|---|---|
+| **BMP180 module** (GY-68) *(base)* | 1 | Supplies base temperature/pressure to the solver. Same part as the node barometer. | ~$3–6 |
+
+The base needs no wind meter and no ATtiny — just the T-Beam, its baro, antenna, battery, daughterboard and enclosure.
+
+---
+
+## 5. Shared / tooling / consumables
+
+| Item | Qty | Details | Approx. USD |
+|---|---|---|---|
+| **915 MHz LoRa antenna** (SMA or IPEX) | N + 1 | Upgrade over the mediocre included whip; one per T-Beam. | ~$5–10 ea |
+| **18650 Li-ion cell** (button-top, quality brand) | N + 1 | One per T-Beam. Avoid cheap/counterfeit cells. | ~$8–12 ea |
+| **USB cable** (micro-USB or USB-C — match your T-Beam rev) | a few | Flashing + charging. | ~$3 ea |
+| **ATtiny85 ISP programmer** (USBasp, or an Arduino as ISP + jumpers) | 1 *(shared)* | Needed to flash the daughterboard MCU at 3.3 V / 8 MHz. | ~$3–10 |
+| **Weatherproof enclosure** (IP65) + cable glands | N + 1 | Per node and base. | ~$Unknown |
+| **Mast / pole / tripod mount** | per node | SparkFun kit includes some hardware; Inspeed brackets are separate. | varies |
+| Hookup wire, headers, heat-shrink, RJ11 breakout | — | Consumables. | ~$10 total |
+
+---
+
+## 6. Optional / planned (not required to run today)
+
+| Item | Qty | Details |
+|---|---|---|
+| **TSL2591 lux sensor** | 0–N | Per-node ambient light; firmware supports it via `USE_TSL2591` (disabled by default). I²C. |
+| **Solar charging** — 5–6 V regulated USB solar panel (2–6 W) | 0–N | For months-long deployment. Feeds the T-Beam USB → AXP PMU charger. Pairs with the deep-sleep feature that isn't built yet; will also need PMU VBUS/charge-current firmware. Use a panel with a stable 5 V USB output (not a bare cell) to avoid brown-out oscillation. |
+| **Calypso ULP ultrasonic anemometer** | 0–N | Appears in the dashboard as meter type "Calypso," but the read path is not implemented — don't buy for this build yet. |
+
+---
+
+## Notes & gotchas
+
+- **Radio must match firmware.** The code uses RadioLib on an SX1276 at 915 MHz. SX1262 / ESP32-S3 "Supreme"/"1W" boards require a radio-driver change — pick the classic SX1276 915 MHz T-Beam.
+- **PMU either revision is fine.** AXP2101 (v1.2, current) and AXP192 (v1.1, older) are both auto-detected via XPowersLib.
+- **BMP180 is end-of-life.** Modules are still around; if you can't source one, BMP280/BME280 is a small library swap (`Adafruit_BMP085` → `Adafruit_BMP280`/`BME280`) — that's a firmware edit, so flag it before substituting.
+- **ATtiny85 at 3.3 V.** Program at 8 MHz internal so its I²C levels match the T-Beam. Address is fixed at `0x42`.
+- **Direction resolution differs by meter.** SparkFun ≈ 8 points (~13° quantization); Inspeed e-Vane II is continuous. The firmware's per-meter quality thresholds already account for this — you can mix meter types across nodes.
+- **OLED variant.** Buy the T-Beam with the OLED (soldered, or solder the included one) — the node and receiver both use it.
+
+---
+
+*Matched to the firmware as of the current handoff. Send the daughterboard's schematic/Gerbers if you want its exact passives and a fab-ready line-item list.*
