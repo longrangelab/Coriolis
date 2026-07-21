@@ -1,0 +1,80 @@
+# Coriolis Wind Node & Base Station BOM
+
+This Bill of Materials (BOM) contains the parts required to assemble **one Coriolis board system**.
+
+If you are building multiple wind nodes or base stations, multiply the quantities below by the number of units you intend to build.
+
+> **Important:** Purchase a microUSB cable that supports **data transmission**. Charging-only cables will not work for programming or communication.
+
+---
+
+# Printed Parts
+
+**Recommended Print Settings:**
+- Material: ASA or PETG
+- Infill: 20%
+- Walls: 4
+- Top/Bottom Layers: 4
+- Recommended Protection: Apply Krylon UV-resistant clear coating for improved outdoor durability
+
+| Quantity | Part |
+|----------|------|
+| 1x | Main Enclosure |
+| 1x | Screw-on Antenna |
+| 1x | TPU Lid Gasket |
+| 3x | Pushbuttons |
+| 4x | PCB Mounting Straps |
+
+---
+
+# CNC / Laser Cut Parts
+
+| Quantity | Part | Specification |
+|----------|------|---------------|
+| 1x | Acrylic Lid | 2mm Cast Acrylic |
+
+---
+
+# Electronics (Wind Node & Base Station)
+
+| Quantity | Part | Notes |
+|----------|------|-------|
+| 1x | Coriolis Daughterboard | Fully assembled |
+| 1x | LilyGO T-Beam V1.2 | 915 MHz version for U.S. users |
+| 1x | OLED Display | Non-soldered version of T-Beam recommended |
+| 1x | 18650 Lithium-Ion Battery | Flat-top cell required |
+| 1x | BMP180 Temperature/Barometric Pressure Sensor | Optional |
+
+> **Weather Protection Recommendation:**  
+> For long-term outdoor deployments, consider applying a clear conformal coating to all exposed electronics.
+
+---
+
+# Hardware
+
+| Quantity | Part |
+|----------|------|
+| 4x | 1/4"-20 Phillips Head Machine Screws (2" long) |
+| 4x | 1/4"-20 Nuts |
+| 4x | M4 Screws (1" long) |
+| 4x | M4 Nuts |
+| 4x | M4 Washers |
+| 4x | M4 Lock Nuts |
+
+---
+
+# Wind Node Only Electronics
+
+The following components are only required for the remote wind sensor node.
+
+| Quantity | Part | Notes |
+|----------|------|-------|
+| 1x | ATtiny85 Microcontroller | Used for sensor processing/control |
+
+---
+
+# Assembly Notes
+
+- The BOM above is for **one complete Coriolis unit**.
+- A complete deployment consisting of multiple wind nodes and a base station will require one BOM per assembled device.
+- Verify regional LoRa frequency requirements before ordering the T-Beam module.
