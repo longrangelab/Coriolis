@@ -1,6 +1,6 @@
 # Coriolis Daughterboard
 
-This directory contains the source files and manufacturing data for the Coriolis daughterboard.
+This directory contains the source files and manufacturing data for the Coriolis daughterboard. Unless you are experienced with electronics, I would recommend you select "PCB + Assembly." 
 
 ## Order a PCB
 
