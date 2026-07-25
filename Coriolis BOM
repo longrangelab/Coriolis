@@ -69,7 +69,7 @@ The following components are only required for the remote wind sensor node.
 
 | Quantity | Part | Notes |
 |----------|------|-------|
-| 1x | ATtiny85 Microcontroller | Used for sensor processing/control |
+| 1x | ATtiny85 Microcontroller | Used for sensor processing/control | - Please save yourself the headache and buy this from Digispark, not Amazon. 
 
 ---
 
