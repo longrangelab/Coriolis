@@ -30,11 +30,21 @@
 
 #define NODE_PACKET_MAGIC    0x57
 #define BEACON_PACKET_MAGIC  0x42
-#define PACKET_VERSION       2
+// v5: beacon gains sleep_mask (per-node sleep targeting). bit i set => node i must
+// deep-sleep, layered on top of the fleet-wide BFLAG_SLEEP_CMD. Struct grew by 2
+// bytes, so a v4 node and v5 receiver fail each other's beacon CRC and don't sync
+// -- the node falls to autonomous jittered TX (stays awake), the safe degradation.
+// Reflash the whole network. Fleet BFLAG_SLEEP_CMD/WAKE_CMD semantics are unchanged.
+#define PACKET_VERSION       5   // v5: per-node sleep (beacon gains sleep_mask)
 
 #define FLAG_BARO_VALID   0x01
 #define FLAG_LIGHT_VALID  0x02
 #define FLAG_GPS_VALID    0x04
+#define FLAG_SLEEP_ACK    0x08   // node acking a sleep command (see node telemetry.h)
+#define FLAG_WIND_VALID   0x10   // wind figures are from a live/recent ATtiny read
+
+#define BFLAG_SLEEP_CMD   0x01   // beacon flag: "after this cycle, enter deep sleep"
+#define BFLAG_WAKE_CMD    0x02   // beacon flag: "wake broadcast -- stay awake and resync"
 
 #pragma pack(push, 1)
 struct NodePacket {
@@ -46,7 +56,9 @@ struct NodePacket {
 };
 struct BeaconPacket {
     uint8_t  magic; uint8_t version; uint8_t max_slot; uint8_t flags;
-    uint16_t slot_ms; uint16_t cycle_ms; uint32_t seq; uint16_t crc;
+    uint16_t slot_ms; uint16_t cycle_ms; uint32_t seq; uint16_t node_mask;
+    uint16_t sleep_mask;   // v5: bit i set => node i should deep-sleep (per-node)
+    uint16_t crc;
 };
 #pragma pack(pop)
 
@@ -65,6 +77,23 @@ static inline bool unpackReading(const uint8_t* buf, size_t len, NodePacket& p) 
     memcpy(&p, buf, sizeof(NodePacket));
     if (p.magic != NODE_PACKET_MAGIC) return false;
     return nodeCrc16(buf, sizeof(NodePacket) - sizeof(uint16_t)) == p.crc;
+}
+
+// ---- compact TDMA slot map (v4) -------------------------------------------
+// The beacon's node_mask has bit i (1..15) set when node id i owns a slot this
+// cycle. A node's slot is its RANK among the active ids, NOT its raw id, so ids
+// {1,3,10} occupy slots {1,2,3} -- three slots, not ten. slot 0 is the beacon.
+// The receiver and every node run this SAME code on the SAME mask, so both sides
+// always agree on who sits where within a cycle. (bit 0 is unused/reserved.)
+static inline uint8_t beaconSlotCount(uint16_t mask) {
+    return (uint8_t)__builtin_popcount((unsigned)(mask & 0xFFFEu));
+}
+// 1-based slot index for nodeId, or 0 if nodeId isn't scheduled in this mask.
+static inline uint8_t beaconSlotOf(uint16_t mask, uint8_t nodeId) {
+    if (nodeId == 0 || nodeId > 15) return 0;
+    if (!((mask >> nodeId) & 1u)) return 0;                 // not scheduled yet
+    uint16_t below = (uint16_t)(mask & ((1u << nodeId) - 1u) & 0xFFFEu);
+    return (uint8_t)(__builtin_popcount((unsigned)below) + 1);
 }
 
 // ===========================================================================
@@ -95,12 +124,21 @@ public:
     bool restart(){ initialized = false; return begin(); }
 
     // Broadcast the schedule, then return to listening.
-    bool sendBeacon(uint8_t maxSlot, uint16_t slotMs, uint16_t cycleMs) {
+    // The flags arg carries BFLAG_SLEEP_CMD / BFLAG_WAKE_CMD when the base is
+    // orchestrating a FLEET sleep or wake sequence; default 0 = normal beacon.
+    // sleepMask carries PER-NODE sleep targeting (bit i => node i sleeps), layered
+    // on top of the fleet flag. It is broadcast on EVERY beacon regardless of
+    // node_mask membership, so a node can be commanded to sleep even when it isn't
+    // currently scheduled (e.g. still jittering in to rejoin). default 0 = none.
+    bool sendBeacon(uint8_t maxSlot, uint16_t slotMs, uint16_t cycleMs,
+                    uint16_t nodeMask, uint8_t flags = 0, uint16_t sleepMask = 0) {
         if (!initialized) return false;
         BeaconPacket b;
         b.magic = BEACON_PACKET_MAGIC; b.version = PACKET_VERSION;
-        b.max_slot = maxSlot; b.flags = 0;
+        b.max_slot = maxSlot; b.flags = flags;
         b.slot_ms = slotMs; b.cycle_ms = cycleMs; b.seq = ++beaconSeq;
+        b.node_mask = nodeMask;
+        b.sleep_mask = sleepMask;
         b.crc = nodeCrc16((uint8_t*)&b, sizeof(BeaconPacket) - sizeof(uint16_t));
         int st = radio.transmit((uint8_t*)&b, sizeof(b));
         radio.startReceive();
