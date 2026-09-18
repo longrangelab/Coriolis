@@ -35,7 +35,7 @@ public:
     void update(float aggSpeed, float aggDir, bool valid) {
         if (!valid) return;
         uint32_t now = millis();
-        if (now - lastSample < WINDSTATS_PERIOD) return;
+        if ((uint32_t)(now - lastSample) < WINDSTATS_PERIOD) return;   // rollover-safe
         lastSample = now;
         buf[head] = { now, aggSpeed, aggDir };
         head = (head + 1) % WINDSTATS_CAP;
@@ -43,15 +43,27 @@ public:
     }
 
     // Variability over the last `sec` seconds. Returns sample count.
+    //
+    // FIX: this used to compute an absolute `cutoff = now - sec*1000` and test
+    // `buf[idx].t < cutoff`. That is wrong twice:
+    //   1) For the first `sec` seconds of uptime, now < sec*1000, so the
+    //      unsigned subtraction wraps to ~4.29e9 and EVERY sample looks older
+    //      than the window -> the loop breaks immediately and stability
+    //      reported 0 samples until uptime exceeded the window length.
+    //   2) At the 49.7-day millis() rollover the same comparison inverts and
+    //      the buffer looks empty again. That one matters now: months-long
+    //      solar deployment is the whole point of the deep-sleep work.
+    // Comparing the unsigned DIFFERENCE is correct in both cases -- modular
+    // arithmetic makes (now - t) the true elapsed time straight through a wrap.
     int window(int sec, float& spdSd, float& dirSd) {
         spdSd = 0; dirSd = 0;
         uint32_t now = millis();
-        uint32_t cutoff = now - (uint32_t)sec * 1000UL;
+        uint32_t winMs = (uint32_t)sec * 1000UL;
         float sSum = 0, sSq = 0, cx = 0, cy = 0;
         int n = 0;
         for (int i = 0; i < count; i++) {
             int idx = (head - 1 - i + WINDSTATS_CAP) % WINDSTATS_CAP;
-            if (buf[idx].t < cutoff) break;              // older than window
+            if ((uint32_t)(now - buf[idx].t) > winMs) break;   // older than window
             sSum += buf[idx].spd;
             sSq  += buf[idx].spd * buf[idx].spd;
             float r = buf[idx].dir * (float)DEG_TO_RAD;
