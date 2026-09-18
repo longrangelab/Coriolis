@@ -304,14 +304,19 @@ public:
 // ----------------------------------------------------------------------------
 class ScreenFactory {
 public:
+    // Probe the I2C bus for a known OLED. If nothing answers at either address,
+    // return nullptr so the node runs headless -- wind transmission does not
+    // depend on the display. (Previously this always returned an SH1106 object
+    // even with no panel present, so callers' `if (screen)` guards could never
+    // trip and a missing display could fault on the first draw.)
     static Screen* create() {
         Wire.beginTransmission(OLED_I2C_ADDRESS);
         if (Wire.endTransmission() == 0) {
             Serial.println(F("[Screen] 0x3C present -> SSD1306"));
             return new SSD1306Screen();
         }
-        Serial.println(F("[Screen] 0x3C absent  -> SH1106 fallback"));
-        return new SH1106Screen();
+        Serial.println(F("[Screen] no OLED at 0x3C -> running headless"));
+        return nullptr;
     }
 };
 
