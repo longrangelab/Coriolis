@@ -81,6 +81,33 @@ public:
         else if (axp192) { on ? axp192->enableLDO3() : axp192->disableLDO3(); }
     }
 
+    // Enable or disable BATTERY CHARGING at the PMU. Returns true if a PMU was
+    // present and the call was issued. Used by the node's cold-charge cutoff:
+    // charging a sub-freezing Li-ion cell plates lithium and permanently damages
+    // it, so the node disables charge when it's too cold (or the temperature is
+    // unreadable -- fail-safe) and re-enables once it warms. Harmless on the
+    // receiver, which never calls it.
+    //
+    // Method names confirmed from XPowersLib source (github/lewisxhe/XPowersLib):
+    //   AXP2101: enableCellbatteryCharge() / disableCellbatteryCharge()
+    //            -> XPOWERS_AXP2101_CHARGE_GAUGE_WDT_CTRL reg 0x18, bit 1
+    //   AXP192:  enableCharge() / disableCharge()
+    //            -> charge control register 0x33, bit 7
+    // If AXP192 fails to compile, verify in your installed XPowersAXP192.tpp.
+    bool setChargeEnable(bool on) {
+        if (axp2101) {
+            if (on) axp2101->enableCellbatteryCharge();
+            else    axp2101->disableCellbatteryCharge();
+            return true;
+        }
+        if (axp192) {
+            if (on) axp192->enableCharge();
+            else    axp192->disableCharge();
+            return true;
+        }
+        return false;                                  // no PMU -> nothing to do
+    }
+
     float getBatteryVoltage() override {
         if (!power) return -1.0f;
         uint16_t mv = power->getBattVoltage();
