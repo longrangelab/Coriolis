@@ -109,18 +109,40 @@ public:
         : gpsSerial(serial), rxPin(rx), txPin(tx) {}
 
     void begin() override {
+        // The ESP32's default UART RX buffer is 256 B. A GPS emits its NMEA
+        // burst once per second -- typically 400-700 B arriving back-to-back.
+        // Any loop stall longer than ~250 ms (a ballistic solve, a beacon, a
+        // slow HTTP handler) overflowed the buffer and tore sentences in half;
+        // torn sentences fail their checksum, so TinyGPS++ never saw a valid
+        // fix even with perfect sky view. THIS -- not the antenna, not the
+        // module -- is the mechanism behind HANDOFF_v4 section 8.
+        // 1024 B holds a full burst through a multi-second stall.
+        // Must be called BEFORE begin() to take effect.
+        gpsSerial.setRxBufferSize(1024);
         gpsSerial.begin(9600, SERIAL_8N1, rxPin, txPin);
     }
 
+    // Drain the ENTIRE UART buffer, then report whether a fresh fix exists.
+    //
+    // The old version returned as soon as gps.encode() completed ONE sentence,
+    // leaving the rest of the burst rotting in the buffer -- so each call
+    // processed one sentence while ~5 arrived, the backlog compounded, and the
+    // overflow above was guaranteed even without loop stalls. Draining fully
+    // costs microseconds and makes the 1 Hz call rate (GPS_MS) sufficient.
+    //
+    // Return contract (slightly stronger than before, compatible with every
+    // existing caller): true = lat/lon were written from a VALID fix no older
+    // than 10 s. False = outputs untouched -- callers keep their last values,
+    // exactly as they already assume. The age check matters for the receiver:
+    // location.isValid() stays true forever after the first fix, even if the
+    // antenna is unplugged; age() is what says the data is still real.
     bool getCoordinates(double& latitude, double& longitude) override {
-        while (gpsSerial.available() > 0) {
-            if (gps.encode(gpsSerial.read())) {
-                if (gps.location.isValid()) {
-                    latitude  = gps.location.lat();
-                    longitude = gps.location.lng();
-                }
-                return true;
-            }
+        while (gpsSerial.available() > 0)
+            gps.encode(gpsSerial.read());
+        if (gps.location.isValid() && gps.location.age() < 10000) {
+            latitude  = gps.location.lat();
+            longitude = gps.location.lng();
+            return true;
         }
         return false;
     }
