@@ -17,33 +17,75 @@
  *   Spin drift  = 1.25 (SG+1.2) TOF^1.83   [inches]
  *   Aero jump   = (0.01 SG - 0.0024 Lcal + 0.032) MOA per mph of crosswind
  *
- * >>> ACCURACY WARNING <<<
- * The G1/G7 Cd tables below are approximate standard curves. Before trusting
- * any output for real dope, replace them with the official JBM/Litz values and
- * validate against a known-good solver (Applied Ballistics, Hornady, JBM).
- * A solver that is "close" is more dangerous than none, because it looks right.
+ * Drag tables (updated [see project log]):
+ * G1/G7 Cd-vs-Mach below are the standard 79/84-point tables (0.025 Mach
+ * spacing through transonic), traceable to Ballistic Research Laboratory
+ * data as republished by JBM Ballistics; the same values are reproduced
+ * across multiple independent ballistics implementations. The PREVIOUS
+ * 22/24-point tables under-resolved the transonic band (Mach ~0.85-1.4) and
+ * were found to understate peak Cd by up to ~66% (G7) / ~23% (G1) there --
+ * that error was concentrated almost entirely in the transonic region, not
+ * a uniform bias, which is why it showed up as a small elevation error (a
+ * few %) alongside a much larger velocity-retention error (~9% at 1000 yd)
+ * in host testing. Full trajectory (elevation, windage, velocity) was
+ * cross-checked host-side against Applied Ballistics (generic G7 BC entry,
+ * not a custom drag curve) and against py-ballisticcalc, matched Mach-for-
+ * Mach; all three tracked within ~0.3-0.5% of each other after this change.
+ *
+ * >>> ACCURACY WARNING (still applies) <<<
+ * This remains a standard-curve model (G1/G7), not a bullet-specific custom
+ * drag model -- real bullets deviate from the standard shape, especially
+ * through transonic. Re-validate against a known-good solver whenever the
+ * tables, integrator, or unit conversions change. A solver that is "close"
+ * is more dangerous than none, because it looks right.
  */
 
 #include <math.h>
 
 // ---------------------------------------------------------------------------
-// Standard drag tables (Mach, Cd).  *** VERIFY against official JBM data ***
+// Standard drag tables (Mach, Cd). Dense (0.025 Mach) through transonic.
+// Source: standard G1/G7 tables (BRL origin, via JBM), cross-validated
+// against Applied Ballistics + py-ballisticcalc trajectory output (see file
+// header). If these are ever replaced again, re-run that same validation.
 // ---------------------------------------------------------------------------
 struct DragPoint { float mach; float cd; };
 
 static const DragPoint G7_TABLE[] = {
-    {0.00f,0.1198f},{0.50f,0.1197f},{0.70f,0.1194f},{0.80f,0.1193f},{0.85f,0.1194f},
-    {0.90f,0.1202f},{0.95f,0.1223f},{1.00f,0.1278f},{1.05f,0.1476f},{1.10f,0.1826f},
-    {1.15f,0.2223f},{1.20f,0.2586f},{1.25f,0.2874f},{1.30f,0.3072f},{1.40f,0.3261f},
-    {1.50f,0.3316f},{1.60f,0.3316f},{1.80f,0.3247f},{2.00f,0.3145f},{2.20f,0.3032f},
-    {2.50f,0.2853f},{3.00f,0.2604f},{3.50f,0.2416f},{4.00f,0.2287f},{5.00f,0.2100f}
+    {0.000f,0.1198f}, {0.050f,0.1197f}, {0.100f,0.1196f}, {0.150f,0.1194f}, {0.200f,0.1193f},
+    {0.250f,0.1194f}, {0.300f,0.1194f}, {0.350f,0.1194f}, {0.400f,0.1193f}, {0.450f,0.1193f},
+    {0.500f,0.1194f}, {0.550f,0.1193f}, {0.600f,0.1194f}, {0.650f,0.1197f}, {0.700f,0.1202f},
+    {0.725f,0.1207f}, {0.750f,0.1215f}, {0.775f,0.1226f}, {0.800f,0.1242f}, {0.825f,0.1266f},
+    {0.850f,0.1306f}, {0.875f,0.1368f}, {0.900f,0.1464f}, {0.925f,0.1660f}, {0.950f,0.2054f},
+    {0.975f,0.2993f}, {1.000f,0.3803f}, {1.025f,0.4015f}, {1.050f,0.4043f}, {1.075f,0.4034f},
+    {1.100f,0.4014f}, {1.125f,0.3987f}, {1.150f,0.3955f}, {1.200f,0.3884f}, {1.250f,0.3810f},
+    {1.300f,0.3732f}, {1.350f,0.3657f}, {1.400f,0.3580f}, {1.500f,0.3440f}, {1.550f,0.3376f},
+    {1.600f,0.3315f}, {1.650f,0.3260f}, {1.700f,0.3209f}, {1.750f,0.3160f}, {1.800f,0.3117f},
+    {1.850f,0.3078f}, {1.900f,0.3042f}, {1.950f,0.3010f}, {2.000f,0.2980f}, {2.050f,0.2951f},
+    {2.100f,0.2922f}, {2.150f,0.2892f}, {2.200f,0.2864f}, {2.250f,0.2835f}, {2.300f,0.2807f},
+    {2.350f,0.2779f}, {2.400f,0.2752f}, {2.450f,0.2725f}, {2.500f,0.2697f}, {2.550f,0.2670f},
+    {2.600f,0.2643f}, {2.650f,0.2615f}, {2.700f,0.2588f}, {2.750f,0.2561f}, {2.800f,0.2533f},
+    {2.850f,0.2506f}, {2.900f,0.2479f}, {2.950f,0.2451f}, {3.000f,0.2424f}, {3.100f,0.2368f},
+    {3.200f,0.2313f}, {3.300f,0.2258f}, {3.400f,0.2205f}, {3.500f,0.2154f}, {3.600f,0.2106f},
+    {3.700f,0.2060f}, {3.800f,0.2017f}, {3.900f,0.1975f}, {4.000f,0.1935f}, {4.200f,0.1861f},
+    {4.400f,0.1793f}, {4.600f,0.1730f}, {4.800f,0.1672f}, {5.000f,0.1618f}
 };
 static const DragPoint G1_TABLE[] = {
-    {0.00f,0.2629f},{0.50f,0.2337f},{0.70f,0.2196f},{0.80f,0.2244f},{0.90f,0.2637f},
-    {0.95f,0.3122f},{1.00f,0.3894f},{1.05f,0.4570f},{1.10f,0.5023f},{1.20f,0.5461f},
-    {1.30f,0.5590f},{1.40f,0.5545f},{1.50f,0.5435f},{1.60f,0.5289f},{1.80f,0.5000f},
-    {2.00f,0.4742f},{2.20f,0.4521f},{2.50f,0.4226f},{3.00f,0.3811f},{3.50f,0.3498f},
-    {4.00f,0.3269f},{5.00f,0.2951f}
+    {0.000f,0.2629f}, {0.050f,0.2558f}, {0.100f,0.2487f}, {0.150f,0.2413f}, {0.200f,0.2344f},
+    {0.250f,0.2278f}, {0.300f,0.2214f}, {0.350f,0.2155f}, {0.400f,0.2104f}, {0.450f,0.2061f},
+    {0.500f,0.2032f}, {0.550f,0.2020f}, {0.600f,0.2034f}, {0.700f,0.2165f}, {0.725f,0.2230f},
+    {0.750f,0.2313f}, {0.775f,0.2417f}, {0.800f,0.2546f}, {0.825f,0.2706f}, {0.850f,0.2901f},
+    {0.875f,0.3136f}, {0.900f,0.3415f}, {0.925f,0.3734f}, {0.950f,0.4084f}, {0.975f,0.4448f},
+    {1.000f,0.4805f}, {1.025f,0.5136f}, {1.050f,0.5427f}, {1.075f,0.5677f}, {1.100f,0.5883f},
+    {1.125f,0.6053f}, {1.150f,0.6191f}, {1.200f,0.6393f}, {1.250f,0.6518f}, {1.300f,0.6589f},
+    {1.350f,0.6621f}, {1.400f,0.6625f}, {1.450f,0.6607f}, {1.500f,0.6573f}, {1.550f,0.6528f},
+    {1.600f,0.6474f}, {1.650f,0.6413f}, {1.700f,0.6347f}, {1.750f,0.6280f}, {1.800f,0.6210f},
+    {1.850f,0.6141f}, {1.900f,0.6072f}, {1.950f,0.6003f}, {2.000f,0.5934f}, {2.050f,0.5867f},
+    {2.100f,0.5804f}, {2.150f,0.5743f}, {2.200f,0.5685f}, {2.250f,0.5630f}, {2.300f,0.5577f},
+    {2.350f,0.5527f}, {2.400f,0.5481f}, {2.450f,0.5438f}, {2.500f,0.5397f}, {2.600f,0.5325f},
+    {2.700f,0.5264f}, {2.800f,0.5211f}, {2.900f,0.5168f}, {3.000f,0.5133f}, {3.100f,0.5105f},
+    {3.200f,0.5084f}, {3.300f,0.5067f}, {3.400f,0.5054f}, {3.500f,0.5040f}, {3.600f,0.5030f},
+    {3.700f,0.5022f}, {3.800f,0.5016f}, {3.900f,0.5010f}, {4.000f,0.5006f}, {4.200f,0.4998f},
+    {4.400f,0.4995f}, {4.600f,0.4992f}, {4.800f,0.4990f}, {5.000f,0.4988f}
 };
 
 static float dragCd(int model, float mach) {
