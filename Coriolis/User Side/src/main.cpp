@@ -324,6 +324,29 @@ uint8_t buildActiveWind(uint8_t* out) {
     return n;
 }
 
+// Average the wind of the given nodes as VECTORS (speed x direction).
+// Averaging speed and direction separately invents wind: 10 mph from 0 deg and
+// 10 mph from 180 deg net to zero, but a plain speed average (10) glued to a
+// unit-vector direction (rounding noise, ~270 deg here) showed a full 10 mph
+// crosswind. The vector mean's components are exactly the mean crosswind and
+// headwind for any firing line. Returns false if there are no nodes.
+bool vectorMeanWind(const uint8_t* ids, uint8_t n, float& speed, float& dirDeg) {
+    speed = 0; dirDeg = 0;
+    if (n == 0) return false;
+    float sx = 0, sy = 0;
+    for (uint8_t i = 0; i < n; i++) {
+        const NodeView& nv = nodes[ids[i]];
+        float r = nv.windDir * (float)DEG_TO_RAD;
+        sx += nv.windSpeed * cosf(r);
+        sy += nv.windSpeed * sinf(r);
+    }
+    sx /= n; sy /= n;
+    speed  = sqrtf(sx * sx + sy * sy);
+    dirDeg = atan2f(sy, sx) * (float)RAD_TO_DEG;
+    if (dirDeg < 0) dirDeg += 360.0f;
+    return true;
+}
+
 int battPctFromVolts(float v) {
     if (v <= 0) return -1;
     int p = (int)((v - 3.3f) / (4.2f - 3.3f) * 100.0f + 0.5f);
@@ -444,22 +467,18 @@ void drawCurrentView() {
         // the subset that votes on the wind figure.
         uint8_t activeW[MAX_NODES];
         uint8_t nw = buildActiveWind(activeW);
-        float sumSpeed = 0, sx = 0, sy = 0;
         float sumTempF = 0, sumPresHg = 0; int nEnv = 0;
         for (uint8_t i = 0; i < nw; i++) {
             NodeView& nv = nodes[activeW[i]];
-            sumSpeed += nv.windSpeed;
-            float r = nv.windDir * (float)DEG_TO_RAD;
-            sx += cosf(r); sy += sinf(r);
             if (nv.pressurePa > 0) {                 // only nodes with a baro
                 sumTempF  += nv.temperatureC * 9.0f / 5.0f + 32.0f;
                 sumPresHg += nv.pressurePa / 3386.389f;
                 nEnv++;
             }
         }
-        float avgSpeed = (nw > 0) ? sumSpeed / nw : 0;
-        int   avgDir   = 0;
-        if (nw > 0) { avgDir = (int)(atan2f(sy, sx) * RAD_TO_DEG + 0.5f); if (avgDir < 0) avgDir += 360; }
+        float avgSpeed = 0, avgDirF = 0;
+        vectorMeanWind(activeW, nw, avgSpeed, avgDirF);
+        int   avgDir   = (int)(avgDirF + 0.5f) % 360;
         float avgTempF = (nEnv > 0) ? sumTempF  / nEnv : 0;
         float avgPresHg= (nEnv > 0) ? sumPresHg / nEnv : 0;
         screen->drawGeneral(nw, avgSpeed, avgDir, avgTempF, avgPresHg,
@@ -551,20 +570,21 @@ String buildDataJson() {
     uint8_t activeW[MAX_NODES];
     uint8_t nw = buildActiveWind(activeW);
 
-    float sumSpd = 0, sx = 0, sy = 0, sumSpdSd = 0, sumDirSd = 0, sumT = 0, sumP = 0;
+    float sumSpd = 0, sumSpdSd = 0, sumDirSd = 0, sumT = 0, sumP = 0;
     int   nEnv = 0;
     for (uint8_t i = 0; i < nw; i++) {
         NodeView& nv = nodes[activeW[i]];
         sumSpd += nv.windSpeed; sumSpdSd += nv.windSpeedSd; sumDirSd += nv.windDirSd;
-        float r = nv.windDir * (float)DEG_TO_RAD; sx += cosf(r); sy += sinf(r);
     }
     for (uint8_t i = 0; i < n; i++) {
         NodeView& nv = nodes[active[i]];
         if (nv.pressurePa > 0) { sumT += nv.temperatureC*9.0f/5.0f+32.0f; sumP += nv.pressurePa/3386.389f; nEnv++; }
     }
-    float avgSpeed = nw ? sumSpd/nw : 0;
-    int   avgDir = 0;
-    if (nw) { avgDir = (int)(atan2f(sy, sx) * RAD_TO_DEG + 0.5f); if (avgDir < 0) avgDir += 360; }
+    float avgSpeed = 0, avgDirF = 0;
+    vectorMeanWind(activeW, nw, avgSpeed, avgDirF);    // vector mean, see helper
+    int   avgDir = (int)(avgDirF + 0.5f) % 360;
+    // 1 = all meters agree on the wind; near 0 = they cancel each other out.
+    float agree = (sumSpd > 0) ? avgSpeed / (sumSpd / nw) : 1.0f;
     float avgSpdSd = nw ? sumSpdSd/nw : 0, avgDirSd = nw ? sumDirSd/nw : 0;
     float avgT = nEnv ? sumT/nEnv : 0, avgP = nEnv ? sumP/nEnv : 0;
     bool baseFix = (rxLat != 0 && rxLon != 0);
@@ -576,6 +596,7 @@ String buildDataJson() {
     j += ",\"gps\":" + String(baseFix ? "true":"false") + "},";
     j += "\"avg\":{\"count\":" + String(nw) + ",\"seen\":" + String(n) + ",\"speed\":" + String(avgSpeed,2);
     j += ",\"speedSd\":" + String(avgSpdSd,2) + ",\"dir\":" + String(avgDir);
+    j += ",\"agree\":" + String(agree,2);
     j += ",\"dirSd\":" + String(avgDirSd,1) + ",\"tempF\":" + String(avgT,1);
     j += ",\"presInHg\":" + String(avgP,2) + "},\"nodes\":[";
     for (uint8_t i = 0; i < n; i++) {
@@ -1033,18 +1054,11 @@ void loop() {
 
     webui.handle();        // service phone dashboard requests
 
-    // feed the rolling stability buffer with the unweighted aggregate wind
+    // feed the rolling stability buffer with the unweighted aggregate (vector-mean) wind
     {
         uint8_t act[MAX_NODES]; uint8_t na = buildActiveWind(act);   // wind-valid only
-        float ss = 0, sx = 0, sy = 0;
-        for (uint8_t i = 0; i < na; i++) {
-            NodeView& nv = nodes[act[i]];
-            ss += nv.windSpeed;
-            float r = nv.windDir * (float)DEG_TO_RAD; sx += cosf(r); sy += sinf(r);
-        }
-        float aggSpd = na ? ss/na : 0;
-        float aggDir = 0;
-        if (na) { aggDir = atan2f(sy, sx) * RAD_TO_DEG; if (aggDir < 0) aggDir += 360; }
+        float aggSpd = 0, aggDir = 0;
+        vectorMeanWind(act, na, aggSpd, aggDir);                       // vector mean
         windStats.update(aggSpd, aggDir, na > 0);
     }
 
