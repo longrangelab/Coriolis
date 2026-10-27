@@ -163,6 +163,7 @@ struct NodeView {
     float    rssi = 0, snr = 0;
     uint32_t lastSeen = 0;
     bool     sleeping = false;    // last packet carried FLAG_SLEEP_ACK
+    bool     resetReported = false; // already logged the current FLAG_NODE_RESET run
 };
 NodeView nodes[MAX_NODES];
 
@@ -421,6 +422,13 @@ void ingestPacket(const NodePacket& p, float rssi, float snr) {
     // bit tracks sleep state exactly: present = "about to sleep again",
     // absent = "staying awake".
     nv.sleeping    = (p.flags & FLAG_SLEEP_ACK) != 0;
+    // FLAG_NODE_RESET: the node's watchdog (or a crash/brownout) rebooted it
+    // recently. Logged once per episode so a field failure leaves a trace here.
+    bool resetNow  = (p.flags & FLAG_NODE_RESET) != 0;
+    if (resetNow && !nv.resetReported)
+        Serial.printf("[node %d] reported an unexpected reboot (watchdog / crash / brownout) -- recovered\n",
+                      p.node_id);
+    nv.resetReported = resetNow;
     nv.lastSeen    = millis();
     lastRxMs       = millis();          // feed the RX watchdog
 
