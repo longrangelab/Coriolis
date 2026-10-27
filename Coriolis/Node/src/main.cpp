@@ -21,7 +21,9 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
-#include <esp_system.h>          // esp_restart() -- I2C recovery last resort
+#include <esp_system.h>          // esp_restart(), esp_reset_reason()
+#include <esp_idf_version.h>     // picks the watchdog API (IDF 4 vs 5)
+#include <esp_task_wdt.h>        // watchdog: a frozen node reboots itself
 
 #include "screen.h"
 #include "Power.h"
@@ -130,7 +132,7 @@ Preferences    prefs;
 uint8_t    nodeId = DEFAULT_NODE_ID;
 bool       baroOk = false, attinyOk = false;
 
-// ---- state that must SURVIVE deep sleep (RTC slow memory, ~8 KB) ----
+// ---- state that must SURVIVE deep sleep AND crash resets (RTC slow memory) ----
 // Ordinary globals are lost on deep sleep (it's a reboot). Everything the node
 // needs to resume without re-doing work lives here: whether we're in sleep
 // mode, the duty we chose, the last known TDMA cycle length (sizes the beacon
@@ -138,26 +140,60 @@ bool       baroOk = false, attinyOk = false;
 // fix. Without the RTC-cached fix, every wake would re-power the GPS and burn
 // 30+ s at ~40 mA hunting satellites, which would erase the entire point of
 // sleeping.
-RTC_DATA_ATTR bool     rtcSleepMode   = false;
-RTC_DATA_ATTR uint16_t rtcDutySec     = SLEEP_DUTY_MIN_S;
-RTC_DATA_ATTR uint16_t rtcCycleMs     = (MIN_SLOTS + 1) * SLOT_MS;
-RTC_DATA_ATTR uint8_t  rtcSilentWakes = 0;
+//
+// RTC_NOINIT_ATTR, not RTC_DATA_ATTR: RTC_DATA_ATTR variables are re-initialized
+// on EVERY reset except a deep-sleep wake -- including a watchdog, panic,
+// brownout or esp_restart(). That silently dropped a deployed node out of sleep
+// mode after any crash, and reset the I2C self-reset cap so it could never
+// stop. NOINIT memory keeps its contents across those resets; rtcStateInit()
+// fills in defaults only on a real power-up / reset-button press, or if the
+// magic word says the memory holds garbage.
+#define RTC_STATE_MAGIC 0xC0E10A5Bu
+RTC_NOINIT_ATTR uint32_t rtcMagic;
+RTC_NOINIT_ATTR bool     rtcSleepMode;
+RTC_NOINIT_ATTR uint16_t rtcDutySec;
+RTC_NOINIT_ATTR uint16_t rtcCycleMs;
+RTC_NOINIT_ATTR uint8_t  rtcSilentWakes;
 // I2C self-reset counter, persisted so a deployed (sleeping) node can't boot-loop
 // on a permanently stuck bus: after I2C_MAX_RESETS it stops resetting and just
 // runs degraded. Cleared once a read succeeds (see readAttiny recovery path).
-RTC_DATA_ATTR uint8_t  rtcI2cResets   = 0;
+RTC_NOINIT_ATTR uint8_t  rtcI2cResets;
 // Failure-run counters, RTC-persisted so escalation accumulates even in sleep
 // mode -- there the node reads once per wake then deep-sleeps (a reboot), so
 // plain statics would reset every wake and never reach the recovery threshold.
-RTC_DATA_ATTR uint8_t  rtcNackRun     = 0;   // consecutive failed reads
-RTC_DATA_ATTR uint8_t  rtcClearRun    = 0;   // consecutive bus-clears that didn't help
-RTC_DATA_ATTR bool     rtcGpsFix      = false;
-RTC_DATA_ATTR double   rtcLat = 0, rtcLon = 0;
-RTC_DATA_ATTR uint32_t rtcWakeCount   = 0;
+RTC_NOINIT_ATTR uint8_t  rtcNackRun;     // consecutive failed reads
+RTC_NOINIT_ATTR uint8_t  rtcClearRun;    // consecutive bus-clears that didn't help
+RTC_NOINIT_ATTR bool     rtcGpsFix;
+RTC_NOINIT_ATTR double   rtcLat, rtcLon;
+RTC_NOINIT_ATTR uint32_t rtcWakeCount;
 // Cold-charge cutoff state, persisted across deep sleep so hysteresis carries
 // over between wakes (and matches what the PMU is actually doing). Starts true:
 // on a fresh boot charging is allowed until the first reading says otherwise.
-RTC_DATA_ATTR bool     rtcChargeAllowed = true;
+RTC_NOINIT_ATTR bool     rtcChargeAllowed;
+// Crash bookkeeping: how many unexpected resets since power-up, and the
+// reason for the most recent one (esp_reset_reason_t). Packets carry
+// FLAG_NODE_RESET for a while after one so the base can log it.
+RTC_NOINIT_ATTR uint16_t rtcCrashCount;
+RTC_NOINIT_ATTR uint8_t  rtcLastCrash;
+RTC_NOINIT_ATTR uint8_t  rtcResetFlagTx;  // packets left to carry FLAG_NODE_RESET
+
+void rtcStateDefaults() {
+    rtcSleepMode   = false;
+    rtcDutySec     = SLEEP_DUTY_MIN_S;
+    rtcCycleMs     = (MIN_SLOTS + 1) * SLOT_MS;
+    rtcSilentWakes = 0;
+    rtcI2cResets   = 0;
+    rtcNackRun     = 0;
+    rtcClearRun    = 0;
+    rtcGpsFix      = false;
+    rtcLat = 0; rtcLon = 0;
+    rtcWakeCount   = 0;
+    rtcChargeAllowed = true;
+    rtcCrashCount  = 0;
+    rtcLastCrash   = ESP_RST_UNKNOWN;
+    rtcResetFlagTx = 0;
+    rtcMagic       = RTC_STATE_MAGIC;
+}
 
 // GPS (cached once, then powered down)
 bool       gpsFixCached = false;
@@ -347,6 +383,9 @@ void readSensors(NodeReading& r) {
     r.latitude  = cachedLat;
     r.longitude = cachedLon;
     r.batteryVolts = power.getBatteryVoltage();
+    // Every readSensors() feeds exactly one transmit, so count the flag down here.
+    r.nodeReset = (rtcResetFlagTx > 0);
+    if (rtcResetFlagTx > 0) rtcResetFlagTx--;
     current = r;
 
     // Gate charging on temperature (cold-guard) -- but only while asleep or
@@ -377,6 +416,52 @@ void printReading(const NodeReading& r) {
     else            Serial.println(F("  GPS          : -- (acquiring)"));
     Serial.printf("  Battery      : %.2f V (%d%%)\n",
                   r.batteryVolts, (int)power.getBatteryPercentage());
+}
+
+// ============================================================================
+// WATCHDOG + RESET REASON
+// ============================================================================
+// Nothing used to catch a hang: a node that froze while asleep (screen dark,
+// radio silent) stayed frozen until someone pressed reset. The task watchdog
+// now reboots the ESP32 if setup()/loop()/a check-in stops feeding it for
+// WDT_TIMEOUT_S. Because sleep state now survives that reboot, a node that
+// was deployed asleep goes straight back to its check-in cycle.
+#define WDT_TIMEOUT_S        30      // longest legit stall is a ~16 s listen window
+#define RESET_FLAG_PACKETS   20      // packets that carry FLAG_NODE_RESET after a crash
+
+void armWatchdog() {
+#if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t cfg = { .timeout_ms = WDT_TIMEOUT_S * 1000,
+                                  .idle_core_mask = (1 << 0),
+                                  .trigger_panic = true };
+    if (esp_task_wdt_reconfigure(&cfg) != ESP_OK) esp_task_wdt_init(&cfg);
+#else
+    esp_task_wdt_init(WDT_TIMEOUT_S, true);   // IDF 4.x: reconfigures if already up
+#endif
+    esp_task_wdt_add(NULL);                   // watch the Arduino loop task
+}
+inline void feedWatchdog() { esp_task_wdt_reset(); }
+
+const char* resetReasonName(int r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "power-on / reset button";
+        case ESP_RST_EXT:       return "external reset";
+        case ESP_RST_SW:        return "software restart";
+        case ESP_RST_PANIC:     return "crash (panic)";
+        case ESP_RST_INT_WDT:   return "interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "task watchdog (hang)";
+        case ESP_RST_WDT:       return "other watchdog";
+        case ESP_RST_DEEPSLEEP: return "deep-sleep wake";
+        case ESP_RST_BROWNOUT:  return "brownout (supply dipped)";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "unknown";
+    }
+}
+
+// Was this boot caused by a fault rather than a person or a sleep timer?
+bool isUnexpectedReset(esp_reset_reason_t r) {
+    return r == ESP_RST_SW || r == ESP_RST_PANIC || r == ESP_RST_INT_WDT ||
+           r == ESP_RST_TASK_WDT || r == ESP_RST_WDT || r == ESP_RST_BROWNOUT;
 }
 
 // ============================================================================
@@ -485,6 +570,7 @@ void sleepCheckIn() {
             enterDeepSleep(nextDuty(r));                   // no return
         }
         delay(2);
+        feedWatchdog();
     }
 
     // Silence. Base off, out of range, or we straddled its beacon badly.
@@ -562,11 +648,35 @@ void setup() {
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
     bool timerWake  = (cause == ESP_SLEEP_WAKEUP_TIMER);
     bool buttonWake = (cause == ESP_SLEEP_WAKEUP_EXT0);
-    quickWake = rtcSleepMode && timerWake;
+
+    // Why did the chip reset? A deep-sleep wake or a deliberate power-on /
+    // reset-button press is normal; a watchdog, panic, brownout or
+    // esp_restart() means something went wrong while unattended.
+    esp_reset_reason_t why = esp_reset_reason();
+    bool crashed = isUnexpectedReset(why);
+    if (rtcMagic != RTC_STATE_MAGIC || why == ESP_RST_POWERON || why == ESP_RST_EXT)
+        rtcStateDefaults();                       // fresh start: forget everything
+    if (crashed) {
+        if (rtcCrashCount < 0xFFFF) rtcCrashCount++;
+        rtcLastCrash = (uint8_t)why;
+        rtcResetFlagTx = RESET_FLAG_PACKETS;
+    }
+    armWatchdog();
+
+    // A node that was asleep and crashed goes straight back to its check-in
+    // cycle, exactly like a timer wake. Before, it came up fully awake (GPS,
+    // screen, constant RX) and never slept again if no beacon was heard.
+    quickWake = rtcSleepMode && (timerWake || crashed);
 
     delay(quickWake ? 50 : 300);          // quick wakes skip the settle delay
     Serial.printf("\n=== Wind Node booting (%s) ===\n",
-                  quickWake ? "timer wake" : buttonWake ? "button wake" : "cold boot");
+                  quickWake ? (timerWake ? "timer wake" : "recovering asleep")
+                            : buttonWake ? "button wake" : "cold boot");
+    Serial.printf("[boot] reset reason: %s", resetReasonName(why));
+    if (rtcCrashCount)
+        Serial.printf("  (unexpected resets since power-up: %u, last: %s)",
+                      rtcCrashCount, resetReasonName(rtcLastCrash));
+    Serial.println();
 
     WiFi.mode(WIFI_OFF); btStop();                     // radios we don't use -> off
     setCpuFrequencyMhz(80);                            // lower CPU clock (battery)
@@ -579,6 +689,7 @@ void setup() {
     Serial.printf("Node ID: %d\n", nodeId);
 
     power.init();
+    if (!quickWake) power.printPowerOffReason();   // why the PMU last cut power
 
     // Restore the GPS fix cached before sleep -- the single biggest power win
     // of the RTC state. The rail was re-enabled by power.init(); if we already
@@ -636,6 +747,7 @@ void setup() {
 // LOOP
 // ============================================================================
 void loop() {
+    feedWatchdog();
     // ---- 1) beacon sync ----
     BeaconPacket b;
     if (radio.pollBeacon(b)) {

@@ -108,6 +108,28 @@ public:
         return false;                                  // no PMU -> nothing to do
     }
 
+    // Print why the PMU last powered the board OFF and what turned it back ON.
+    // The AXP2101 latches these in registers 0x20/0x21, so after a field node
+    // is found dead and powered back up, the serial log names the cause
+    // (over-temperature, VBUS over-voltage from a solar panel, VSYS/DCDC
+    // under-voltage, a long press...). AXP192 has no equivalent; prints nothing.
+    void printPowerOffReason() {
+        if (!axp2101) return;
+        int on  = axp2101->readRegister(0x20);
+        int off = axp2101->readRegister(0x21);
+        Serial.printf("[pmu] power-on src 0x%02X, last power-off src 0x%02X:", on & 0xFF, off & 0xFF);
+        if (off <= 0) { Serial.println(F(" none recorded")); return; }
+        if (axp2101->isOverTemperatureOffSource())  Serial.print(F(" PMU-over-temperature"));
+        if (axp2101->isDcOverVoltageOffSource())    Serial.print(F(" DCDC-over-voltage"));
+        if (axp2101->isDcUnderVoltageOffSource())   Serial.print(F(" DCDC-under-voltage"));
+        if (axp2101->isVbusOverVoltageOffSource())  Serial.print(F(" VBUS-over-voltage(solar?)"));
+        if (axp2101->isVsysUnderVoltageOffSource()) Serial.print(F(" VSYS-under-voltage(battery)"));
+        if (axp2101->isPwronAlwaysLowOffSource())   Serial.print(F(" PWRON-held-low"));
+        if (axp2101->isSwConfigOffSource())         Serial.print(F(" software-shutdown"));
+        if (axp2101->isPwrSourcePullDown())         Serial.print(F(" power-key-long-press"));
+        Serial.println();
+    }
+
     float getBatteryVoltage() override {
         if (!power) return -1.0f;
         uint16_t mv = power->getBattVoltage();
