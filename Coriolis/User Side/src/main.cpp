@@ -315,11 +315,15 @@ uint8_t buildActive(uint8_t* out) {
 // plain buildActive() list is still used for display/telemetry, so a node with
 // a dead anemometer stays visible on the UI (with its own tab and battery/RSSI)
 // instead of vanishing -- it just stops voting on the wind call.
+//
+// Wind must also be RECENT: a sleeping node stays "present" for up to 11 min
+// between check-ins, but a reading that old is not current wind. So wind only
+// votes within the normal awake timeout, whatever the node's sleep state.
 uint8_t buildActiveWind(uint8_t* out) {
     uint8_t n = 0;
     uint32_t now = millis();
     for (uint8_t id = 1; id < MAX_NODES; id++)
-        if (nodes[id].seen && (now - nodes[id].lastSeen) < nodeTimeoutFor(nodes[id]) && nodes[id].windValid)
+        if (nodes[id].seen && (now - nodes[id].lastSeen) < NODE_TIMEOUT_MS && nodes[id].windValid)
             out[n++] = id;
     return n;
 }
