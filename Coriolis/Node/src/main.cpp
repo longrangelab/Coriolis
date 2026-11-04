@@ -176,6 +176,12 @@ RTC_NOINIT_ATTR bool     rtcChargeAllowed;
 RTC_NOINIT_ATTR uint16_t rtcCrashCount;
 RTC_NOINIT_ATTR uint8_t  rtcLastCrash;
 RTC_NOINIT_ATTR uint8_t  rtcResetFlagTx;  // packets left to carry FLAG_NODE_RESET
+// ATtiny freshness: the ATtiny puts a publish sequence (1..63) in rawADC bits
+// 10-15. If it stops changing, its main loop has stalled even though I2C still
+// answers. rtcSeqSeen stays false for older ATtiny firmware (bits always 0),
+// which keeps the old behaviour.
+RTC_NOINIT_ATTR bool     rtcSeqSeen;
+RTC_NOINIT_ATTR uint8_t  rtcLastSeq;
 
 void rtcStateDefaults() {
     rtcSleepMode   = false;
@@ -192,6 +198,8 @@ void rtcStateDefaults() {
     rtcCrashCount  = 0;
     rtcLastCrash   = ESP_RST_UNKNOWN;
     rtcResetFlagTx = 0;
+    rtcSeqSeen     = false;
+    rtcLastSeq     = 0;
     rtcMagic       = RTC_STATE_MAGIC;
 }
 
@@ -201,8 +209,17 @@ double     cachedLat = 0, cachedLon = 0;
 
 // sleep bookkeeping (normal RAM -- valid only while awake)
 bool       quickWake = false;          // this boot is a timer wake from sleep
-uint32_t   sleepIgnoreUntil = 0;       // button-wake grace window
+bool       buttonGrace = false;        // woken by the button while deployed
+uint32_t   buttonWakeMs = 0;           // when that happened (elapsed-time compare)
 bool       pendingSleepAck = false;    // next slot TX should carry the ack
+uint32_t   lastRadioRetryMs = 0;       // radio.begin() retry pacing
+uint32_t   lastAttinyReadMs = 0;       // spacing between ATtiny reads
+bool       firstAttinyRead  = true;    // first read since this boot
+
+// Button-wake grace: a human woke a deployed node to look at it.
+static inline bool inButtonGrace() {
+    return buttonGrace && (uint32_t)(millis() - buttonWakeMs) < BUTTON_WAKE_GRACE_MS;
+}
 
 // wind hold-last-good
 AttinyWind lastWind = {0,0,0,0,0,0};
@@ -354,7 +371,25 @@ void applyColdChargePolicy(const NodeReading& r) {
 void readSensors(NodeReading& r) {
     AttinyWind w;
     attinyOk = readAttiny(w);
-    if (attinyOk) { lastWind = w; haveWind = true; lastWindMs = millis(); }
+    if (attinyOk) {
+        // Only count the read as FRESH if the ATtiny's publish sequence moved.
+        // It publishes every 1 s, so two reads >= 1.5 s apart (or across a
+        // deep sleep) with the same sequence mean its sampling loop is stuck.
+        uint8_t seq = (uint8_t)(w.rawADC >> 10);
+        bool fresh = true;
+        if (seq == 0) {
+            fresh = !rtcSeqSeen;               // seq-aware ATtiny, no data yet (just reset)
+        } else {
+            bool spaced = firstAttinyRead || (uint32_t)(millis() - lastAttinyReadMs) >= 1500;
+            if (rtcSeqSeen && seq == rtcLastSeq && spaced) fresh = false;
+            rtcSeqSeen = true;
+            rtcLastSeq = seq;
+        }
+        firstAttinyRead  = false;
+        lastAttinyReadMs = millis();
+        if (fresh) { lastWind = w; haveWind = true; lastWindMs = millis(); }
+        else Serial.println(F("[ATtiny] frame not updated -- sensor stalled or just reset"));
+    }
     if (haveWind) {
         r.windSpeed   = lastWind.speed_avg / 100.0f;
         r.windSpeedSd = lastWind.speed_sd  / 100.0f;
@@ -442,6 +477,18 @@ void armWatchdog() {
 }
 inline void feedWatchdog() { esp_task_wdt_reset(); }
 
+// Start the LoRa radio, retrying up to `attempts` times. radio.begin() resets
+// and reconfigures the SX1276, so calling it again after a failure is safe.
+#define RADIO_RETRY_MS  10000UL   // awake: retry a dead radio this often
+bool startRadio(uint8_t attempts) {
+    for (uint8_t i = 0; i < attempts; i++) {
+        if (radio.begin()) return true;
+        feedWatchdog();
+        delay(200);
+    }
+    return false;
+}
+
 const char* resetReasonName(int r) {
     switch (r) {
         case ESP_RST_POWERON:   return "power-on / reset button";
@@ -492,6 +539,9 @@ uint16_t chooseDutySec(float battV, float tempC, bool tempValid) {
     uint16_t duty = SLEEP_DUTY_MIN_S;                  // 20 s baseline
     if (battV > 0 && battV < 3.40f)
         duty = SLEEP_DUTY_MAX_S;                       // <= ~10% -- protect battery
+    else if (battV <= 0)
+        duty = 60;                                     // can't read the battery (PMU or
+                                                       // bus trouble): don't assume it's fine
     // Temperature overrides (cold conserves more aggressively than low battery).
     if (tempValid) {
         if (tempC < 0.0f)      duty = max(duty, (uint16_t)SLEEP_DUTY_MAX_S);
@@ -512,7 +562,13 @@ void enterDeepSleep(uint16_t sec) {
     radio.sleepRadio();                    // SX1276 -> ~1 uA sleep mode
     power.gpsPower(false);                 // GPS rail off (fix is in RTC memory)
     esp_sleep_enable_timer_wakeup((uint64_t)sec * 1000000ULL);
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_38, 0);   // button = manual wake
+    // Button = manual wake. If the line is already low (stuck button, water in
+    // the switch), arming a level wake would wake us instantly forever, so
+    // fall back to timer-only for this sleep.
+    if (digitalRead(BUTTON_PIN) == HIGH)
+        esp_sleep_enable_ext0_wakeup(GPIO_NUM_38, 0);
+    else
+        Serial.println(F("[sleep] button reads pressed -- timer wake only"));
     esp_deep_sleep_start();                // never returns
 }
 
@@ -576,11 +632,20 @@ void sleepCheckIn() {
     // Silence. Base off, out of range, or we straddled its beacon badly.
     rtcSilentWakes++;
     Serial.printf("[sleep] no beacon (%u consecutive)\n", rtcSilentWakes);
+
+    // Still check battery and temperature, so the cold-charge cutoff and the
+    // duty keep tracking conditions while the base is off. Before, a node
+    // whose base was down for days never re-evaluated charging.
+    uint8_t keepFlag = rtcResetFlagTx;      // nothing is sent on this path, so
+    NodeReading r; readSensors(r);          // don't use up a reset-flag packet
+    rtcResetFlagTx = keepFlag;
+    uint16_t d = chooseDutySec(r.batteryVolts, r.temperatureC, r.baroValid);
     if (rtcSilentWakes >= SLEEP_SILENT_LIMIT) {
-        uint16_t d = rtcDutySec * 2;
-        if (d > SLEEP_DUTY_MAX_S) d = SLEEP_DUTY_MAX_S;
-        rtcDutySec = d;
+        uint16_t esc = rtcDutySec * 2;
+        if (esc > SLEEP_DUTY_MAX_S) esc = SLEEP_DUTY_MAX_S;
+        if (esc > d) d = esc;
     }
+    rtcDutySec = d;
     enterDeepSleep(rtcDutySec);                            // no return
 }
 
@@ -691,6 +756,35 @@ void setup() {
     power.init();
     if (!quickWake) power.printPowerOffReason();   // why the PMU last cut power
 
+    // The PMU stays powered through ESP32 resets and keeps its charge-enable
+    // bit, but our record of it (rtcChargeAllowed) resets to "allowed" on a
+    // power-on or reset-button boot. The policy only writes the PMU when the
+    // two differ, so a mismatch could leave charging off for good. Make the PMU
+    // match our record now; the policy then corrects it from real readings.
+    {
+        int pmuCharge = power.getChargeEnable();
+        if (pmuCharge >= 0 && (pmuCharge == 1) != rtcChargeAllowed) {
+            Serial.printf("[charge] PMU had charging %s, firmware expected %s -- syncing\n",
+                          pmuCharge ? "ON" : "OFF", rtcChargeAllowed ? "ON" : "OFF");
+            power.setChargeEnable(rtcChargeAllowed);
+        }
+    }
+
+    // A brownout means the battery sagged under load (typically the radio in
+    // the cold). Booting straight back into a transmit just browns out again,
+    // in a loop that never sleeps. Rest first: sleep the maximum duty with the
+    // radio untouched, and try again when the cell has recovered a little.
+    if (why == ESP_RST_BROWNOUT) {
+        float v = power.getBatteryVoltage();
+        if (rtcSleepMode || (v > 0 && v < 3.6f)) {
+            Serial.printf("[boot] brownout (battery %.2f V) -- resting %u s before using the radio\n",
+                          v, (unsigned)SLEEP_DUTY_MAX_S);
+            radio.begin();                         // only so enterDeepSleep can put the
+                                                   // SX1276 to sleep; no transmit
+            enterDeepSleep(SLEEP_DUTY_MAX_S);      // no return
+        }
+    }
+
     // Restore the GPS fix cached before sleep -- the single biggest power win
     // of the RTC state. The rail was re-enabled by power.init(); if we already
     // have a position, turn it straight back off.
@@ -706,7 +800,14 @@ void setup() {
     // the screen simply never comes on.
     if (quickWake) {
         baroOk = baro.init();
-        radio.begin();
+        // A radio that fails to start (supply dip in the cold, SPI glitch) used
+        // to leave the node silent forever while everything else, including
+        // the watchdog, looked healthy. Retry once, and if it still fails,
+        // sleep and try again on the next wake instead of listening deaf.
+        if (!startRadio(2)) {
+            Serial.println(F("[LoRa] radio won't start -- sleeping, will retry next wake"));
+            enterDeepSleep(rtcDutySec);            // no return
+        }
         sleepCheckIn();          // returns ONLY if the base wants us awake...
 
         // ...in which case finish becoming a normal awake node:
@@ -722,7 +823,10 @@ void setup() {
     if (buttonWake && rtcSleepMode) {
         // A human pressed the button on a sleeping node: stay awake long
         // enough to be looked at, even though the fleet is in sleep mode.
-        sleepIgnoreUntil = millis() + BUTTON_WAKE_GRACE_MS;
+        // When the grace period ends, loop() puts it back to sleep if the base
+        // isn't around to do it (see the button-grace check there).
+        buttonGrace = true;
+        buttonWakeMs = millis();
         Serial.println(F("[sleep] button wake -- ignoring sleep cmds for 60 s"));
     }
 
@@ -737,7 +841,9 @@ void setup() {
     Wire.beginTransmission(ATTINY_ADDR);
     Serial.println(Wire.endTransmission() == 0 ? F("[ATtiny] found") : F("[ATtiny] NOT found"));
 
-    radio.begin();
+    if (!startRadio(3))
+        Serial.println(F("[LoRa] radio won't start -- will keep retrying from loop()"));
+    lastRadioRetryMs = millis();
 
     lastActivity = millis();
     Serial.println(F("=== running ===\n"));
@@ -748,6 +854,27 @@ void setup() {
 // ============================================================================
 void loop() {
     feedWatchdog();
+
+    // ---- 0) radio health: keep retrying a radio that failed to start ----
+    if (!radio.isReady() && (uint32_t)(millis() - lastRadioRetryMs) >= RADIO_RETRY_MS) {
+        lastRadioRetryMs = millis();
+        Serial.println(F("[LoRa] retrying radio start"));
+        startRadio(1);
+    }
+
+    // ---- 0b) button grace over on a deployed node with no base in sight ----
+    // Before, the grace period only paused incoming sleep commands. With the
+    // base off, nothing would ever send one, so one button press left an
+    // unattended node awake until its battery died.
+    if (buttonGrace && !inButtonGrace()) {
+        buttonGrace = false;
+        bool baseHeard = synced && (uint32_t)(millis() - lastBeaconAnyMs) < 3UL * cycleMs;
+        if (rtcSleepMode && !baseHeard && !editMode) {
+            Serial.println(F("[sleep] button grace over, no base -- back to sleep"));
+            enterDeepSleep(rtcDutySec);            // no return
+        }
+    }
+
     // ---- 1) beacon sync ----
     BeaconPacket b;
     if (radio.pollBeacon(b)) {
@@ -767,7 +894,7 @@ void loop() {
         // in the beacon's per-node sleep_mask. The two are independent overrides;
         // a per-node command sleeps us even while the rest of the fleet is awake.
         bool sleepMe = (b.flags & BFLAG_SLEEP_CMD) || ((b.sleep_mask >> nodeId) & 1u);
-        if (sleepMe && millis() >= sleepIgnoreUntil) {
+        if (sleepMe && !inButtonGrace()) {
             pendingSleepAck = true;
         } else if (!sleepMe) {
             pendingSleepAck = false;           // base changed its mind pre-TX
