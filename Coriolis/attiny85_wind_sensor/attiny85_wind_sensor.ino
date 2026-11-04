@@ -60,10 +60,17 @@
 
 // ---- Calibration constants for each kit ----
 #define SPARKFUN_MPH_PER_HZ  1.492f
-// Inspeed publishes a different constant per body and rotor (Reed Switch Sensor
-// Instructions): WS2 with plastic D2/D3 cups 2.7, Classic plastic 2.85, WS2
-// metal 2.45. 2.5 is what earlier builds used. SET THIS FOR YOUR ROTOR.
-#define INSPEED_MPH_PER_HZ   2.5f
+// Inspeed publishes a different constant per body and rotor (Inspeed "Reed
+// Switch Anemometers" instructions, rev. Feb 2020):
+//   WS2 body, D2/D3 plastic (polycarbonate) cups : 2.7  mph per Hz
+//   WS2 body, metal cups                         : 2.45 mph per Hz
+//   Classic body, D2/D3 plastic cups             : 2.85 mph per Hz
+// The project BOM specifies the WS2, sold with either plastic or metal cups.
+// Earlier builds used 2.5 for all of them (7% low on plastic, 2% high on metal).
+// ---- INSPEED CUP SELECTION -- for Inspeed builds, uncomment EXACTLY ONE ----
+//#define INSPEED_WS2_PLASTIC_CUPS   // WS2 with plastic (polycarbonate) cups
+//#define INSPEED_WS2_METAL_CUPS     // WS2 with metal cups
+//#define INSPEED_CLASSIC_PLASTIC    // Classic (1.25" body) with plastic cups
 
 // Inspeed E-Vane ratiometric span (0..360 deg maps ADC AT_0..AT_360).
 // CALIBRATE for your build: point vane North -> read ADC -> VANE_ADC_AT_0.
@@ -78,6 +85,19 @@
   #error "Both wind meters are selected. Uncomment only one WIND_METER_ line near the top of this file."
 #elif !defined(WIND_METER_SPARKFUN) && !defined(WIND_METER_INSPEED)
   #error "No wind meter selected. Uncomment one WIND_METER_ line near the top of this file."
+#endif
+
+#if defined(WIND_METER_INSPEED)
+  #if (defined(INSPEED_WS2_PLASTIC_CUPS) + defined(INSPEED_WS2_METAL_CUPS) + defined(INSPEED_CLASSIC_PLASTIC)) != 1
+    #error "Inspeed build: uncomment exactly ONE INSPEED_ cup line (WS2 plastic, WS2 metal or Classic) near the top of this file."
+  #endif
+  #if defined(INSPEED_WS2_PLASTIC_CUPS)
+    #define INSPEED_MPH_PER_HZ 2.7f
+  #elif defined(INSPEED_WS2_METAL_CUPS)
+    #define INSPEED_MPH_PER_HZ 2.45f
+  #else
+    #define INSPEED_MPH_PER_HZ 2.85f
+  #endif
 #endif
 
 // ============================================================================
@@ -357,9 +377,21 @@ void advanceBucket() {
 // once fewer than 12 bytes are free, TinyWireS.write() spins forever inside the
 // I2C interrupt. The watchdog below is what gets the chip (and the shared bus)
 // back from that. The node's sequence check rejects shifted frames.
+//
+// TinyWireS forks disagree on the name of the "queue a byte" call: rambo/TinyWire
+// uses send(), others use write(). twsPut() picks whichever the installed
+// library has, so this file builds against either without editing.
+// (Wrapped in a struct so the Arduino IDE's prototype generator leaves it alone.)
+struct TwsPut {
+    template <typename T>
+    static auto put(T& tws, uint8_t b, int) -> decltype(tws.write(b), void()) { tws.write(b); }
+    template <typename T>
+    static void put(T& tws, uint8_t b, long) { tws.send(b); }
+};
+
 void requestEvent() {
     uint8_t* ptr = (uint8_t*)&windData;
-    for (uint8_t i = 0; i < sizeof(windData); i++) TinyWireS.write(ptr[i]);
+    for (uint8_t i = 0; i < sizeof(windData); i++) TwsPut::put(TinyWireS, ptr[i], 0);
 }
 
 // ============================================================================
