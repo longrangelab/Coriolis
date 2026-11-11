@@ -438,6 +438,33 @@ uint16_t nextDuty(const NodeReading& r) {
     return d;
 }
 
+// Slot for a sleep check-in from a node the beacon has NOT scheduled (the base
+// has not heard us since this wake, or we were per-node-slept and the base
+// dropped our bit from node_mask).
+//
+// The base's cycle is: slot 0 = beacon, slots 1..scheduled = the nodes in
+// node_mask, spare slots up to the MIN_SLOTS floor, then one guard slot. The
+// scheduled slots belong to nodes that are AWAKE and transmit in them every
+// cycle, so a check-in must not land there: with per-node sleep the old
+// "(id-1) % scheduled + 1" rule always picked a slot whose owner was
+// transmitting, and the check-in collided with it every single time.
+//
+// Borrow one of the SPARE slots instead. Only when the cycle has none (MIN_SLOTS
+// or more nodes scheduled) fall back to sharing a scheduled slot as before.
+// With nothing scheduled this gives the same slots 1..MIN_SLOTS as it always did.
+#define CHECKIN_GUARD_SLOTS 1   // must match BEACON_GUARD_SLOTS on the receiver
+static uint8_t borrowCheckInSlot(uint8_t scheduled, uint16_t slotMsB, uint16_t cycleMsB,
+                                 uint8_t id) {
+    uint16_t total = slotMsB ? (uint16_t)(cycleMsB / slotMsB) : 0;   // beacon + nodes + guard
+    uint16_t lastFree = (total > CHECKIN_GUARD_SLOTS)                // last slot before the guard
+                        ? (uint16_t)(total - 1 - CHECKIN_GUARD_SLOTS) : 0;
+    uint8_t idx = (uint8_t)(id ? id - 1 : 0);
+    if (lastFree > scheduled)
+        return (uint8_t)(scheduled + 1 + (idx % (lastFree - scheduled)));
+    uint8_t denom = scheduled ? scheduled : MIN_SLOTS;               // guard /0
+    return (uint8_t)((idx % denom) + 1);
+}
+
 // One complete sleep-mode CHECK-IN, run straight from setup() on a timer wake.
 // Listens for a beacon, and:
 //   beacon w/ SLEEP  -> TX one reading in our slot (ack'd), sleep again
@@ -471,13 +498,11 @@ void sleepCheckIn() {
             // v4: our slot is our rank in node_mask. If we're not scheduled (the
             // base hasn't heard us since this unsynchronized wake, OR -- v5 -- we
             // were per-node-slept and the base already dropped our bit from
-            // node_mask), borrow a slot by rank position to squeeze in this one
-            // ack. Its owner is almost certainly asleep too, so collisions are rare.
+            // node_mask), borrow a spare slot to squeeze in this one ack. See
+            // borrowCheckInSlot() for why it must not be a scheduled node's slot.
             uint8_t  slotId = beaconSlotOf(b.node_mask, nodeId);
-            if (slotId == 0) {
-                uint8_t denom = b.max_slot ? b.max_slot : MIN_SLOTS;   // guard /0
-                slotId = (uint8_t)(((nodeId - 1) % denom) + 1);
-            }
+            if (slotId == 0)
+                slotId = borrowCheckInSlot(b.max_slot, b.slot_ms, b.cycle_ms, nodeId);
             uint32_t myOffset = (uint32_t)slotId * b.slot_ms;
             while (millis() - beaconAt < myOffset) delay(1);
             NodeReading r; readSensors(r);
