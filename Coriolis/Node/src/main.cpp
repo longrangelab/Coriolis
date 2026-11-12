@@ -27,6 +27,7 @@
 #include "Power.h"
 #include "Environment.h"          // BMP085Sensor (baro) + GPSModule (GPS)
 #include "telemetry.h"
+#include "AttinyFlasher.h"        // ATtiny85 firmware update over I2C
 
 //#define USE_TSL2591            // uncomment when the TSL2591 is installed
 #ifdef USE_TSL2591
@@ -633,9 +634,34 @@ void setup() {
 }
 
 // ============================================================================
+// USB-SERIAL COMMANDS
+// ============================================================================
+// "attiny-flash" then an Intel HEX file updates the ATtiny85 wind sensor over
+// I2C (needs the bootloader, see attiny85_bootloader/README.md). Send it with
+// tools/attiny_i2c_flash.py or paste it into a serial terminal.
+static void serviceSerial() {
+    static String line;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c != '\r' && c != '\n') {
+            if (line.length() < 40) line += c;
+            continue;
+        }
+        line.trim();
+        if (line.length() && attiny::attinySerialUpdate(line, Serial)) {
+            rtcNackRun = 0;                  // the sketch was offline on purpose
+            lastActivity = millis();
+        }
+        line = "";
+    }
+}
+
+// ============================================================================
 // LOOP
 // ============================================================================
 void loop() {
+    serviceSerial();
+
     // ---- 1) beacon sync ----
     BeaconPacket b;
     if (radio.pollBeacon(b)) {
