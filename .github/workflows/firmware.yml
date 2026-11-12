@@ -44,22 +44,36 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ matrix.name }}-${{ hashFiles(format('{0}/platformio.ini', matrix.dir)) }}
+          key: pio-esp32-7.0.1-${{ matrix.name }}-${{ hashFiles('.github/workflows/firmware.yml', format('{0}/platformio.ini', matrix.dir)) }}
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio "esptool>=4.7,<5"
 
       - name: Build
         working-directory: ${{ matrix.dir }}
         run: |
           # build_dir in platformio.ini is a Windows path on the maintainer's PC.
+          sed -i 's/\r$//' platformio.ini              # CRLF -> LF so the edits below match
           sed -i '/^build_dir[[:space:]]*=/d' platformio.ini
-          # Same partition table as the released images (huge_app: one 3 MB app,
-          # no OTA slot). The receiver already sets it; the node gets it here so
-          # both merged images have the same layout as V1.0.0 / V1.1.0.
-          grep -q '^board_build.partitions' platformio.ini || \
-            sed -i 's/^board = ttgo-t-beam$/&\nboard_build.partitions = huge_app.csv/' platformio.ini
-          grep -n '^board' platformio.ini
+          # Pin the toolchain and libraries to what the maintainer's PC resolved
+          # on 2026-11-12 (pio pkg list), where these builds were hardware-tested:
+          # espressif32 7.0.1 = Arduino-ESP32 core 2.0.17. The repo's ^ ranges and
+          # the unpinned XPowersLib git URL would otherwise drift with every build.
+          sed -i -E \
+            -e 's#^platform = espressif32$#platform = espressif32@7.0.1#' \
+            -e 's#Adafruit SSD1306@\^2\.5\.13#Adafruit SSD1306@2.5.17#' \
+            -e 's#Adafruit GFX Library@\^1\.11\.11#Adafruit GFX Library@1.13.0#' \
+            -e 's#U8g2@\^2\.36\.2#U8g2@2.36.18#' \
+            -e 's#Adafruit MPU6050@\^2\.2\.6#Adafruit MPU6050@2.2.9#' \
+            -e 's#Adafruit BMP085 Library@\^1\.2\.4#Adafruit BMP085 Library@1.2.4#' \
+            -e 's#SensorLib@\^0\.2\.4#SensorLib@0.2.6#' \
+            -e 's#ESP32Encoder@\^0\.11\.7#ESP32Encoder@0.11.8#' \
+            -e 's#TinyGPSPlus@\^1\.1\.0#TinyGPSPlus@1.1.0#' \
+            -e 's#RadioLib@\^7\.1\.1#RadioLib@7.8.1#' \
+            -e 's#Nanopb@\^0\.4\.5#Nanopb@0.4.92#' \
+            -e 's#https://github.com/lewisxhe/XPowersLib$#https://github.com/lewisxhe/XPowersLib.git\#d6997586e68f65afd51baa775903df930db39821#' \
+            platformio.ini
+          sed -n '/^\[env:tbeam\]/,/^board_check/p' platformio.ini
           # The sources were written on Windows, which ignores case in file
           # names ("screen.h" finds lib/Screen/Screen.h). Linux does not, so
           # give every library header a lower-case alias for this build only.
@@ -75,10 +89,11 @@ jobs:
           VER="${{ github.event.inputs.version }}"
           [ -n "$VER" ] || VER="dev-${GITHUB_SHA::7}"
           B=.pio/build/tbeam
-          BOOT_APP0=$(ls ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin)
+          BOOT_APP0=$(find ~/.platformio/packages/framework-arduinoespressif32* -name boot_app0.bin | head -1)
+          test -f "$BOOT_APP0"
           OUT="$GITHUB_WORKSPACE/out/windlab_${{ matrix.name }}_${VER}_merged.bin"
           mkdir -p "$GITHUB_WORKSPACE/out"
-          python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32 merge_bin -o "$OUT" \
+          python -m esptool --chip esp32 merge_bin -o "$OUT" \
             --flash_mode dio --flash_freq 40m --flash_size 4MB \
             0x1000 $B/bootloader.bin 0x8000 $B/partitions.bin 0xe000 "$BOOT_APP0" 0x10000 $B/firmware.bin
           ls -l "$OUT"
