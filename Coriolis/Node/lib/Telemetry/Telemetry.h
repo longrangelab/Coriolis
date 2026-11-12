@@ -196,6 +196,8 @@ class NodeRadio {
 private:
     SX1276 radio = new Module(RADIO_NSS, RADIO_IRQ, RADIO_RST, RADIO_GPIO);
     bool initialized = false;
+    bool started = false;            // begin() has succeeded at least once this boot
+    uint8_t txFailRun = 0;           // consecutive failed transmits
 public:
     bool begin() {
         Serial.print(F("[LoRa] node init ... "));
@@ -205,6 +207,8 @@ public:
         radio.setPacketReceivedAction(nodeOnRxISR);
         radio.startReceive();
         initialized = true;
+        started = true;
+        txFailRun = 0;
         Serial.printf("OK (SF%d)\n", LORA_SF);
         return true;
     }
@@ -214,7 +218,9 @@ public:
     // Put the SX1276 into sleep mode (~1 uA) before ESP32 deep sleep. Without
     // this the radio idles in RX at ~12 mA and dominates the sleep current --
     // the deep-sleep feature would save almost nothing.
-    void sleepRadio() { if (initialized) radio.sleep(); }
+    // Keyed on "started", not "initialized": a radio marked down after repeated
+    // TX failures must still be told to sleep, or it would sit in RX all night.
+    void sleepRadio() { if (started) radio.sleep(); }
 
     // If a beacon arrived, decode it. Ignores data packets from other nodes.
     bool pollBeacon(BeaconPacket& b) {
@@ -237,8 +243,17 @@ public:
         size_t len = packReading(r, nodeId, buf, ackSleep);
         int st = radio.transmit(buf, len);
         radio.startReceive();
-        if (st == RADIOLIB_ERR_NONE) { Serial.printf("[LoRa] TX node %d (%u B)%s\n", nodeId, (unsigned)len, ackSleep?" [SLEEP-ACK]":""); return true; }
+        if (st == RADIOLIB_ERR_NONE) { txFailRun = 0; Serial.printf("[LoRa] TX node %d (%u B)%s\n", nodeId, (unsigned)len, ackSleep?" [SLEEP-ACK]":""); return true; }
         Serial.printf("[LoRa] TX fail %d\n", st);
+        // A radio that started fine can still lock up later (supply dip, SPI
+        // glitch). Three failed transmits in a row mark it not ready, so the
+        // caller's existing "radio not ready -> begin() again" retry resets and
+        // reconfigures it instead of failing silently forever.
+        if (++txFailRun >= 3) {
+            txFailRun = 0;
+            initialized = false;
+            Serial.println(F("[LoRa] repeated TX failures -- radio marked down for restart"));
+        }
         return false;
     }
 };
