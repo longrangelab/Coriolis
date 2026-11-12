@@ -60,6 +60,13 @@ jobs:
           grep -q '^board_build.partitions' platformio.ini || \
             sed -i 's/^board = ttgo-t-beam$/&\nboard_build.partitions = huge_app.csv/' platformio.ini
           grep -n '^board' platformio.ini
+          # The sources were written on Windows, which ignores case in file
+          # names ("screen.h" finds lib/Screen/Screen.h). Linux does not, so
+          # give every library header a lower-case alias for this build only.
+          for f in lib/*/*.h; do
+            l="$(dirname "$f")/$(basename "$f" | tr 'A-Z' 'a-z')"
+            [ -e "$l" ] || ln -s "$(basename "$f")" "$l"
+          done
           pio run -e tbeam
 
       - name: Merge into one image
