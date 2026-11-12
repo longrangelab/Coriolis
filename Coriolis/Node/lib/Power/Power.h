@@ -94,18 +94,58 @@ public:
     //   AXP192:  enableCharge() / disableCharge()
     //            -> charge control register 0x33, bit 7
     // If AXP192 fails to compile, verify in your installed XPowersAXP192.tpp.
+    //
+    // Returns true only if the PMU's charge-enable bit READS BACK as requested,
+    // so a write lost to an I2C glitch is retried on the next cycle instead of
+    // being recorded as done.
     bool setChargeEnable(bool on) {
         if (axp2101) {
             if (on) axp2101->enableCellbatteryCharge();
             else    axp2101->disableCellbatteryCharge();
-            return true;
-        }
-        if (axp192) {
+        } else if (axp192) {
             if (on) axp192->enableCharge();
             else    axp192->disableCharge();
-            return true;
+        } else {
+            return false;                              // no PMU -> nothing to do
         }
-        return false;                                  // no PMU -> nothing to do
+        int state = getChargeEnable();
+        return state >= 0 && (state == 1) == on;
+    }
+
+    // Charge-enable bit as the PMU has it now: 1 = enabled, 0 = disabled,
+    // -1 = no PMU or the read failed.
+    int getChargeEnable() {
+        if (axp2101) {
+            int v = axp2101->readRegister(0x18);       // bit 1: cell charge enable
+            return (v < 0) ? -1 : ((v >> 1) & 1);
+        }
+        if (axp192) {
+            int v = axp192->readRegister(0x33);        // bit 7: charge enable
+            return (v < 0) ? -1 : ((v >> 7) & 1);
+        }
+        return -1;
+    }
+
+    // Print why the PMU last powered the board OFF and what turned it back ON.
+    // The AXP2101 latches these in registers 0x20/0x21, so after a field node
+    // is found dead and powered back up, the serial log names the cause
+    // (over-temperature, VBUS over-voltage from a solar panel, VSYS/DCDC
+    // under-voltage, a long press...). AXP192 has no equivalent; prints nothing.
+    void printPowerOffReason() {
+        if (!axp2101) return;
+        int on  = axp2101->readRegister(0x20);
+        int off = axp2101->readRegister(0x21);
+        Serial.printf("[pmu] power-on src 0x%02X, last power-off src 0x%02X:", on & 0xFF, off & 0xFF);
+        if (off <= 0) { Serial.println(F(" none recorded")); return; }
+        if (axp2101->isOverTemperatureOffSource())  Serial.print(F(" PMU-over-temperature"));
+        if (axp2101->isDcOverVoltageOffSource())    Serial.print(F(" DCDC-over-voltage"));
+        if (axp2101->isDcUnderVoltageOffSource())   Serial.print(F(" DCDC-under-voltage"));
+        if (axp2101->isVbusOverVoltageOffSource())  Serial.print(F(" VBUS-over-voltage(solar?)"));
+        if (axp2101->isVsysUnderVoltageOffSource()) Serial.print(F(" VSYS-under-voltage(battery)"));
+        if (axp2101->isPwronAlwaysLowOffSource())   Serial.print(F(" PWRON-held-low"));
+        if (axp2101->isSwConfigOffSource())         Serial.print(F(" software-shutdown"));
+        if (axp2101->isPwrSourcePullDown())         Serial.print(F(" power-key-long-press"));
+        Serial.println();
     }
 
     float getBatteryVoltage() override {
