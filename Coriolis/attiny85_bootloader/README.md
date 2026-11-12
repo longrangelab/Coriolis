@@ -36,6 +36,11 @@ refuses an image that does.
 
 ## One-time setup per ATtiny (ISP programmer)
 
+**New to this?** [FIRST_TIME_SETUP.md](FIRST_TIME_SETUP.md) walks through it
+step by step with an Arduino UNO: wiring, avrdude, the ready-made release
+files for each wind meter, and what the LED should do. The rest of this
+section is the short version.
+
 Fuses: `lfuse 0xE2` (8 MHz internal, as now), `hfuse 0xDD` (2.7 V brown-out,
 protects flash writes), `efuse 0xFE` (self-programming on, required).
 
