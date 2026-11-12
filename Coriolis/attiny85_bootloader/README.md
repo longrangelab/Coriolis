@@ -84,10 +84,13 @@ repeat the setup.
    base station and other USB devices have their own, so check which is which.
 
    Needs pyserial (`python -m pip install pyserial`). It prints
-   `[attiny] OK ... written and verified` in about 3 s.
+   `[attiny] OK ... written and verified` after about 12 s (it sends one HEX
+   line every 20 ms, because the node drops characters sent faster).
 
 Without Python: open a serial terminal at 115200, type `attiny-flash`, then
-paste the `.hex` file contents.
+send the `.hex` file with a delay of about 20 ms after each line (Tera Term:
+*Setup > Serial port > Transmit delay*). A plain paste goes too fast and fails
+with `bad HEX line`, which writes nothing, so it is safe to retry.
 
 If it fails, the node prints the reason. `no bootloader answered at 0x43` means
 the chip has no bootloader, or its sketch is older than the enter-bootloader
