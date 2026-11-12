@@ -19,6 +19,10 @@ on:
         description: 'Version for the file names, e.g. 1.2.0'
         required: false
         default: 'dev'
+      draft_release:
+        description: 'Also attach the .bin files to a DRAFT release with this tag (e.g. V1.2.0). Empty = no release.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -104,3 +108,30 @@ jobs:
         with:
           name: firmware-${{ matrix.name }}
           path: out/
+
+  # Hand-run only: put the two merged images on a draft release, which a
+  # maintainer reviews and publishes. Never publishes by itself.
+  draft-release:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.draft_release != ''
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Attach to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.draft_release }}
+        run: |
+          ls -l out
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+              --title "$TAG" --notes "Draft: firmware built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} from ${GITHUB_SHA}."
+          fi
+          test "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true \
+            || { echo "release $TAG is already published; not touching it"; exit 1; }
+          gh release upload "$TAG" out/*.bin -R "$GITHUB_REPOSITORY" --clobber
