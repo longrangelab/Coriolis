@@ -39,6 +39,7 @@
  */
 
 #include <TinyWireS.h>
+#include <avr/wdt.h>
 #include <math.h>
 #include <avr/wdt.h>
 
@@ -486,6 +487,20 @@ void requestEvent() {
     for (uint8_t i = 0; i < sizeof(windData); i++) TinyWireS.write(ptr[i]);
 }
 
+// I2C firmware update (see attiny85_bootloader/README.md). The node writes
+// {0x01, 0x00} here to ask for the bootloader; we answer with a watchdog
+// reset, which starts the bootloader at I2C address 0x43. On a chip without
+// the bootloader this just restarts the sketch. Keep the sketch under 7168
+// bytes (the bootloader uses the top 1 KB) and do not use EE_RDY_vect.
+volatile bool bootloaderRequested = false;
+
+void receiveEvent(uint8_t n) {
+    uint8_t b0 = TinyWireS.read();
+    uint8_t b1 = (n > 1) ? TinyWireS.read() : 0xFF;
+    while (TinyWireS.available()) TinyWireS.read();
+    if (n == 2 && b0 == 0x01 && b1 == 0x00) bootloaderRequested = true;
+}
+
 // ============================================================================
 // SETUP
 // ============================================================================
@@ -513,6 +528,7 @@ void setup() {
 
     TinyWireS.begin(I2C_SLAVE_ADDRESS);
     TinyWireS.onRequest(requestEvent);
+    TinyWireS.onReceive(receiveEvent);
 
     // Watchdog: if loop() stops running (including a hang inside the I2C
     // interrupt), reset the chip after ~2 s instead of holding the bus forever.
@@ -527,6 +543,13 @@ void setup() {
 void loop() {
     wdt_reset();
     TinyWireS_stop_check();
+
+    if (bootloaderRequested) {                  // reset into the bootloader
+        cli();
+        wdt_disable();                          // restart the WDT from zero so a
+        wdt_enable(WDTO_15MS);                  // longer running timeout can't delay it
+        for (;;) {}
+    }
 
     unsigned long now = millis();
 
