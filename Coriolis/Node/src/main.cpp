@@ -215,6 +215,11 @@ bool       pendingSleepAck = false;    // next slot TX should carry the ack
 uint32_t   lastRadioRetryMs = 0;       // radio.begin() retry pacing
 uint32_t   lastAttinyReadMs = 0;       // spacing between ATtiny reads
 bool       firstAttinyRead  = true;    // first read since this boot
+// ATtiny publish sequence sampled at the very start of a timer wake, so the
+// read at transmit time has a reference from THIS boot (see readSensors()).
+bool       wakeSeqOk = false;
+uint8_t    wakeSeq   = 0;
+uint32_t   wakeSeqMs = 0;
 
 // Button-wake grace: a human woke a deployed node to look at it.
 static inline bool inButtonGrace() {
@@ -367,6 +372,20 @@ void applyColdChargePolicy(const NodeReading& r) {
     }
 }
 
+// Sample the ATtiny's publish sequence once at the start of a timer wake. The
+// check-in read happens after the beacon wait and the slot delay, normally well
+// over a second later, which gives readSensors() two samples from one boot to
+// tell a stalled ATtiny from the 63 s sequence wrap. Plain single read: no bus
+// recovery and no failure counting here, the real read at transmit time owns that.
+void noteAttinyWakeSeq() {
+    AttinyWind w;
+    if (readAttinyRaw(w)) {
+        wakeSeq   = (uint8_t)(w.rawADC >> 10);
+        wakeSeqMs = millis();
+        wakeSeqOk = true;
+    }
+}
+
 // Read every sensor into r (called once per transmit cycle).
 void readSensors(NodeReading& r) {
     AttinyWind w;
@@ -380,8 +399,25 @@ void readSensors(NodeReading& r) {
         if (seq == 0) {
             fresh = !rtcSeqSeen;               // seq-aware ATtiny, no data yet (just reset)
         } else {
-            bool spaced = firstAttinyRead || (uint32_t)(millis() - lastAttinyReadMs) >= 1500;
-            if (rtcSeqSeen && seq == rtcLastSeq && spaced) fresh = false;
+            if (rtcSeqSeen && seq == rtcLastSeq) {
+                if (!firstAttinyRead) {
+                    // Same boot: no new publish in 1.5 s or more is a stall.
+                    fresh = (uint32_t)(millis() - lastAttinyReadMs) < 1500;
+                } else if (wakeSeqOk) {
+                    // First read after a deep sleep. The sequence is only 6 bits
+                    // and wraps every 63 publishes (about 63 s), so after a 60 s
+                    // nap it can land on the SAME value with the ATtiny perfectly
+                    // healthy. Matching the value from before the sleep is
+                    // therefore not proof of a stall. Require that it has also
+                    // not moved since the sample taken at the start of this wake.
+                    // If that sample is too recent to tell, give the benefit of
+                    // the doubt: a real stall is caught on the next wake.
+                    fresh = !(seq == wakeSeq && (uint32_t)(millis() - wakeSeqMs) >= 1500);
+                }
+                // First read of a boot with no wake sample (cold boot, awake
+                // mode): nothing from this boot to compare with yet, so accept
+                // it. The next read, a cycle later, settles it.
+            }
             rtcSeqSeen = true;
             rtcLastSeq = seq;
         }
@@ -800,6 +836,7 @@ void setup() {
     // the screen simply never comes on.
     if (quickWake) {
         baroOk = baro.init();
+        noteAttinyWakeSeq();     // reference sample for the stalled-ATtiny check
         // A radio that fails to start (supply dip in the cold, SPI glitch) used
         // to leave the node silent forever while everything else, including
         // the watchdog, looked healthy. Retry once, and if it still fails,
@@ -866,10 +903,13 @@ void loop() {
     // Before, the grace period only paused incoming sleep commands. With the
     // base off, nothing would ever send one, so one button press left an
     // unattended node awake until its battery died.
-    if (buttonGrace && !inButtonGrace()) {
+    // While the node-ID editor is open the decision is only postponed, not
+    // dropped: checking once and clearing the flag left a node that was in the
+    // editor at the 60 s mark awake for good.
+    if (buttonGrace && !inButtonGrace() && !editMode) {
         buttonGrace = false;
         bool baseHeard = synced && (uint32_t)(millis() - lastBeaconAnyMs) < 3UL * cycleMs;
-        if (rtcSleepMode && !baseHeard && !editMode) {
+        if (rtcSleepMode && !baseHeard) {
             Serial.println(F("[sleep] button grace over, no base -- back to sleep"));
             enterDeepSleep(rtcDutySec);            // no return
         }
