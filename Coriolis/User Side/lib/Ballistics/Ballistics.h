@@ -139,6 +139,9 @@ struct BallOutput {
 // ---------------------------------------------------------------------------
 // Solver
 // ---------------------------------------------------------------------------
+// Largest miss at the zero range (metres) that still counts as "zeroed".
+static const double BALLISTICS_ZERO_TOL_M = 0.005;
+
 class Ballistics {
 private:
     struct S { double x,y,z,vx,vy,vz; };
@@ -212,7 +215,12 @@ private:
 public:
     BallOutput solve(const BallInput& in) {
         BallOutput o; o.ok = false;
-        if (in.mv_fps <= 0 || in.bc <= 0 || in.range_yd <= 0 || in.cal_in <= 0 || in.weight_gr <= 0)
+        // zero_yd must be positive too: with zero range 0 the zero search below
+        // has nothing to solve (both probe shots "arrive" at x=0 with the same
+        // height) and used to fall through with an arbitrary launch angle,
+        // returning a confident but meaningless come-up as ok:true.
+        if (in.mv_fps <= 0 || in.bc <= 0 || in.range_yd <= 0 || in.cal_in <= 0 || in.weight_gr <= 0 ||
+            in.zero_yd <= 0)
             return o;
 
         // --- unit conversions to SI ---
@@ -264,6 +272,11 @@ public:
             if (!run(th2, v0, sightHt_m, zeroX, y2,zz,tt,vv)) return o;
             if (fabs(y2) < 1e-4) break;                 // within 0.1 mm at zero
         }
+        // theta == th2 and y2 is its miss at the zero range on every path out of
+        // the loop. Normal convergence is < 0.1 mm; anything worse than 5 mm
+        // means the search did not find a zero, so refuse rather than report a
+        // solution built on an un-zeroed launch angle.
+        if (fabs(y2) > BALLISTICS_ZERO_TOL_M) return o;
 
         // --- fire to target with the zeroed angle ---
         double yT,zT,tof,vT;
@@ -291,12 +304,15 @@ public:
         if (in.useSpinDrift && sg > 0)
             spinIn = in.twistDir * 1.25 * (sg + 1.2) * pow(tof, 1.83);
 
-        // aero jump (MOA vertical, constant with range). Right-to-left wind
-        // (crossMph < 0) makes a right-twist bullet go HIGH.
+        // aero jump (MOA vertical, constant with range). Wind from the RIGHT
+        // (right-to-left, crossMph > 0 in this solver's convention) makes a
+        // right-twist bullet go HIGH; wind from the left makes it go low. This
+        // is the benchrest "10 o'clock / 4 o'clock" line: the same right wind
+        // that drifts the impact left also lifts it. Left twist reverses it.
         double ajMOA = 0;
         if (in.useAeroJump && sg > 0) {
             double Y = 0.01*sg - 0.0024*Lcal + 0.032;   // MOA per mph crosswind
-            ajMOA = in.twistDir * Y * (-crossMph);      // + = up
+            ajMOA = in.twistDir * Y * crossMph;         // + = up
         }
 
         // --- convert to angles (scope corrections) ---
@@ -344,7 +360,7 @@ public:
                         float* segWidthYdOut = nullptr) {
         if (!outCoefInPerMph || maxSeg < 1) return 0;
         if (in.mv_fps <= 0 || in.bc <= 0 || in.range_yd <= 0 ||
-            in.cal_in <= 0 || in.weight_gr <= 0) return 0;
+            in.cal_in <= 0 || in.weight_gr <= 0 || in.zero_yd <= 0) return 0;
 
         // --- atmosphere / drag setup (same as solve, but crosswind-only) ---
         double v0 = in.mv_fps * 0.3048;
@@ -397,6 +413,7 @@ public:
                 if (!run(th2, v0, sightHt_m, zeroX, y2,zz,tt,vv)) { theta = 1e9; break; }
                 if (fabs(y2) < 1e-4) break;
             }
+            if (theta < 1e8 && fabs(y2) > BALLISTICS_ZERO_TOL_M) theta = 1e9;   // zero search failed
 
             if (theta < 1e8) {
                 // baseline lateral impact (should be ~0 with no wind / no earth)

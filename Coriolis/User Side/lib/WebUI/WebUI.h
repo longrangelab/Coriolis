@@ -544,21 +544,34 @@ function setNodeMult(id,v){var m=nodeMults();var f=parseFloat(v);m[id]=(isFinite
 function resetMultsOne(){var ns=(data&&data.nodes)||[];var m={};ns.forEach(function(n){m[n.id]=1;});storeMults(m);renderWeightsPanel(true);render();}
 function weightedAvgWind(){
   var all=(data&&data.nodes)||[];
-  // Drop nodes whose anemometer is dead/stale (windOk:false from the receiver).
+  // Drop nodes whose anemometer is dead or whose reading is too old (both arrive
+  // as windOk:false from the receiver, which applies the same test to its own average).
   // They stay visible on their own tab -- they just don't vote on the wind call.
   // Legacy receivers don't send windOk at all; undefined means "trust it", so
   // this degrades to the old behaviour rather than zeroing everything out.
   var weights=effectiveNodeWeights(),ns=weights.nodes;
   var nBad=all.length-ns.length;
   if(!ns.length)return{speed:0,dir:0,speedSd:0,dirSd:0,count:0,bad:nBad};
+  // Average the wind as VECTORS (speed x direction), not speed and direction
+  // separately. Averaging them separately invents wind: 10 mph from 0 deg plus
+  // 10 mph from 180 deg nets to zero, but a plain speed average (10) glued to a
+  // unit-vector direction (noise, ~90 deg) reported a full 10 mph crosswind.
+  // The weighted vector mean gives exactly the weighted mean crosswind and
+  // headwind, which is what the solver needs.
   var sumSpd=0,sumSpdSd=0,sumDirSd=0,sx=0,sy=0;
   ns.forEach(function(n){
-    var f=weights.pct[n.id]/100, ml=getMult(n.id);
-    sumSpd+=f*n.speed*ml;sumSpdSd+=f*n.speedSd*ml;sumDirSd+=f*n.dirSd;
-    var r=n.dir*Math.PI/180;sx+=f*Math.cos(r);sy+=f*Math.sin(r);
+    var f=weights.pct[n.id]/100, v=n.speed*getMult(n.id);
+    sumSpd+=f*v;sumSpdSd+=f*n.speedSd*getMult(n.id);sumDirSd+=f*n.dirSd;
+    var r=n.dir*Math.PI/180;sx+=f*v*Math.cos(r);sy+=f*v*Math.sin(r);
   });
+  var speed=Math.sqrt(sx*sx+sy*sy);
   var dir=Math.atan2(sy,sx)*180/Math.PI;if(dir<0)dir+=360;
-  return{speed:sumSpd,dir:dir,speedSd:sumSpdSd,dirSd:sumDirSd,count:ns.length,bad:nBad};
+  // agree: 1 = every meter blows the same way; near 0 = they cancel out. Low
+  // agreement means the meters see different winds and the net call is small
+  // because they disagree, not because it's calm.
+  var agree=sumSpd>0?speed/sumSpd:1;
+  return{speed:speed,dir:dir,speedSd:sumSpdSd,dirSd:sumDirSd,count:ns.length,bad:nBad,
+         scalarSpeed:sumSpd,agree:agree};
 }
 function setNodeWeight(id,v){var w=nodeWeights();w[id]=Math.max(0,parseFloat(v)||0);storeWeights(w);updateWeightTotal();render();}
 function resetWeightsEqual(){
@@ -771,10 +784,12 @@ function setNodeMeterType(id,v){var m=nodeMeterTypes();m[id]=parseInt(v,10);stor
 var solveBusy=false, windHoldLast=0;
 // ---- aimbot (windage stepper) ----
 var aimHoldMOA=0;        // latest signed windage hold in MOA (set by updateWindHold)
+var aimHoldOk=false;     // false when the last hold had no valid live wind behind it
 var aimBusy=false;
 async function aimGo(){
   if(aimBusy)return;
   if(!data||!data.aim||!data.aim.present){flash('no stepper connected');return;}
+  if(!aimHoldOk){flash('no valid wind -- not dialing');return;}
   aimBusy=true;
   var btn=document.getElementById('aimBtn'), old=btn.textContent;
   btn.textContent='MOVING\u2026';
@@ -811,7 +826,7 @@ function renderAimRow(){
   if(show){
     var btn=document.getElementById('aimBtn');
     if(data.aim.moving){btn.textContent='MOVING\u2026';}
-    else if(!aimBusy){btn.textContent='AIMBOT '+(aimHoldMOA>=0?'R':'L')+' '+Math.abs(aimHoldMOA).toFixed(1);}
+    else if(!aimBusy){btn.textContent=aimHoldOk?('AIMBOT '+(aimHoldMOA>=0?'R':'L')+' '+Math.abs(aimHoldMOA).toFixed(1)):'AIMBOT -- no wind';}
   }
 }
 var WINDHOLD_MIN_MS=2000, AUTOSOLVE_MIN_MS=2000;
@@ -820,7 +835,8 @@ async function updateWindHold(force){
   var el=document.getElementById('windHold');
   if(!el)return;
   if(!data){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';return;}
-  if(!activeName()){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">-- (no rifle profile)</div>';return;}
+  if(!activeName()){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">-- (no rifle profile)</div>';return;}
+  if(liveWindMissing()){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv" style="color:var(--warn)">NO VALID WIND METER</div>';return;}
   if(!force){
     if(solveBusy)return;
     if(Date.now()-windHoldLast<WINDHOLD_MIN_MS)return;
@@ -833,22 +849,26 @@ async function updateWindHold(force){
       '&range='+p.range+'&tempF='+p.tempF+'&pres='+p.pres+'&windmph='+p.windmph+'&windrel='+p.windrel+
       '&lat='+p.lat+'&az='+fireAz+'&earth='+p.earth+'&spin='+p.spin+'&jump='+p.jump;
     var r=await fetch(q,{cache:'no-store'});var s=await r.json();
-    if(!s.ok){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">solver error</div>';return;}
+    // The aimbot may only dial the hold that is on screen. A solver error or a
+    // failed request shows no hold, so the previous one must not stay armed.
+    if(!s.ok){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">solver error</div>';return;}
     var wmag=parseFloat(getv('zeroWindMag',0))||0, wdir=getv('zeroWindDir','right');
     var zw=(wdir==='right')?-wmag:wmag;
     var wMOA=s.windMOA+zw, wMil=s.windMil+zw/3.4377;
     // Remember the exact signed hold the stepper should dial. Sign convention:
     // wMOA>=0 means hold RIGHT; the ATtiny's DIR_INVERT sorts out which way that
     // physically turns. We send signed MOA and let the controller do clicks.
-    aimHoldMOA=wMOA;
+    aimHoldMOA=wMOA; aimHoldOk=true;
     el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">'+Math.abs(wMOA).toFixed(1)+' '+(wMOA>=0?'R':'L')+
       ' MOA &middot; '+Math.abs(wMil).toFixed(2)+' '+(wMil>=0?'R':'L')+' mil</div>';
-  }catch(e){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';
+  }catch(e){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';
   }finally{solveBusy=false;windHoldLast=Date.now();}
 }
 function renderStability(){
   if(!data||!data.stability)return;
   var s=data.stability, cur=tier(s.cur.spdSd,s.cur.dirSd);
+  // Zero valid meters means zero SDs, which used to read as a green GO.
+  if(!data.avg||!data.avg.count) cur={c:'warn',lbl:'NO VALID METERS',go:'NO WIND'};
   var badge=document.getElementById('stabBadge');
   badge.className='stabBadge bg-'+cur.c;
   badge.querySelector('.word').textContent=cur.go;
@@ -914,6 +934,7 @@ function evalSentinel(){
   pairs.forEach(function(p){
     var s=byId[p.sentId], n=byId[p.nodeId];
     if(!s||!n){missing++;return;}       // dropped from receiver -> excluded
+    if(s.windOk===false||n.windOk===false){missing++;return;}   // dead meter can't 'agree'
     var sd=(s.speed>0.1)?Math.abs(s.speed-n.speed)/s.speed*100:Math.abs(s.speed-n.speed)*100;
     var dd=dirDiff(s.dir,n.dir);
     var agree=(sd<=p.spdPct)&&(dd<=p.dirDeg);
@@ -1046,7 +1067,10 @@ function updateSentReadouts(){
   });
 }
 
-function avgWind(){if(!data)return{speed:0,dir:0};var a=weightedAvgWind();return{speed:a.speed,dir:a.dir};}
+function avgWind(){if(!data)return{ok:false,speed:0,dir:0};var a=weightedAvgWind();return{ok:a.count>0,speed:a.speed,dir:a.dir};}
+// Live wind is switched on but no meter has valid wind: there is NO wind call.
+// Every consumer must say so instead of solving with 0 mph (a confident, wrong hold).
+function liveWindMissing(){return liveOn('live_wind')&&!avgWind().ok;}
 function curWind(){
   if(!data)return{ok:false,speed:0,dir:0,speedSd:0,dirSd:0};
   if(view==='avg'||view==='pred'||view==='solver'){var a=weightedAvgWind();return{ok:a.count>0,speed:a.speed,dir:a.dir,speedSd:a.speedSd,dirSd:a.dirSd,gust:null};}
@@ -1115,6 +1139,7 @@ function snapshotProfileParams(){var p={};LOAD.forEach(function(f){p[f.k]=getv(f
 // ("dialed") math the solver screen uses. Returns null if no profile / no fix.
 async function solveNow(){
   if(!data||!activeName())return null;
+  if(liveWindMissing())return null;          // no wind call -> nothing to log
   var p=solverParams();
   var q='/solve?mv='+p.mv+'&bc='+p.bc+'&model='+p.model+'&wgt='+p.wgt+'&cal='+p.cal+
     '&twist='+p.twist+'&blen='+p.blen+'&twistDir='+p.twistDir+'&sh='+p.sh+'&zero='+p.zero+
@@ -1759,7 +1784,10 @@ function tele(){
     // A dead meter must never be silent -- it's the difference between "3 nodes
     // agree it's calm" and "2 nodes plus a corpse reporting zero".
     var nodeLbl=ww.bad?('<span style="color:var(--warn)">'+ww.count+' (+'+ww.bad+' no wind)</span>'):a.count;
-    g.innerHTML=c('Nodes',nodeLbl)+c('Wtd wind',ww.speed.toFixed(1)+' mph '+Math.round(ww.dir)+'&deg; '+card(ww.dir))+
+    // Meters that point different ways partly cancel in the vector average.
+    // Say so, so a small net call isn't mistaken for calm, steady air.
+    var agreeCard=(ww.count>1&&ww.agree<0.5)?'<div class="card"><div class="k">Meters</div><div class="v" style="color:var(--warn)">DISAGREE '+Math.round(ww.agree*100)+'%</div></div>':'';
+    g.innerHTML=agreeCard+c('Nodes',nodeLbl)+c('Wtd wind',ww.speed.toFixed(1)+' mph '+Math.round(ww.dir)+'&deg; '+card(ww.dir))+
       c('Avg temp',a.tempF.toFixed(0)+'&deg;F')+c('Avg baro',a.presInHg.toFixed(2)+' inHg');
   }else{var n=(data.nodes||[]).find(function(x){return x.id==view;});if(!n){g.innerHTML='';return;}
     var lux=(n.lux<0)?'&mdash;':n.lux.toFixed(0)+' lx',dist=(n.distYd<0)?'&mdash;':n.distYd+' yd';
@@ -1767,7 +1795,10 @@ function tele(){
     var mcard=(ml!==1)?c('Wind mult','&times;'+ml.toFixed(2)+' = '+(n.speed*ml).toFixed(1)+' mph'):'';
     var mt=getNodeMeterType(n.id);
     var vaneLbl=(mt>=0)?METER_NAMES[mt]:'not set';
-    var wokcard=(n.windOk===false)?'<div class="card"><div class="k">Wind sensor</div><div class="v" style="color:var(--warn)">NO DATA</div></div>':'';
+    // windOk:false = this node is not voting on the wind call. windStale says
+    // the meter is fine but the reading is too old (a sleeping node between
+    // check-ins), which is a different thing from a dead meter.
+    var wokcard=(n.windOk===false)?'<div class="card"><div class="k">Wind sensor</div><div class="v" style="color:var(--warn)">'+(n.windStale?'OLD READING':'NO DATA')+'</div></div>':'';
     g.innerHTML=wokcard+c('True dir',Math.round(n.dir)+'&deg; '+card(n.dir))+c('Temp',n.tempF.toFixed(0)+'&deg;F')+
       c('Baro',n.presInHg.toFixed(2)+' inHg')+c('Light',lux)+
       c('Wind meter',vaneLbl)+
@@ -1838,7 +1869,7 @@ function syncLiveInputs(){
   if(!data)return;
   if(liveOn('live_temp')){var e=document.getElementById('in_tempF');if(e)e.value=data.base.tempF.toFixed(1);}
   if(liveOn('live_pres')){var e=document.getElementById('in_pres');if(e)e.value=data.base.presInHg.toFixed(2);}
-  if(liveOn('live_wind')){var w=avgWind();
+  if(liveOn('live_wind')&&avgWind().ok){var w=avgWind();
     var e=document.getElementById('in_windmph');if(e)e.value=w.speed.toFixed(1);
     var e2=document.getElementById('in_windrel');if(e2)e2.value=Math.round(relAngle(w.dir));}
   if(liveOn('live_lat')&&data.base.gps){var e=document.getElementById('in_lat');if(e)e.value=data.base.lat.toFixed(4);}
@@ -1862,6 +1893,7 @@ async function doSolve(){
   try{ await doSolveInner(); } finally { solveBusy=false; autoSolveLast=Date.now(); }
 }
 async function doSolveInner(){
+  if(liveWindMissing()){document.getElementById('results').innerHTML='<div class="card" style="color:var(--warn)">No meter has valid wind. Turn off live wind and enter it by hand, or check the meters.</div>';return;}
   var p=solverParams();
   var q='/solve?mv='+p.mv+'&bc='+p.bc+'&model='+p.model+'&wgt='+p.wgt+'&cal='+p.cal+
     '&twist='+p.twist+'&blen='+p.blen+'&twistDir='+p.twistDir+'&sh='+p.sh+'&zero='+p.zero+

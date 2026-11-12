@@ -69,6 +69,10 @@
 // 0.00 mph and dragged the weighted average toward calm, which is the single
 // worst failure mode this system has: a confident, wrong, low wind call.
 #define FLAG_WIND_VALID   0x10
+// FLAG_NODE_RESET: the node rebooted unexpectedly (watchdog, crash, brownout
+// or I2C self-restart) recently -- set on its next ~20 packets so the base
+// can log it even if a few are lost. Old receivers ignore unknown flag bits.
+#define FLAG_NODE_RESET   0x20
 
 // Bits inside BeaconPacket.flags. The flags byte was previously unused, so
 // old firmware just ignores whatever we set here -- a node running pre-sleep
@@ -122,6 +126,7 @@ struct NodeReading {
     double  latitude = 0, longitude = 0;
     bool    baroValid = false, lightValid = false, gpsValid = false;
     bool    windValid = false;
+    bool    nodeReset = false;   // -> FLAG_NODE_RESET
 };
 
 // ---- CRC-16/CCITT-FALSE ----
@@ -140,7 +145,7 @@ static inline size_t packReading(const NodeReading& r, uint8_t node_id, uint8_t*
     NodePacket p;
     p.magic = NODE_PACKET_MAGIC; p.version = PACKET_VERSION; p.node_id = node_id;
     p.flags = (r.baroValid?FLAG_BARO_VALID:0)|(r.lightValid?FLAG_LIGHT_VALID:0)|(r.gpsValid?FLAG_GPS_VALID:0)
-            | (ackSleep?FLAG_SLEEP_ACK:0) | (r.windValid?FLAG_WIND_VALID:0);
+            | (ackSleep?FLAG_SLEEP_ACK:0) | (r.windValid?FLAG_WIND_VALID:0) | (r.nodeReset?FLAG_NODE_RESET:0);
     p.wind_speed    = (uint16_t)(r.windSpeed   * 100.0f + 0.5f);
     p.wind_speed_sd = (uint16_t)(r.windSpeedSd * 100.0f + 0.5f);
     p.wind_dir      = (uint16_t)(r.windDir     * 10.0f  + 0.5f);
@@ -191,6 +196,8 @@ class NodeRadio {
 private:
     SX1276 radio = new Module(RADIO_NSS, RADIO_IRQ, RADIO_RST, RADIO_GPIO);
     bool initialized = false;
+    bool started = false;            // begin() has succeeded at least once this boot
+    uint8_t txFailRun = 0;           // consecutive failed transmits
 public:
     bool begin() {
         Serial.print(F("[LoRa] node init ... "));
@@ -200,6 +207,8 @@ public:
         radio.setPacketReceivedAction(nodeOnRxISR);
         radio.startReceive();
         initialized = true;
+        started = true;
+        txFailRun = 0;
         Serial.printf("OK (SF%d)\n", LORA_SF);
         return true;
     }
@@ -209,7 +218,9 @@ public:
     // Put the SX1276 into sleep mode (~1 uA) before ESP32 deep sleep. Without
     // this the radio idles in RX at ~12 mA and dominates the sleep current --
     // the deep-sleep feature would save almost nothing.
-    void sleepRadio() { if (initialized) radio.sleep(); }
+    // Keyed on "started", not "initialized": a radio marked down after repeated
+    // TX failures must still be told to sleep, or it would sit in RX all night.
+    void sleepRadio() { if (started) radio.sleep(); }
 
     // If a beacon arrived, decode it. Ignores data packets from other nodes.
     bool pollBeacon(BeaconPacket& b) {
@@ -232,8 +243,17 @@ public:
         size_t len = packReading(r, nodeId, buf, ackSleep);
         int st = radio.transmit(buf, len);
         radio.startReceive();
-        if (st == RADIOLIB_ERR_NONE) { Serial.printf("[LoRa] TX node %d (%u B)%s\n", nodeId, (unsigned)len, ackSleep?" [SLEEP-ACK]":""); return true; }
+        if (st == RADIOLIB_ERR_NONE) { txFailRun = 0; Serial.printf("[LoRa] TX node %d (%u B)%s\n", nodeId, (unsigned)len, ackSleep?" [SLEEP-ACK]":""); return true; }
         Serial.printf("[LoRa] TX fail %d\n", st);
+        // A radio that started fine can still lock up later (supply dip, SPI
+        // glitch). Three failed transmits in a row mark it not ready, so the
+        // caller's existing "radio not ready -> begin() again" retry resets and
+        // reconfigures it instead of failing silently forever.
+        if (++txFailRun >= 3) {
+            txFailRun = 0;
+            initialized = false;
+            Serial.println(F("[LoRa] repeated TX failures -- radio marked down for restart"));
+        }
         return false;
     }
 };

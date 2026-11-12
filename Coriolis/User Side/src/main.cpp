@@ -163,6 +163,7 @@ struct NodeView {
     float    rssi = 0, snr = 0;
     uint32_t lastSeen = 0;
     bool     sleeping = false;    // last packet carried FLAG_SLEEP_ACK
+    bool     resetReported = false; // already logged the current FLAG_NODE_RESET run
 };
 NodeView nodes[MAX_NODES];
 
@@ -315,13 +316,40 @@ uint8_t buildActive(uint8_t* out) {
 // plain buildActive() list is still used for display/telemetry, so a node with
 // a dead anemometer stays visible on the UI (with its own tab and battery/RSSI)
 // instead of vanishing -- it just stops voting on the wind call.
+//
+// Wind must also be RECENT: a sleeping node stays "present" for up to 11 min
+// between check-ins, but a reading that old is not current wind. So wind only
+// votes within the normal awake timeout, whatever the node's sleep state.
 uint8_t buildActiveWind(uint8_t* out) {
     uint8_t n = 0;
     uint32_t now = millis();
     for (uint8_t id = 1; id < MAX_NODES; id++)
-        if (nodes[id].seen && (now - nodes[id].lastSeen) < nodeTimeoutFor(nodes[id]) && nodes[id].windValid)
+        if (nodes[id].seen && (now - nodes[id].lastSeen) < NODE_TIMEOUT_MS && nodes[id].windValid)
             out[n++] = id;
     return n;
+}
+
+// Average the wind of the given nodes as VECTORS (speed x direction).
+// Averaging speed and direction separately invents wind: 10 mph from 0 deg and
+// 10 mph from 180 deg net to zero, but a plain speed average (10) glued to a
+// unit-vector direction (rounding noise, ~270 deg here) showed a full 10 mph
+// crosswind. The vector mean's components are exactly the mean crosswind and
+// headwind for any firing line. Returns false if there are no nodes.
+bool vectorMeanWind(const uint8_t* ids, uint8_t n, float& speed, float& dirDeg) {
+    speed = 0; dirDeg = 0;
+    if (n == 0) return false;
+    float sx = 0, sy = 0;
+    for (uint8_t i = 0; i < n; i++) {
+        const NodeView& nv = nodes[ids[i]];
+        float r = nv.windDir * (float)DEG_TO_RAD;
+        sx += nv.windSpeed * cosf(r);
+        sy += nv.windSpeed * sinf(r);
+    }
+    sx /= n; sy /= n;
+    speed  = sqrtf(sx * sx + sy * sy);
+    dirDeg = atan2f(sy, sx) * (float)RAD_TO_DEG;
+    if (dirDeg < 0) dirDeg += 360.0f;
+    return true;
 }
 
 int battPctFromVolts(float v) {
@@ -421,6 +449,13 @@ void ingestPacket(const NodePacket& p, float rssi, float snr) {
     // bit tracks sleep state exactly: present = "about to sleep again",
     // absent = "staying awake".
     nv.sleeping    = (p.flags & FLAG_SLEEP_ACK) != 0;
+    // FLAG_NODE_RESET: the node's watchdog (or a crash/brownout) rebooted it
+    // recently. Logged once per episode so a field failure leaves a trace here.
+    bool resetNow  = (p.flags & FLAG_NODE_RESET) != 0;
+    if (resetNow && !nv.resetReported)
+        Serial.printf("[node %d] reported an unexpected reboot (watchdog / crash / brownout) -- recovered\n",
+                      p.node_id);
+    nv.resetReported = resetNow;
     nv.lastSeen    = millis();
     lastRxMs       = millis();          // feed the RX watchdog
 
@@ -444,22 +479,18 @@ void drawCurrentView() {
         // the subset that votes on the wind figure.
         uint8_t activeW[MAX_NODES];
         uint8_t nw = buildActiveWind(activeW);
-        float sumSpeed = 0, sx = 0, sy = 0;
         float sumTempF = 0, sumPresHg = 0; int nEnv = 0;
         for (uint8_t i = 0; i < nw; i++) {
             NodeView& nv = nodes[activeW[i]];
-            sumSpeed += nv.windSpeed;
-            float r = nv.windDir * (float)DEG_TO_RAD;
-            sx += cosf(r); sy += sinf(r);
             if (nv.pressurePa > 0) {                 // only nodes with a baro
                 sumTempF  += nv.temperatureC * 9.0f / 5.0f + 32.0f;
                 sumPresHg += nv.pressurePa / 3386.389f;
                 nEnv++;
             }
         }
-        float avgSpeed = (nw > 0) ? sumSpeed / nw : 0;
-        int   avgDir   = 0;
-        if (nw > 0) { avgDir = (int)(atan2f(sy, sx) * RAD_TO_DEG + 0.5f); if (avgDir < 0) avgDir += 360; }
+        float avgSpeed = 0, avgDirF = 0;
+        vectorMeanWind(activeW, nw, avgSpeed, avgDirF);
+        int   avgDir   = (int)(avgDirF + 0.5f) % 360;
         float avgTempF = (nEnv > 0) ? sumTempF  / nEnv : 0;
         float avgPresHg= (nEnv > 0) ? sumPresHg / nEnv : 0;
         screen->drawGeneral(nw, avgSpeed, avgDir, avgTempF, avgPresHg,
@@ -551,20 +582,21 @@ String buildDataJson() {
     uint8_t activeW[MAX_NODES];
     uint8_t nw = buildActiveWind(activeW);
 
-    float sumSpd = 0, sx = 0, sy = 0, sumSpdSd = 0, sumDirSd = 0, sumT = 0, sumP = 0;
+    float sumSpd = 0, sumSpdSd = 0, sumDirSd = 0, sumT = 0, sumP = 0;
     int   nEnv = 0;
     for (uint8_t i = 0; i < nw; i++) {
         NodeView& nv = nodes[activeW[i]];
         sumSpd += nv.windSpeed; sumSpdSd += nv.windSpeedSd; sumDirSd += nv.windDirSd;
-        float r = nv.windDir * (float)DEG_TO_RAD; sx += cosf(r); sy += sinf(r);
     }
     for (uint8_t i = 0; i < n; i++) {
         NodeView& nv = nodes[active[i]];
         if (nv.pressurePa > 0) { sumT += nv.temperatureC*9.0f/5.0f+32.0f; sumP += nv.pressurePa/3386.389f; nEnv++; }
     }
-    float avgSpeed = nw ? sumSpd/nw : 0;
-    int   avgDir = 0;
-    if (nw) { avgDir = (int)(atan2f(sy, sx) * RAD_TO_DEG + 0.5f); if (avgDir < 0) avgDir += 360; }
+    float avgSpeed = 0, avgDirF = 0;
+    vectorMeanWind(activeW, nw, avgSpeed, avgDirF);    // vector mean, see helper
+    int   avgDir = (int)(avgDirF + 0.5f) % 360;
+    // 1 = all meters agree on the wind; near 0 = they cancel each other out.
+    float agree = (sumSpd > 0) ? avgSpeed / (sumSpd / nw) : 1.0f;
     float avgSpdSd = nw ? sumSpdSd/nw : 0, avgDirSd = nw ? sumDirSd/nw : 0;
     float avgT = nEnv ? sumT/nEnv : 0, avgP = nEnv ? sumP/nEnv : 0;
     bool baseFix = (rxLat != 0 && rxLon != 0);
@@ -576,6 +608,7 @@ String buildDataJson() {
     j += ",\"gps\":" + String(baseFix ? "true":"false") + "},";
     j += "\"avg\":{\"count\":" + String(nw) + ",\"seen\":" + String(n) + ",\"speed\":" + String(avgSpeed,2);
     j += ",\"speedSd\":" + String(avgSpdSd,2) + ",\"dir\":" + String(avgDir);
+    j += ",\"agree\":" + String(agree,2);
     j += ",\"dirSd\":" + String(avgDirSd,1) + ",\"tempF\":" + String(avgT,1);
     j += ",\"presInHg\":" + String(avgP,2) + "},\"nodes\":[";
     for (uint8_t i = 0; i < n; i++) {
@@ -592,7 +625,20 @@ String buildDataJson() {
         j += ",\"lat\":" + String(nv.lat,6) + ",\"lon\":" + String(nv.lon,6);
         j += ",\"distYd\":" + String(dist) + ",\"rssi\":" + String((int)nv.rssi);
         j += ",\"age\":" + String((int)((millis()-nv.lastSeen)/1000));
-        j += ",\"windOk\":" + String(nv.windValid ? "true" : "false");
+        // windOk must mean exactly "this node is voting on the wind call", i.e.
+        // the same test buildActiveWind() applied above: meter working AND the
+        // reading recent. The phone builds the WIND HOLD, the solver wind, the
+        // aimbot hold and the log from this flag, so sending bare windValid let a
+        // sleeping node's reading keep voting there for up to 11 minutes even
+        // though the base had already dropped it. Membership in activeW (rather
+        // than re-testing the age here) keeps the phone's count identical to
+        // avg.count for this snapshot. windStale tells the phone WHY a node is
+        // not voting: the meter is fine, the reading is just too old.
+        bool windVotes = false;
+        for (uint8_t k = 0; k < nw; k++)
+            if (activeW[k] == active[i]) { windVotes = true; break; }
+        j += ",\"windOk\":" + String(windVotes ? "true" : "false");
+        j += ",\"windStale\":" + String((nv.windValid && !windVotes) ? "true" : "false");
         j += ",\"sleeping\":" + String(nv.sleeping ? "true" : "false");
         // sleepCmd = individually COMMANDED to sleep (distinct from "sleeping",
         // which is the node having ACKED and gone quiet). The UI toggle reflects
@@ -1033,18 +1079,11 @@ void loop() {
 
     webui.handle();        // service phone dashboard requests
 
-    // feed the rolling stability buffer with the unweighted aggregate wind
+    // feed the rolling stability buffer with the unweighted aggregate (vector-mean) wind
     {
         uint8_t act[MAX_NODES]; uint8_t na = buildActiveWind(act);   // wind-valid only
-        float ss = 0, sx = 0, sy = 0;
-        for (uint8_t i = 0; i < na; i++) {
-            NodeView& nv = nodes[act[i]];
-            ss += nv.windSpeed;
-            float r = nv.windDir * (float)DEG_TO_RAD; sx += cosf(r); sy += sinf(r);
-        }
-        float aggSpd = na ? ss/na : 0;
-        float aggDir = 0;
-        if (na) { aggDir = atan2f(sy, sx) * RAD_TO_DEG; if (aggDir < 0) aggDir += 360; }
+        float aggSpd = 0, aggDir = 0;
+        vectorMeanWind(act, na, aggSpd, aggDir);                       // vector mean
         windStats.update(aggSpd, aggDir, na > 0);
     }
 
