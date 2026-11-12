@@ -35,9 +35,9 @@ jobs:
           - name: receiver
             dir: Coriolis/User Side
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -57,7 +57,10 @@ jobs:
           # Same partition table as the released images (huge_app: one 3 MB app,
           # no OTA slot). The receiver already sets it; the node gets it here so
           # both merged images have the same layout as V1.0.0 / V1.1.0.
-          pio run -e tbeam --project-option="board_build.partitions=huge_app.csv"
+          grep -q '^board_build.partitions' platformio.ini || \
+            sed -i 's/^board = ttgo-t-beam$/&\nboard_build.partitions = huge_app.csv/' platformio.ini
+          grep -n '^board' platformio.ini
+          pio run -e tbeam
 
       - name: Merge into one image
         working-directory: ${{ matrix.dir }}
