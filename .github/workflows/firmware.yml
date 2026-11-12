@@ -1,0 +1,81 @@
+# Builds the T-Beam firmware (wind meter node and base station receiver) and
+# packs each into one "merged" .bin that a browser flasher such as
+# https://espflash.app/ writes at address 0x0. No PlatformIO or VS Code needed
+# to install the result.
+#
+# Runs on every push and pull request that touches the firmware, and by hand
+# (Actions > Firmware > Run workflow). The .bin files are attached to the run
+# as an artifact; release assets are copied from there.
+name: Firmware
+
+on:
+  push:
+    paths: ['Coriolis/Node/**', 'Coriolis/User Side/**', '.github/workflows/firmware.yml']
+  pull_request:
+    paths: ['Coriolis/Node/**', 'Coriolis/User Side/**', '.github/workflows/firmware.yml']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version for the file names, e.g. 1.2.0'
+        required: false
+        default: 'dev'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: node
+            dir: Coriolis/Node
+          - name: receiver
+            dir: Coriolis/User Side
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ matrix.name }}-${{ hashFiles(format('{0}/platformio.ini', matrix.dir)) }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build
+        working-directory: ${{ matrix.dir }}
+        run: |
+          # build_dir in platformio.ini is a Windows path on the maintainer's PC.
+          sed -i '/^build_dir[[:space:]]*=/d' platformio.ini
+          # Same partition table as the released images (huge_app: one 3 MB app,
+          # no OTA slot). The receiver already sets it; the node gets it here so
+          # both merged images have the same layout as V1.0.0 / V1.1.0.
+          pio run -e tbeam --project-option="board_build.partitions=huge_app.csv"
+
+      - name: Merge into one image
+        working-directory: ${{ matrix.dir }}
+        run: |
+          VER="${{ github.event.inputs.version }}"
+          [ -n "$VER" ] || VER="dev-${GITHUB_SHA::7}"
+          B=.pio/build/tbeam
+          BOOT_APP0=$(ls ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin)
+          OUT="$GITHUB_WORKSPACE/out/windlab_${{ matrix.name }}_${VER}_merged.bin"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32 merge_bin -o "$OUT" \
+            --flash_mode dio --flash_freq 40m --flash_size 4MB \
+            0x1000 $B/bootloader.bin 0x8000 $B/partitions.bin 0xe000 "$BOOT_APP0" 0x10000 $B/firmware.bin
+          ls -l "$OUT"
+          sha256sum "$OUT"
+          pio pkg list -e tbeam > "$GITHUB_WORKSPACE/out/${{ matrix.name }}_packages.txt" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.name }}
+          path: out/
