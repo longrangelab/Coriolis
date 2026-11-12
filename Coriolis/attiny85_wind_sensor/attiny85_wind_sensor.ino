@@ -213,22 +213,30 @@ void blink(uint8_t n) {
 // The ISR counts pulses (never lost, even if the period queue is full) and
 // queues the period since the previous pulse. All math happens in loop().
 //
-// A closure (falling edge) only counts if the line had been open (HIGH) for at
-// least HIGH_MIN_US, and at least DEBOUNCE_US has passed since the last pulse.
-// The 10 ms debounce alone let release bounce through at low speed, where a
-// reed stays closed for hundreds of ms.
+// A pulse is the first edge after the line has rested open (HIGH, no edges)
+// for at least HIGH_MIN_US, and only if at least DEBOUNCE_US has passed since
+// the last pulse. The 10 ms debounce alone let release bounce through at low
+// speed, where a reed stays closed for hundreds of ms.
+//
+// The level is read a few us after the edge, so on a bouncing contact the
+// read can already be HIGH again. That edge still counts: it ends a quiet
+// open spell, so it is a closure whatever the read says. The read is only
+// used to know whether the line is resting open or closed afterwards.
 #define NO_PERIOD 0xFFFFFFFFUL
 volatile uint32_t periodRing[PERIOD_RING];   // completed periods, us (or NO_PERIOD)
 volatile uint8_t  ringHead = 0, ringCount = 0;
 volatile uint16_t pulseCount = 0;             // every accepted pulse
 volatile uint32_t lastEdgeUs = 0;
-volatile uint32_t lastRiseUs = 0;
+volatile uint32_t lastAnyEdgeUs = 0;          // last pin change of any kind
+volatile bool     lineHigh   = true;          // level read after that change
 volatile bool     haveEdge   = false;         // false until the first pulse
 
 ISR(PCINT0_vect) {
     uint32_t now = micros();
-    if (digitalRead(ANEMOMETER_PIN) != LOW) { lastRiseUs = now; return; }   // opened
-    if ((uint32_t)(now - lastRiseUs) < HIGH_MIN_US) return;                  // bounce
+    bool quietHigh = lineHigh && (uint32_t)(now - lastAnyEdgeUs) >= HIGH_MIN_US;
+    lastAnyEdgeUs = now;
+    lineHigh = digitalRead(ANEMOMETER_PIN) != LOW;
+    if (!quietHigh) return;                      // bounce, or the contact opening
     if (haveEdge && (uint32_t)(now - lastEdgeUs) < DEBOUNCE_US) return;      // too fast
     uint32_t dt = haveEdge ? (uint32_t)(now - lastEdgeUs) : NO_PERIOD;
     if (dt >= STOPPED_US) dt = NO_PERIOD;        // after a long calm: not a period
