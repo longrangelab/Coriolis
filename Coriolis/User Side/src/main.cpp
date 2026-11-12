@@ -617,7 +617,20 @@ String buildDataJson() {
         j += ",\"lat\":" + String(nv.lat,6) + ",\"lon\":" + String(nv.lon,6);
         j += ",\"distYd\":" + String(dist) + ",\"rssi\":" + String((int)nv.rssi);
         j += ",\"age\":" + String((int)((millis()-nv.lastSeen)/1000));
-        j += ",\"windOk\":" + String(nv.windValid ? "true" : "false");
+        // windOk must mean exactly "this node is voting on the wind call", i.e.
+        // the same test buildActiveWind() applied above: meter working AND the
+        // reading recent. The phone builds the WIND HOLD, the solver wind, the
+        // aimbot hold and the log from this flag, so sending bare windValid let a
+        // sleeping node's reading keep voting there for up to 11 minutes even
+        // though the base had already dropped it. Membership in activeW (rather
+        // than re-testing the age here) keeps the phone's count identical to
+        // avg.count for this snapshot. windStale tells the phone WHY a node is
+        // not voting: the meter is fine, the reading is just too old.
+        bool windVotes = false;
+        for (uint8_t k = 0; k < nw; k++)
+            if (activeW[k] == active[i]) { windVotes = true; break; }
+        j += ",\"windOk\":" + String(windVotes ? "true" : "false");
+        j += ",\"windStale\":" + String((nv.windValid && !windVotes) ? "true" : "false");
         j += ",\"sleeping\":" + String(nv.sleeping ? "true" : "false");
         // sleepCmd = individually COMMANDED to sleep (distinct from "sleeping",
         // which is the node having ACKED and gone quiet). The UI toggle reflects
