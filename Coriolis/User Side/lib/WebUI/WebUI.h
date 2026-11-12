@@ -551,14 +551,26 @@ function weightedAvgWind(){
   var weights=effectiveNodeWeights(),ns=weights.nodes;
   var nBad=all.length-ns.length;
   if(!ns.length)return{speed:0,dir:0,speedSd:0,dirSd:0,count:0,bad:nBad};
+  // Average the wind as VECTORS (speed x direction), not speed and direction
+  // separately. Averaging them separately invents wind: 10 mph from 0 deg plus
+  // 10 mph from 180 deg nets to zero, but a plain speed average (10) glued to a
+  // unit-vector direction (noise, ~90 deg) reported a full 10 mph crosswind.
+  // The weighted vector mean gives exactly the weighted mean crosswind and
+  // headwind, which is what the solver needs.
   var sumSpd=0,sumSpdSd=0,sumDirSd=0,sx=0,sy=0;
   ns.forEach(function(n){
-    var f=weights.pct[n.id]/100, ml=getMult(n.id);
-    sumSpd+=f*n.speed*ml;sumSpdSd+=f*n.speedSd*ml;sumDirSd+=f*n.dirSd;
-    var r=n.dir*Math.PI/180;sx+=f*Math.cos(r);sy+=f*Math.sin(r);
+    var f=weights.pct[n.id]/100, v=n.speed*getMult(n.id);
+    sumSpd+=f*v;sumSpdSd+=f*n.speedSd*getMult(n.id);sumDirSd+=f*n.dirSd;
+    var r=n.dir*Math.PI/180;sx+=f*v*Math.cos(r);sy+=f*v*Math.sin(r);
   });
+  var speed=Math.sqrt(sx*sx+sy*sy);
   var dir=Math.atan2(sy,sx)*180/Math.PI;if(dir<0)dir+=360;
-  return{speed:sumSpd,dir:dir,speedSd:sumSpdSd,dirSd:sumDirSd,count:ns.length,bad:nBad};
+  // agree: 1 = every meter blows the same way; near 0 = they cancel out. Low
+  // agreement means the meters see different winds and the net call is small
+  // because they disagree, not because it's calm.
+  var agree=sumSpd>0?speed/sumSpd:1;
+  return{speed:speed,dir:dir,speedSd:sumSpdSd,dirSd:sumDirSd,count:ns.length,bad:nBad,
+         scalarSpeed:sumSpd,agree:agree};
 }
 function setNodeWeight(id,v){var w=nodeWeights();w[id]=Math.max(0,parseFloat(v)||0);storeWeights(w);updateWeightTotal();render();}
 function resetWeightsEqual(){
@@ -1759,7 +1771,10 @@ function tele(){
     // A dead meter must never be silent -- it's the difference between "3 nodes
     // agree it's calm" and "2 nodes plus a corpse reporting zero".
     var nodeLbl=ww.bad?('<span style="color:var(--warn)">'+ww.count+' (+'+ww.bad+' no wind)</span>'):a.count;
-    g.innerHTML=c('Nodes',nodeLbl)+c('Wtd wind',ww.speed.toFixed(1)+' mph '+Math.round(ww.dir)+'&deg; '+card(ww.dir))+
+    // Meters that point different ways partly cancel in the vector average.
+    // Say so, so a small net call isn't mistaken for calm, steady air.
+    var agreeCard=(ww.count>1&&ww.agree<0.5)?'<div class="card"><div class="k">Meters</div><div class="v" style="color:var(--warn)">DISAGREE '+Math.round(ww.agree*100)+'%</div></div>':'';
+    g.innerHTML=agreeCard+c('Nodes',nodeLbl)+c('Wtd wind',ww.speed.toFixed(1)+' mph '+Math.round(ww.dir)+'&deg; '+card(ww.dir))+
       c('Avg temp',a.tempF.toFixed(0)+'&deg;F')+c('Avg baro',a.presInHg.toFixed(2)+' inHg');
   }else{var n=(data.nodes||[]).find(function(x){return x.id==view;});if(!n){g.innerHTML='';return;}
     var lux=(n.lux<0)?'&mdash;':n.lux.toFixed(0)+' lx',dist=(n.distYd<0)?'&mdash;':n.distYd+' yd';
