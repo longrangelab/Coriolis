@@ -58,6 +58,13 @@ does the same.
 The chip now sits in the bootloader with no sketch. Put it on the daughterboard
 and load the sketch over I2C as below.
 
+To program the sketch in the same ISP step instead, combine the two files and
+write `combined.hex` in place of `twiboot.hex` above:
+
+```
+python combine_hex.py twiboot.hex attiny85_wind_sensor.ino.hex combined.hex
+```
+
 **Do not** use "Upload Using Programmer" or "Burn Bootloader" on this chip
 again: both erase the bootloader or turn self-programming off. If that happens,
 repeat the setup.
@@ -114,7 +121,8 @@ sudo apt install gcc-avr avr-libc libsimavr-dev libelf-dev
 cd test && make test APP_V1=a.hex APP_V2=b.hex
 ```
 
-It covers: fresh chip, first load, power-up hand-off, update of a running
+An optional fourth argument, a `combine_hex.py` image of APP_V2, also checks
+the ISP-combined path. It covers: fresh chip, first load, power-up hand-off, update of a running
 sketch, an update cut off after 40 pages followed by power loss (chip stays in
 the bootloader, retry works), oversized and EE_RDY images, the bootloader
 ignoring other addresses, no bus contention, longest clock stretch (9.1 ms).
