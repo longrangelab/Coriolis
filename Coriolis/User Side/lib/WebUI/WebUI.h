@@ -544,7 +544,8 @@ function setNodeMult(id,v){var m=nodeMults();var f=parseFloat(v);m[id]=(isFinite
 function resetMultsOne(){var ns=(data&&data.nodes)||[];var m={};ns.forEach(function(n){m[n.id]=1;});storeMults(m);renderWeightsPanel(true);render();}
 function weightedAvgWind(){
   var all=(data&&data.nodes)||[];
-  // Drop nodes whose anemometer is dead/stale (windOk:false from the receiver).
+  // Drop nodes whose anemometer is dead or whose reading is too old (both arrive
+  // as windOk:false from the receiver, which applies the same test to its own average).
   // They stay visible on their own tab -- they just don't vote on the wind call.
   // Legacy receivers don't send windOk at all; undefined means "trust it", so
   // this degrades to the old behaviour rather than zeroing everything out.
@@ -834,7 +835,7 @@ async function updateWindHold(force){
   var el=document.getElementById('windHold');
   if(!el)return;
   if(!data){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';return;}
-  if(!activeName()){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">-- (no rifle profile)</div>';return;}
+  if(!activeName()){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">-- (no rifle profile)</div>';return;}
   if(liveWindMissing()){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv" style="color:var(--warn)">NO VALID WIND METER</div>';return;}
   if(!force){
     if(solveBusy)return;
@@ -848,7 +849,9 @@ async function updateWindHold(force){
       '&range='+p.range+'&tempF='+p.tempF+'&pres='+p.pres+'&windmph='+p.windmph+'&windrel='+p.windrel+
       '&lat='+p.lat+'&az='+fireAz+'&earth='+p.earth+'&spin='+p.spin+'&jump='+p.jump;
     var r=await fetch(q,{cache:'no-store'});var s=await r.json();
-    if(!s.ok){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">solver error</div>';return;}
+    // The aimbot may only dial the hold that is on screen. A solver error or a
+    // failed request shows no hold, so the previous one must not stay armed.
+    if(!s.ok){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">solver error</div>';return;}
     var wmag=parseFloat(getv('zeroWindMag',0))||0, wdir=getv('zeroWindDir','right');
     var zw=(wdir==='right')?-wmag:wmag;
     var wMOA=s.windMOA+zw, wMil=s.windMil+zw/3.4377;
@@ -858,7 +861,7 @@ async function updateWindHold(force){
     aimHoldMOA=wMOA; aimHoldOk=true;
     el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">'+Math.abs(wMOA).toFixed(1)+' '+(wMOA>=0?'R':'L')+
       ' MOA &middot; '+Math.abs(wMil).toFixed(2)+' '+(wMil>=0?'R':'L')+' mil</div>';
-  }catch(e){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';
+  }catch(e){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';
   }finally{solveBusy=false;windHoldLast=Date.now();}
 }
 function renderStability(){
@@ -1792,7 +1795,10 @@ function tele(){
     var mcard=(ml!==1)?c('Wind mult','&times;'+ml.toFixed(2)+' = '+(n.speed*ml).toFixed(1)+' mph'):'';
     var mt=getNodeMeterType(n.id);
     var vaneLbl=(mt>=0)?METER_NAMES[mt]:'not set';
-    var wokcard=(n.windOk===false)?'<div class="card"><div class="k">Wind sensor</div><div class="v" style="color:var(--warn)">NO DATA</div></div>':'';
+    // windOk:false = this node is not voting on the wind call. windStale says
+    // the meter is fine but the reading is too old (a sleeping node between
+    // check-ins), which is a different thing from a dead meter.
+    var wokcard=(n.windOk===false)?'<div class="card"><div class="k">Wind sensor</div><div class="v" style="color:var(--warn)">'+(n.windStale?'OLD READING':'NO DATA')+'</div></div>':'';
     g.innerHTML=wokcard+c('True dir',Math.round(n.dir)+'&deg; '+card(n.dir))+c('Temp',n.tempF.toFixed(0)+'&deg;F')+
       c('Baro',n.presInHg.toFixed(2)+' inHg')+c('Light',lux)+
       c('Wind meter',vaneLbl)+
