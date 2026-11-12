@@ -47,7 +47,7 @@ jobs:
           key: pio-${{ matrix.name }}-${{ hashFiles(format('{0}/platformio.ini', matrix.dir)) }}
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install platformio "esptool>=4.7,<5"
 
       - name: Build
         working-directory: ${{ matrix.dir }}
@@ -75,10 +75,11 @@ jobs:
           VER="${{ github.event.inputs.version }}"
           [ -n "$VER" ] || VER="dev-${GITHUB_SHA::7}"
           B=.pio/build/tbeam
-          BOOT_APP0=$(ls ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin)
+          BOOT_APP0=$(find ~/.platformio/packages/framework-arduinoespressif32* -name boot_app0.bin | head -1)
+          test -f "$BOOT_APP0"
           OUT="$GITHUB_WORKSPACE/out/windlab_${{ matrix.name }}_${VER}_merged.bin"
           mkdir -p "$GITHUB_WORKSPACE/out"
-          python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32 merge_bin -o "$OUT" \
+          python -m esptool --chip esp32 merge_bin -o "$OUT" \
             --flash_mode dio --flash_freq 40m --flash_size 4MB \
             0x1000 $B/bootloader.bin 0x8000 $B/partitions.bin 0xe000 "$BOOT_APP0" 0x10000 $B/firmware.bin
           ls -l "$OUT"
