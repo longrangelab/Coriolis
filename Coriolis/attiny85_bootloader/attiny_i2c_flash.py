@@ -23,6 +23,7 @@ except ImportError:
     sys.exit("pyserial is missing: python -m pip install pyserial")
 
 APP_LIMIT = 0x1C00  # bytes below the bootloader
+LINE_GAP = 0.020    # seconds between HEX lines (node drops bytes if sent faster)
 
 
 def check_hex(path):
@@ -82,19 +83,29 @@ def main():
     port.reset_input_buffer()
 
     # The node may be booting (some USB adapters reset it anyway), so ask again
-    # until it answers.
+    # if it doesn't answer. Wait long enough between tries that a late answer
+    # to the first try can't be followed by a second "attiny-flash", which the
+    # node would read as a bad HEX line.
     ready = None
-    for _ in range(8):
+    for _ in range(4):
         port.write(b"\nattiny-flash\n")
-        ready = wait_for(port, ["[attiny] ready"], 2.0)
+        ready = wait_for(port, ["[attiny] ready"], 5.0)
         if ready:
             break
     if not ready:
         sys.exit("node did not answer 'attiny-flash' (is the new node firmware on it?)")
 
-    for line in lines:
+    # One line every LINE_GAP s. Sent back to back at 115200 baud the node
+    # drops characters (seen on a T-Beam: "bad HEX line"); 15 ms per line
+    # worked first time. Scheduled from the start so Windows' coarse sleep
+    # doesn't add up.
+    print(f"sending {len(lines)} lines (about {len(lines) * LINE_GAP:.0f} s)")
+    t0 = time.monotonic()
+    for i, line in enumerate(lines):
+        delay = t0 + i * LINE_GAP - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
         port.write((line + "\n").encode("ascii"))
-        time.sleep(0.002)
     port.flush()
 
     result = wait_for(port, ["[attiny] OK", "[attiny] FAIL"], 60.0)
