@@ -315,11 +315,15 @@ uint8_t buildActive(uint8_t* out) {
 // plain buildActive() list is still used for display/telemetry, so a node with
 // a dead anemometer stays visible on the UI (with its own tab and battery/RSSI)
 // instead of vanishing -- it just stops voting on the wind call.
+//
+// Wind must also be RECENT: a sleeping node stays "present" for up to 11 min
+// between check-ins, but a reading that old is not current wind. So wind only
+// votes within the normal awake timeout, whatever the node's sleep state.
 uint8_t buildActiveWind(uint8_t* out) {
     uint8_t n = 0;
     uint32_t now = millis();
     for (uint8_t id = 1; id < MAX_NODES; id++)
-        if (nodes[id].seen && (now - nodes[id].lastSeen) < nodeTimeoutFor(nodes[id]) && nodes[id].windValid)
+        if (nodes[id].seen && (now - nodes[id].lastSeen) < NODE_TIMEOUT_MS && nodes[id].windValid)
             out[n++] = id;
     return n;
 }
@@ -613,7 +617,20 @@ String buildDataJson() {
         j += ",\"lat\":" + String(nv.lat,6) + ",\"lon\":" + String(nv.lon,6);
         j += ",\"distYd\":" + String(dist) + ",\"rssi\":" + String((int)nv.rssi);
         j += ",\"age\":" + String((int)((millis()-nv.lastSeen)/1000));
-        j += ",\"windOk\":" + String(nv.windValid ? "true" : "false");
+        // windOk must mean exactly "this node is voting on the wind call", i.e.
+        // the same test buildActiveWind() applied above: meter working AND the
+        // reading recent. The phone builds the WIND HOLD, the solver wind, the
+        // aimbot hold and the log from this flag, so sending bare windValid let a
+        // sleeping node's reading keep voting there for up to 11 minutes even
+        // though the base had already dropped it. Membership in activeW (rather
+        // than re-testing the age here) keeps the phone's count identical to
+        // avg.count for this snapshot. windStale tells the phone WHY a node is
+        // not voting: the meter is fine, the reading is just too old.
+        bool windVotes = false;
+        for (uint8_t k = 0; k < nw; k++)
+            if (activeW[k] == active[i]) { windVotes = true; break; }
+        j += ",\"windOk\":" + String(windVotes ? "true" : "false");
+        j += ",\"windStale\":" + String((nv.windValid && !windVotes) ? "true" : "false");
         j += ",\"sleeping\":" + String(nv.sleeping ? "true" : "false");
         // sleepCmd = individually COMMANDED to sleep (distinct from "sleeping",
         // which is the node having ACKED and gone quiet). The UI toggle reflects
