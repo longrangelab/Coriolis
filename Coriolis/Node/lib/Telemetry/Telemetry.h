@@ -69,6 +69,10 @@
 // 0.00 mph and dragged the weighted average toward calm, which is the single
 // worst failure mode this system has: a confident, wrong, low wind call.
 #define FLAG_WIND_VALID   0x10
+// FLAG_NODE_RESET: the node rebooted unexpectedly (watchdog, crash, brownout
+// or I2C self-restart) recently -- set on its next ~20 packets so the base
+// can log it even if a few are lost. Old receivers ignore unknown flag bits.
+#define FLAG_NODE_RESET   0x20
 
 // Bits inside BeaconPacket.flags. The flags byte was previously unused, so
 // old firmware just ignores whatever we set here -- a node running pre-sleep
@@ -122,6 +126,7 @@ struct NodeReading {
     double  latitude = 0, longitude = 0;
     bool    baroValid = false, lightValid = false, gpsValid = false;
     bool    windValid = false;
+    bool    nodeReset = false;   // -> FLAG_NODE_RESET
 };
 
 // ---- CRC-16/CCITT-FALSE ----
@@ -140,7 +145,7 @@ static inline size_t packReading(const NodeReading& r, uint8_t node_id, uint8_t*
     NodePacket p;
     p.magic = NODE_PACKET_MAGIC; p.version = PACKET_VERSION; p.node_id = node_id;
     p.flags = (r.baroValid?FLAG_BARO_VALID:0)|(r.lightValid?FLAG_LIGHT_VALID:0)|(r.gpsValid?FLAG_GPS_VALID:0)
-            | (ackSleep?FLAG_SLEEP_ACK:0) | (r.windValid?FLAG_WIND_VALID:0);
+            | (ackSleep?FLAG_SLEEP_ACK:0) | (r.windValid?FLAG_WIND_VALID:0) | (r.nodeReset?FLAG_NODE_RESET:0);
     p.wind_speed    = (uint16_t)(r.windSpeed   * 100.0f + 0.5f);
     p.wind_speed_sd = (uint16_t)(r.windSpeedSd * 100.0f + 0.5f);
     p.wind_dir      = (uint16_t)(r.windDir     * 10.0f  + 0.5f);
