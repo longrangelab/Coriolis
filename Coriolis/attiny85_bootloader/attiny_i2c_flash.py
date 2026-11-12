@@ -2,7 +2,9 @@
 """
 Update the ATtiny85 wind sensor over I2C, through the wind meter node's USB port.
 
-    python attiny_i2c_flash.py COM6 attiny85_wind_sensor.ino.hex
+    python attiny_i2c_flash.py COMx attiny85_wind_sensor.ino.hex
+
+COMx is the wind meter node's port (Windows: Device Manager > Ports).
 
 The .hex comes from Arduino IDE: Sketch > Export Compiled Binary (ATtiny85,
 8 MHz internal). The node must run firmware with the "attiny-flash" command,
@@ -63,7 +65,7 @@ def wait_for(port, needles, timeout, echo=True):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("port", help="node serial port, e.g. COM6 or /dev/ttyACM0")
+    ap.add_argument("port", help="the wind meter node's serial port, e.g. COM12 or /dev/ttyACM0")
     ap.add_argument("hexfile", help="ATtiny sketch .hex")
     ap.add_argument("--baud", type=int, default=115200)
     args = ap.parse_args()
