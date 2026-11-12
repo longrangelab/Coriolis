@@ -18,10 +18,14 @@
  *
  * What gets reported (refreshed every 1 s, over a rolling 10 s window):
  *   speed_avg : pulses in the window / window length. Calm time counts as calm.
- *   speed_sd  : time-weighted SD of per-pulse speeds, calm time counted as 0
- *   gust      : highest 3 s mean speed within the window
+ *   speed_sd  : time-weighted SD of per-revolution speeds. Reads 0 in a
+ *               perfectly steady wind; a lull counts as slow air, not as a gap.
+ *   gust      : highest 3 s mean speed within the window, from revolution
+ *               times, so it equals the speed in a steady wind
  *   dir_avg   : unit-vector mean of 100 ms vane samples taken while moving
- *   dir_sd    : Yamartino SD of the same samples
+ *   dir_sd    : Yamartino SD of the same samples. Reads 103.9 (the maximum)
+ *               when the cups are turning but the vane signal is out of range
+ *               (broken wire, unplugged vane): direction unknown, not "steady".
  *   rawADC    : bits 0-9 = last vane ADC (debug), bits 10-15 = publish
  *               sequence (1..63, never 0 once data exists). The node uses the
  *               sequence to spot a frozen ATtiny that still answers I2C.
@@ -159,6 +163,21 @@ static const VaneCal vaneTable[] PROGMEM = {
 };
 static const uint8_t vaneTableSize = sizeof(vaneTable) / sizeof(vaneTable[0]);
 
+// A vane reading outside the range the sensor can produce is a wiring fault,
+// not a direction. SparkFun: the lowest and highest table entries are 66 and
+// 945, and an open circuit sits at the pull-up rail (~1023), which used to
+// decode as the nearest entry, 90 deg, with an SD of 0. Inspeed: the E-Vane
+// only drives 5-95% of Vcc.
+#define VANE_SF_ADC_MIN   33      // halfway between 0 and the lowest entry
+#define VANE_SF_ADC_MAX   984     // halfway between the highest entry and 1023
+#define VANE_IN_ADC_SLACK 30      // counts allowed beyond AT_0 / AT_360
+#define DIR_SD_UNKNOWN    1039    // 103.9 deg: the largest value Yamartino gives
+bool vaneAdcValid(int adc) {
+    if (sensorType == SENSOR_SPARKFUN)
+        return adc >= VANE_SF_ADC_MIN && adc <= VANE_SF_ADC_MAX;
+    return adc >= (VANE_ADC_AT_0 - VANE_IN_ADC_SLACK) && adc <= (VANE_ADC_AT_360 + VANE_IN_ADC_SLACK);
+}
+
 // Unit vector (cos, sin) * 1000 for the current vane reading.
 void decodeVaneVector(int adc, int16_t& c1000, int16_t& s1000) {
     if (sensorType == SENSOR_SPARKFUN) {
@@ -225,24 +244,42 @@ ISR(PCINT0_vect) {
 // ============================================================================
 // ROLLING WINDOW: WINDOW_BUCKETS one-second buckets
 // ============================================================================
-// Speed is v(t) = K / T_i during revolution i, and 0 when the cups are still.
-// Averaging that over the WHOLE window W (calm time included):
-//   mean speed  = K * pulses / W
-//   mean of v^2 = K^2 * sum(1/T_i) / W
-//   speed SD    = sqrt(mean of v^2 - mean^2)
-// The earlier version divided by the summed revolution time instead of W, so a
-// short burst followed by calm read several times too high, and it counted the
-// revolution in progress as complete, so one stray pulse could read 250 mph.
+// Mean speed is a plain count over the WHOLE window W (calm time included):
+//   mean speed = K * pulses / W
+//
+// Speed SD and gust use the revolution times. Speed is v = K / T_i during
+// revolution i, which lasts T_i. Weighting each revolution by its own duration,
+// over the time C = sum(T_i) that the n revolutions took:
+//   mean       = K * n / C
+//   mean of v2 = K^2 * sum(1/T_i) / C
+//   SD         = sqrt(mean of v2 - mean^2)
+// In a steady wind every T_i is equal and this is exactly 0. This file first
+// divided by W instead of C, which is not: the revolutions never fill the window
+// exactly, and the leftover part of a turn was counted as dead calm. That read
+// as up to 1 mph of SD in perfectly steady air.
+//
+// Calm still has to count as calm. A gap longer than CALM_US between pulses is
+// not a revolution (the cups were stopped), so it is left out of n and C. Its
+// time then shows up as C falling well short of the span, and spanDivisor()
+// switches to dividing by the whole span, which counts that time as zero speed.
+//
+// Gust is the highest 3 s mean, computed the same way over 3 buckets. In a
+// steady wind it equals the speed (a pulse count over 3 s is off by up to one
+// pulse, +0.5 mph SparkFun, +0.9 mph Inspeed). A short burst in a calm still
+// averages over the full 3 s, so a few stray pulses cannot read as a gust.
 //
 // Direction: unit vectors of 100 ms vane samples, skipping samples taken while
 // the cups are stopped (no pulse for CALM_US) -- a vane in a lull just drifts.
 struct Bucket {
-    float    sumInvT;   // sum of 1/T (1/us) for periods ending in this bucket
+    float    sumInvT;   // sum of 1/T (1/us) for revolutions ending in this bucket
+    uint32_t sumT;      // sum of T (us) for the same revolutions
     int16_t  sinS;      // sum of sin * 1000 (<= 10 samples -> fits)
     int16_t  cosS;      // sum of cos * 1000
     uint8_t  pulses;    // pulses in this bucket (<= 100 at 100 Hz)
+    uint8_t  nPer;      // how many revolutions the two sums hold
     uint8_t  nDir;      // vane samples counted for direction
 };
+#define EMPTY_BUCKET Bucket{0.0f, 0, 0, 0, 0, 0, 0}
 static Bucket   bk[WINDOW_BUCKETS];
 static uint8_t  curB    = 0;      // bucket being filled
 static uint8_t  filledB = 1;      // buckets holding data (window warm-up)
@@ -273,7 +310,13 @@ void drainPulses() {
         ringHead = (uint8_t)(ringHead + 1) % PERIOD_RING;
         ringCount--;
         interrupts();
-        if (T != NO_PERIOD && T > 0) b.sumInvT += 1.0f / (float)T;
+        // Only gaps short enough to be a revolution. Anything longer is the
+        // cups starting again after a stop: calm time, not a slow turn.
+        if (T != NO_PERIOD && T > 0 && T <= CALM_US && b.nPer < 255) {
+            b.sumInvT += 1.0f / (float)T;
+            b.sumT    += T;
+            b.nPer++;
+        }
     }
 }
 
@@ -288,6 +331,7 @@ void sampleVane() {
     interrupts();
     bool moving = he && (uint32_t)(micros() - le) < CALM_US;
     if (!moving) return;                       // calm: vane reading is meaningless
+    if (!vaneAdcValid(adc)) return;            // wiring fault: not a direction
 
     int16_t vCos, vSin;
     decodeVaneVector(adc, vCos, vSin);
@@ -304,32 +348,63 @@ static inline uint16_t toU16(float v, float scale) {
     return (uint16_t)x;
 }
 
+// Time to divide by when averaging n revolutions that took `cov` us inside a
+// span of `whole` us. If they fill the span to within two average turns, the
+// difference is only where the first and last turn happen to fall, so use the
+// time they really took (exact in a steady wind). Otherwise part of the span
+// was calm, or a turn reached back well before it: use the whole span, which
+// counts the calm as zero speed.
+static float spanDivisor(float cov, uint16_t n, float whole) {
+    float slack = 2.0f * cov / (float)n;
+    float gap   = whole - cov;
+    if (gap > slack || gap < -slack) return whole;
+    return cov;
+}
+
 // Recompute every statistic over the window and publish it for I2C.
 void publishWindow() {
     // ---- totals over the window ----
-    uint16_t N = 0; float SI = 0.0f;
+    uint16_t N = 0, NP = 0; float SI = 0.0f; uint32_t CT = 0;
     int32_t  sS = 0, cS = 0; uint16_t nD = 0;
     for (uint8_t a = 0; a < filledB; a++) {
         const Bucket& b = bk[bucketAgo(a)];
-        N += b.pulses; SI += b.sumInvT;
+        N += b.pulses; NP += b.nPer; SI += b.sumInvT; CT += b.sumT;
         sS += b.sinS; cS += b.cosS; nD += b.nDir;
     }
     float Wsec = (float)filledB * (TICK_MS * TICKS_PER_BUCKET) / 1000.0f;
     float Wus  = Wsec * 1000000.0f;
 
     float spdAvg = K_MPH_HZ * (float)N / Wsec;
-    float m2     = K_MPH_US * K_MPH_US * SI / Wus;
-    float var    = m2 - spdAvg * spdAvg;
-    float spdSd  = (var > 0.0f) ? sqrt(var) : 0.0f;
+
+    // ---- speed SD: revolutions weighted by their own duration ----
+    float spdSd = 0.0f;
+    if (NP > 0) {
+        float den  = spanDivisor((float)CT, NP, Wus);
+        float mean = K_MPH_US * (float)NP / den;
+        float var  = K_MPH_US * K_MPH_US * SI / den - mean * mean;
+        if (var > 0.0f) spdSd = sqrt(var);
+    }
 
     // ---- gust: highest GUST_BUCKETS-second mean inside the window ----
     float gust = 0.0f;
     uint8_t span = (filledB < GUST_BUCKETS) ? filledB : GUST_BUCKETS;
     float spanSec = (float)span * (TICK_MS * TICKS_PER_BUCKET) / 1000.0f;
+    float spanUs  = spanSec * 1000000.0f;
     for (uint8_t start = 0; start + span <= filledB; start++) {
-        uint16_t gN = 0;
-        for (uint8_t k = 0; k < span; k++) gN += bk[bucketAgo(start + k)].pulses;
-        float g = K_MPH_HZ * (float)gN / spanSec;
+        uint16_t gN = 0, gP = 0; uint32_t gT = 0;
+        for (uint8_t k = 0; k < span; k++) {
+            const Bucket& b = bk[bucketAgo(start + k)];
+            gN += b.pulses; gP += b.nPer; gT += b.sumT;
+        }
+        float g;
+        if (gP == 0 || gN > gP + 1) {
+            // No revolution times to use, or some are missing: wind too light
+            // to turn the cups every CALM_US, or the ISR queue overflowed (only
+            // above ~80 Hz). Fall back to the plain count.
+            g = K_MPH_HZ * (float)gN / spanSec;
+        } else {
+            g = K_MPH_US * (float)gP / spanDivisor((float)gT, gP, spanUs);
+        }
         if (g > gust) gust = g;
     }
     if (gust < spdAvg) gust = spdAvg;
@@ -347,6 +422,11 @@ void publishWindow() {
         out.dir_avg = toU16(dirAvg, 10.0f);
         if (out.dir_avg >= 3600) out.dir_avg -= 3600;
         out.dir_sd  = toU16(dirSd, 10.0f);
+    } else if (N > 0) {
+        // Cups turning but not one usable vane sample in the window: the vane
+        // signal is out of range. Keep the last direction, but say it is
+        // unknown rather than leaving a small SD that reads as steady.
+        out.dir_sd = DIR_SD_UNKNOWN;
     }
     out.speed_avg = toU16(spdAvg, 100.0f);
     out.speed_sd  = toU16(spdSd,  100.0f);
@@ -365,33 +445,37 @@ void publishWindow() {
 void advanceBucket() {
     curB = (uint8_t)(curB + 1) % WINDOW_BUCKETS;
     if (filledB < WINDOW_BUCKETS) filledB++;
-    bk[curB] = Bucket{0.0f, 0, 0, 0, 0};
+    bk[curB] = EMPTY_BUCKET;
 }
 
 // ============================================================================
 // I2C
 // ============================================================================
-// TinyWireS (rambo/TinyWire) calls this once per read, at the address byte, and
-// queues into a 16-byte TX buffer. If a read is ever cut short (bus clear,
-// timeout), the unsent bytes stay queued: the next frame comes out shifted, and
-// once fewer than 12 bytes are free, TinyWireS.write() spins forever inside the
-// I2C interrupt. The watchdog below is what gets the chip (and the shared bus)
-// back from that. The node's sequence check rejects shifted frames.
+// This file is written for the "TinyWireS" library in the Arduino Library
+// Manager (TinyWireS 1.0.0 by Nadav Matalon, github.com/nadavmatalon/TinyWireS).
+// It is the fork whose calls are write() / read() / TinyWireS_stop_check(),
+// which are the calls this sketch has always made.
 //
-// TinyWireS forks disagree on the name of the "queue a byte" call: rambo/TinyWire
-// uses send(), others use write(). twsPut() picks whichever the installed
-// library has, so this file builds against either without editing.
-// (Wrapped in a struct so the Arduino IDE's prototype generator leaves it alone.)
-struct TwsPut {
-    template <typename T>
-    static auto put(T& tws, uint8_t b, int) -> decltype(tws.write(b), void()) { tws.write(b); }
-    template <typename T>
-    static void put(T& tws, uint8_t b, long) { tws.send(b); }
-};
-
+// That library calls the request handler ONCE per read, at the address byte,
+// and queues into a 32-byte TX buffer. requestEvent() relies on both: it queues
+// the whole 12-byte frame in one call.
+//
+// Do NOT build this against rambo/TinyWire (calls send() / receive()). It calls
+// the request handler once per BYTE and has a 16-byte buffer, so queueing a
+// full frame on every call overruns it and hangs inside the I2C interrupt.
+// rambo/TinyWire has no write(), so that mistake fails at compile time here,
+// on purpose, instead of in the field.
+//
+// Known limit: if a read is cut short (the node resets mid-read, or clocks the
+// bus clear), the unsent bytes stay queued and every later frame comes out
+// shifted by that many bytes. Nothing in the frame lets the node detect this.
+// If the backlog ever reaches the point where a new frame no longer fits,
+// write() spins inside the interrupt and the watchdog below resets the chip,
+// which also clears it. A proper fix needs the library to flush its TX buffer
+// at the address byte, or a checksum in the frame.
 void requestEvent() {
     uint8_t* ptr = (uint8_t*)&windData;
-    for (uint8_t i = 0; i < sizeof(windData); i++) TwsPut::put(TinyWireS, ptr[i], 0);
+    for (uint8_t i = 0; i < sizeof(windData); i++) TinyWireS.write(ptr[i]);
 }
 
 // ============================================================================
@@ -412,7 +496,7 @@ void setup() {
     blink(sensorType == SENSOR_INSPEED ? 3 : 2); // 2 = SparkFun, 3 = Inspeed
 
     windData = {0, 0, 0, 0, 0, 0};              // rawADC seq 0 = no data yet
-    for (uint8_t i = 0; i < WINDOW_BUCKETS; i++) bk[i] = Bucket{0.0f, 0, 0, 0, 0};
+    for (uint8_t i = 0; i < WINDOW_BUCKETS; i++) bk[i] = EMPTY_BUCKET;
 
     pinMode(ANEMOMETER_PIN, INPUT);             // external ~10k pull-up required
     PCMSK |= (1 << PCINT4);
