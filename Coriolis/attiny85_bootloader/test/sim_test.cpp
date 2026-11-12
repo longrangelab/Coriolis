@@ -307,7 +307,7 @@ static void busyWait(SimBus& bus, uint32_t ms) {
 static uint16_t word(uint16_t byteAddr) { return avr->flash[byteAddr] | (avr->flash[byteAddr + 1] << 8); }
 
 int main(int argc, char** argv) {
-    if (argc < 4) { printf("usage: %s twiboot.hex app_v1.hex app_v2.hex\n", argv[0]); return 1; }
+    if (argc < 4) { printf("usage: %s twiboot.hex app_v1.hex app_v2.hex [combined_v2.hex]\n", argv[0]); return 1; }
     uint16_t bootLen, v1Len, v2Len;
     auto boot = loadHex(argv[1], &bootLen);
     auto v1 = loadHex(argv[2], &v1Len);
@@ -336,12 +336,29 @@ int main(int argc, char** argv) {
     avr_register_io(avr, &spmIo);
     memset(spmBuf, 0xFF, 64);
 
+    SimBus bus;
+    attiny::Flasher<SimBus> fl(bus);
+
+    if (argc >= 5) {
+        // combine_hex.py output for v2, as written by the one-time ISP step
+        uint16_t cLen;
+        auto comb = loadHex(argv[4], &cLen);
+        printf("\n0) Combined bootloader + v2 image from ISP (%u bytes)\n", cLen);
+        memcpy(avr->flash, comb.data(), 8192);
+        powerCycle();
+        busyWait(bus, 3500);
+        uint8_t w12[12];
+        check(appAnswers(bus, w12), "sketch starts on its own and answers at 0x42");
+        check(fl.enterBootloader() && fl.matches(v2.data(), v2Len), "bootloader sees exactly v2 in flash");
+        fl.startApp();
+        busyWait(bus, 2500);
+        check(appAnswers(bus), "sketch runs again");
+        memset(avr->flash, 0xFF, 8192);
+    }
+
     // One-time ISP step: bootloader only, rest of flash erased.
     memcpy(avr->flash + attiny::BOOT_START, boot.data() + attiny::BOOT_START, bootLen - attiny::BOOT_START);
     powerCycle();
-
-    SimBus bus;
-    attiny::Flasher<SimBus> fl(bus);
 
     printf("\n1) Fresh chip, bootloader only\n");
     step(8000 * 200);
