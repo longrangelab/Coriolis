@@ -1,24 +1,23 @@
 /**
- * ATtiny85 Wind Sensor  -  AUTO-DETECT SparkFun / Inspeed
- * =======================================================
- * Same firmware for either kit. At boot it PROBES the wind-vane input to decide
- * which meter is connected, then selects the matching vane decode + anemometer
- * calibration. No #define to change, no jumper.
+ * ATtiny85 Wind Sensor  -  SparkFun / Inspeed
+ * ===========================================
+ * Same firmware for either kit. The wind meter is chosen AT COMPILE TIME with
+ * the WIND_METER_ lines below -- uncomment exactly one before flashing. The build
+ * fails on purpose if none (or both) are selected, so a node can never be
+ * flashed with the wrong calibration by accident.
  *
- * How the probe works
- * -------------------
- *  SparkFun vane = passive resistor network (high impedance).
- *  Inspeed E-Vane = active Hall output (low impedance, ratiometric 5-95% Vcc).
- *   1) Range: Inspeed can only read ~5-95% of Vcc (ADC ~51..972). A reading
- *      near either rail must be SparkFun (open reed / dead zone).
- *   2) Impedance: read with the internal pull-up OFF then ON. The ~40k pull-up
- *      can't move Inspeed's low-Z driver (delta ~ 0) but shifts SparkFun's
- *      divider (delta ~ 20-55 counts). Big shift -> SparkFun; none -> Inspeed.
+ * The choice sets both halves of the calibration together:
+ *   SparkFun : 1.492 mph per Hz, 8-position resistor-ladder vane table
+ *   Inspeed  : 2.5 mph per Hz,   continuous ratiometric E-Vane (5-95% Vcc)
  *
- * LED feedback at boot: 2 blinks = SparkFun, 3 blinks = Inspeed.
+ * (Earlier builds tried to auto-detect the meter at boot by probing the vane.
+ *  That misclassified real Inspeed hardware as SparkFun, so it was removed.)
+ *
+ * LED feedback at boot: 2 blinks = SparkFun, 3 blinks = Inspeed. Check this
+ * after flashing -- it confirms which calibration is actually running.
  *
  * The anemometer (single reed/Hall pulse, 1 pulse/rev) is the same for both;
- * only the mph-per-Hz constant differs, and it's chosen with the vane.
+ * only the mph-per-Hz constant differs.
  *
  * Hardware: ATtiny85 @ 8 MHz internal, 3.3 V, I2C addr 0x42
  * Pins: PB0=SDA, PB2=SCL, PB3=vane analog, PB4=anemometer pulse, PB1=LED
@@ -38,7 +37,7 @@
 
 #define TICK_MS            100UL
 #define TICKS_PER_WINDOW   20      // 20 x 100 ms = 2.0 s window
-#define DEBOUNCE_US        10000UL // reed debounce (~99 mph cap)
+#define DEBOUNCE_US        10000UL // reed debounce: 100 Hz cap (149 mph SparkFun, 250 mph Inspeed)
 
 // ---- Calibration constants for each kit ----
 #define SPARKFUN_MPH_PER_HZ  1.492f
@@ -49,26 +48,30 @@
 #define VANE_ADC_AT_0    51       // ~5% of Vcc
 #define VANE_ADC_AT_360  972      // ~95% of Vcc
 
-// ---- Auto-detect tuning ----
-#define PROBE_SAMPLES        4
-#define PROBE_DELTA_THRESH   8     // ADC counts: > = passive (SparkFun)
-#define INSPEED_ADC_MIN      40    // below this -> can't be Inspeed
-#define INSPEED_ADC_MAX      985   // above this -> can't be Inspeed
+// ---- WIND METER SELECTION -- uncomment EXACTLY ONE line ----
+//#define WIND_METER_SPARKFUN   // SparkFun weather meter kit
+//#define WIND_METER_INSPEED    // Inspeed Vortex + E-Vane
 
-// Override the probe for bench testing: 0 = auto, 1 = SparkFun, 2 = Inspeed
-// Set per-node before flashing: 1 = SparkFun, 2 = Inspeed. Leaving this at 0
-// will now fail to compile on purpose -- see the #error in probeSensorType().
-#define FORCE_SENSOR 1   // <-- currently set for Inspeed. Change to 1 for a SparkFun node.
+#if defined(WIND_METER_SPARKFUN) && defined(WIND_METER_INSPEED)
+  #error "Both wind meters are selected. Uncomment only one WIND_METER_ line near the top of this file."
+#elif !defined(WIND_METER_SPARKFUN) && !defined(WIND_METER_INSPEED)
+  #error "No wind meter selected. Uncomment one WIND_METER_ line near the top of this file."
+#endif
 
 // ============================================================================
-// RUNTIME SENSOR SELECTION
+// SENSOR SELECTION (fixed at compile time by the WIND_METER_ line above)
 // ============================================================================
 enum SensorType { SENSOR_SPARKFUN = 0, SENSOR_INSPEED = 1 };
-SensorType sensorType    = SENSOR_SPARKFUN;
-float      anemoMphPerHz = SPARKFUN_MPH_PER_HZ;
+#if defined(WIND_METER_INSPEED)
+const SensorType sensorType    = SENSOR_INSPEED;
+const float      anemoMphPerHz = INSPEED_MPH_PER_HZ;
+#else
+const SensorType sensorType    = SENSOR_SPARKFUN;
+const float      anemoMphPerHz = SPARKFUN_MPH_PER_HZ;
+#endif
 
 // ============================================================================
-// I2C DATA STRUCTURE  (12 bytes, unchanged -- ESP32 side needs no changes)
+// I2C DATA STRUCTURE  (12 bytes -- must match the node's AttinyWind struct)
 // ============================================================================
 struct WindData {
     uint16_t speed_avg;   // mph * 100
@@ -117,41 +120,6 @@ void decodeVaneVector(int adc, float& cosv, float& sinv) {
     }
 }
 
-// ============================================================================
-// SENSOR AUTO-DETECT PROBE
-// ============================================================================
-SensorType probeSensorType() {
-#if FORCE_SENSOR == 1
-    return SENSOR_SPARKFUN;
-#elif FORCE_SENSOR == 2
-    return SENSOR_INSPEED;
-#elif FORCE_SENSOR == 0
-    #error "Set FORCE_SENSOR to 1 (SparkFun) or 2 (Inspeed) before flashing -- 0/auto-detect is disabled on purpose, it has misclassified real Inspeed hardware as SparkFun before."
-#else
-    long sumOff = 0, sumDelta = 0;
-    for (uint8_t i = 0; i < PROBE_SAMPLES; i++) {
-        pinMode(WIND_VANE_PIN, INPUT);          // pull-up OFF
-        delay(6);
-        int aOff = analogRead(WIND_VANE_PIN);
-        pinMode(WIND_VANE_PIN, INPUT_PULLUP);   // pull-up ON
-        delay(6);
-        int aOn  = analogRead(WIND_VANE_PIN);
-        sumOff   += aOff;
-        sumDelta += (aOn - aOff);
-    }
-    pinMode(WIND_VANE_PIN, INPUT);              // restore for normal operation
-
-    int avgOff   = (int)(sumOff   / PROBE_SAMPLES);
-    int avgDelta = (int)(sumDelta / PROBE_SAMPLES);
-
-    // 1) Out of Inspeed's ratiometric range -> must be SparkFun.
-    if (avgOff < INSPEED_ADC_MIN || avgOff > INSPEED_ADC_MAX) return SENSOR_SPARKFUN;
-
-    // 2) In range: passive network shifts under the pull-up, active driver does not.
-    return (avgDelta > PROBE_DELTA_THRESH) ? SENSOR_SPARKFUN : SENSOR_INSPEED;
-#endif
-}
-
 void blink(uint8_t n) {
     for (uint8_t i = 0; i < n; i++) {
         digitalWrite(DEBUG_LED_PIN, HIGH); delay(180);
@@ -198,7 +166,7 @@ void sampleTick() {
     lastPulseSnapshot = pulseNow;
 
     float binHz  = (float)delta * (1000.0f / (float)TICK_MS);
-    float binMph = binHz * anemoMphPerHz;          // <-- runtime constant
+    float binMph = binHz * anemoMphPerHz;
     spdSum   += binMph;
     spdSumSq += binMph * binMph;
     if (binMph > gustMax) gustMax = binMph;
@@ -249,10 +217,7 @@ void setup() {
     pinMode(DEBUG_LED_PIN, OUTPUT);
     blink(1);                                   // "alive"
 
-    // ---- probe which wind meter is connected ----
-    sensorType    = probeSensorType();
-    anemoMphPerHz = (sensorType == SENSOR_INSPEED) ? INSPEED_MPH_PER_HZ
-                                                   : SPARKFUN_MPH_PER_HZ;
+    // ---- report which wind meter this build is calibrated for ----
     delay(300);
     blink(sensorType == SENSOR_INSPEED ? 3 : 2); // 2 = SparkFun, 3 = Inspeed
 
