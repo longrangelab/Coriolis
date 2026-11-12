@@ -52,7 +52,7 @@ avrdude -C <avrdude.conf> -p attiny85 -c <programmer> [-P <port> -b <baud>] -e ^
 
 (`^` continues a line in Windows cmd; use `\` on Linux/macOS, or put it on one
 line.) `twiboot.hex` is prebuilt in this folder; `make` rebuilds it
-(avr-gcc). With an "Arduino as ISP" programmer, `make install fuses PORT=COM5`
+(avr-gcc). With an "Arduino as ISP" programmer, `make install fuses PORT=COMx` (the programmer's port)
 does the same.
 
 The chip now sits in the bootloader with no sketch. Put it on the daughterboard
@@ -70,8 +70,11 @@ repeat the setup.
 3. With the node on USB (close the serial monitor first):
 
    ```
-   python attiny_i2c_flash.py COM6 attiny85_wind_sensor.ino.hex
+   python attiny_i2c_flash.py COMx attiny85_wind_sensor.ino.hex
    ```
+
+   `COMx` is the wind meter node's port (Device Manager > Ports); the
+   base station and other USB devices have their own, so check which is which.
 
    Needs pyserial (`python -m pip install pyserial`). It prints
    `[attiny] OK ... written and verified` in about 3 s.

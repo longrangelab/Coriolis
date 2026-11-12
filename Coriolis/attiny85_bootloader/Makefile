@@ -5,13 +5,13 @@
 #   make fuses      set the fuses (one time)
 #
 # PROG is the avrdude programmer. The default is an Arduino running the
-# "ArduinoISP" sketch on COM port PORT. Override on the command line, e.g.
+# "ArduinoISP" sketch on serial port PORT (required, e.g. PORT=COM7). Override on the command line, e.g.
 #   make install PROG="-c usbasp"
-#   make install PROG="-c stk500v1 -b 19200 -P COM5"
+#   make install PROG="-c stk500v1 -b 19200 -P COMx"
 
 MCU              = attiny85
 BOOTLOADER_START = 0x1C00
-PORT            ?= COM5
+PORT            ?= $(error set PORT to the programmer's serial port, e.g. make install PORT=COM7)
 PROG            ?= -c stk500v1 -b 19200 -P $(PORT)
 
 # Fuses:  L 0xE2  8 MHz internal RC, no clock divide (same as the sketch)
