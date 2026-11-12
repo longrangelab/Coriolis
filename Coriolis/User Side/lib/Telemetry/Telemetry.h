@@ -42,6 +42,7 @@
 #define FLAG_GPS_VALID    0x04
 #define FLAG_SLEEP_ACK    0x08   // node acking a sleep command (see node telemetry.h)
 #define FLAG_WIND_VALID   0x10   // wind figures are from a live/recent ATtiny read
+#define FLAG_NODE_RESET   0x20   // node rebooted unexpectedly recently (watchdog/crash/brownout)
 
 #define BFLAG_SLEEP_CMD   0x01   // beacon flag: "after this cycle, enter deep sleep"
 #define BFLAG_WAKE_CMD    0x02   // beacon flag: "wake broadcast -- stay awake and resync"
