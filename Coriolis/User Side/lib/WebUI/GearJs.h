@@ -202,6 +202,29 @@ function parseBands(t){
   rows.forEach(function(x){if(!(x.bc>0))throw new Error('BC bands: every BC must be above 0');});
   return rows.sort(function(a,b){return b.minVelFps-a.minVelFps;});
 }
+// Custom drag curve as text: "mach:cd" pairs, e.g. "0.5:0.142, 0.9:0.150,
+// 1.0:0.290". One pair per line also works ("0.5,0.142" or "0.5 0.142"), so a
+// two-column table pasted from a spreadsheet or Skyward's CSV reads as is.
+function curveToText(pts){
+  return (pts||[]).slice().sort(function(a,b){return a.mach-b.mach;}).map(function(p){return r(p.mach,3)+':'+r(p.cd,4);}).join(', ');
+}
+function parseCurve(t){
+  if(t===undefined||t===null||(''+t).trim()==='')return null;
+  t=''+t;var pairs=[],lines=t.split(/\r?\n/).map(function(x){return x.trim();}).filter(Boolean);
+  var items=(lines.length>1&&!/:/.test(t))?lines:t.split(/[,;\n]+/);
+  items.forEach(function(it){
+    it=it.trim();if(!it)return;
+    var m=it.match(/^([0-9]*\.?[0-9]+)\s*[:,\t ]\s*([0-9]*\.?[0-9]+)$/);
+    if(!m){if(/^[a-z]/i.test(it))return;   // a header row such as "mach,cd"
+      throw new Error('Drag curve: write Mach:Cd pairs like 0.5:0.142, 0.9:0.150, 1.0:0.290');}
+    pairs.push({mach:parseFloat(m[1]),cd:parseFloat(m[2])});
+  });
+  if(pairs.length<2)throw new Error('Drag curve: needs at least 2 Mach:Cd points');
+  pairs.forEach(function(x){if(!(x.cd>0))throw new Error('Drag curve: every Cd must be above 0');});
+  pairs.sort(function(a,b){return a.mach-b.mach;});
+  for(var i=1;i<pairs.length;i++)if(pairs[i].mach===pairs[i-1].mach)throw new Error('Drag curve: Mach '+pairs[i].mach+' appears twice');
+  return pairs;
+}
 function modelCode(m){return m==='G1'?'1':(m==='CUSTOM'?'C':'7');}
 function modelName(c){c=''+c;return c==='1'?'G1':(c==='C'?'CUSTOM':'G7');}
 // Flat solver profile for a load (what the LOAD fields in the page show).
@@ -215,7 +238,7 @@ function flat(loadId){
   var eM=n(l.zeroHeightIn,0)/inPerMoa,wM=n(l.zeroOffsetIn,0)/inPerMoa;
   return {
     mv:n(l.muzzleVelocityFps,2700),bc:top?top.bc:(model==='CUSTOM'?'':0.243),model:modelCode(model),
-    bcBands:rows.length>1?bandsToText(rows):'',
+    bcBands:rows.length>1?bandsToText(rows):'',dragCurve:curveToText(b.dragCurve),
     wgt:n(b.weightGr,175),cal:n(b.diameterIn,0.308),twist:n(rf.twistIn,10),
     blen:(b.lengthIn>0)?b.lengthIn:'',twistDir:rf.twistDirection==='LEFT'?-1:1,
     sh:n(rf.sightHeightIn,1.75),zero:zero,
@@ -234,7 +257,8 @@ function bulletFromFlat(p,base){
   var b=Object.assign({},base||{id:uuid(),maker:'',name:'',source:'user'});
   b.diameterIn=n(p.cal,0.308);b.weightGr=n(p.wgt,175);
   b.lengthIn=(p.blen!==''&&p.blen!==undefined&&n(p.blen,0)>0)?n(p.blen,0):null;
-  b.dragModel=model;b.bcPoints=rows;b.dragCurve=(base&&base.dragCurve)||[];
+  // A typed curve replaces the bullet's; a blank field keeps whatever it has.
+  b.dragModel=model;b.bcPoints=rows;b.dragCurve=parseCurve(p.dragCurve)||(base&&base.dragCurve)||[];
   if(model==='CUSTOM'&&b.dragCurve.length<2)throw new Error('This bullet has no drag curve. Pick G1 or G7.');
   if(!b.name)b.name=b.weightGr+' gr '+model+(model==='CUSTOM'?'':' '+rows[0].bc);
   return b;
@@ -242,7 +266,7 @@ function bulletFromFlat(p,base){
 function bulletMatches(b,p){
   if(!b)return false;
   var t=bulletFromFlat(p,b);
-  return same([t.diameterIn,t.weightGr,t.lengthIn,t.dragModel,t.bcPoints],[b.diameterIn,b.weightGr,b.lengthIn||null,b.dragModel,b.bcPoints]);
+  return same([t.diameterIn,t.weightGr,t.lengthIn,t.dragModel,t.bcPoints,t.dragCurve],[b.diameterIn,b.weightGr,b.lengthIn||null,b.dragModel,b.bcPoints,b.dragCurve||[]]);
 }
 // Save a flat profile as load `name`. loadId = the load it was opened from
 // (null for a brand-new one); asNew = "Save As": a new load on the same rifle.
@@ -265,15 +289,15 @@ function saveFlat(name,p,loadId,asNew){
     l.dragModelOverride=(b0&&tb.dragModel===b0.dragModel)?null:tb.dragModel;
     l.bcPointsOverride=tb.bcPoints;
     b=b0?clone(b0):tb;
-    if(b0&&!same([b0.diameterIn,b0.weightGr,b0.lengthIn||null],[tb.diameterIn,tb.weightGr,tb.lengthIn])){
-      b=Object.assign(clone(b0),{id:uuid(),source:'user',name:(b0.name||'bullet')+' (edited)',diameterIn:tb.diameterIn,weightGr:tb.weightGr,lengthIn:tb.lengthIn});
+    if(b0&&!same([b0.diameterIn,b0.weightGr,b0.lengthIn||null,b0.dragCurve||[]],[tb.diameterIn,tb.weightGr,tb.lengthIn,tb.dragCurve])){
+      b=Object.assign(clone(b0),{id:uuid(),source:'user',name:(b0.name||'bullet')+' (edited)',diameterIn:tb.diameterIn,weightGr:tb.weightGr,lengthIn:tb.lengthIn,dragCurve:tb.dragCurve});
       delete b.libraryOrder;delete b.collection;
     }
   }else if(b0&&bulletMatches(b0,p)){b=clone(b0);}
   else{
     var shared=b0&&(b0.source==='library'||lib.loads.some(function(x){return x.bulletId===b0.id&&x.id!==l.id;}));
     b=bulletFromFlat(p,shared?null:b0);
-    if(shared){b.name=(b0.name||'bullet')+' (edited)';b.maker=b0.maker||'';b.dragCurve=b0.dragCurve||[];}
+    if(shared){b.name=(b0.name||'bullet')+' (edited)';b.maker=b0.maker||'';if(!parseCurve(p.dragCurve))b.dragCurve=b0.dragCurve||[];}
   }
   var zero=n(p.zero,100),inPerMoa=IN_PER_MOA_100*zero/100;
   var eM=n(p.zeroElevMag,0)*(p.zeroElevDir==='low'?-1:1),wM=n(p.zeroWindMag,0)*(p.zeroWindDir==='left'?-1:1);
@@ -309,6 +333,7 @@ function removeBullets(ids){
 function engineGear(p){
   var b0=bullet(p.bulletId);
   var bl=bulletFromFlat(p,b0&&modelName(p.model)==='CUSTOM'?b0:null);
+  if(modelName(p.model)==='CUSTOM'&&bl.dragCurve.length<2)throw new Error('Enter a drag curve (Mach:Cd pairs) or pick G1/G7.');
   var l0=p.loadId?loadRec(p.loadId):null;   // Skyward extras the flat view doesn't show
   return {
     rifle:{twistIn:n(p.twist,10),twistDirection:(''+p.twistDir)==='-1'?'LEFT':'RIGHT',sightHeightIn:n(p.sh,1.75)},
@@ -418,7 +443,7 @@ root.Gear={
   loads:loadsSorted,label:label,rifle:rifle,load:loadRec,bullet:bullet,bullets:function(){return lib.bullets;},
   flat:flat,saveFlat:saveFlat,removeLoad:removeLoad,removeBullets:removeBullets,
   importText:importText,exportText:exportText,parseFile:parseFile,mergeInto:mergeInto,
-  engineGear:engineGear,solve:solve,sensitivity:sensitivity,parseBands:parseBands,
+  engineGear:engineGear,solve:solve,sensitivity:sensitivity,parseBands:parseBands,parseCurve:parseCurve,curveToText:curveToText,
   sync:sync,onChange:function(f){listeners.push(f);},migrated:migrated,stableId:stableId,
   _reset:function(){lib=emptyLib();meta={serverVer:-1,lastSync:0,status:'',err:''};persist();}
 };
