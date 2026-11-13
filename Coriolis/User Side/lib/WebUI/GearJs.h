@@ -469,14 +469,21 @@ function sync(){
       meta.serverVer=base;persist();
       if(remoteHash!==null&&remoteHash===hash(canon(lib))){meta.serverHash=remoteHash;return 'same';}
       if(!lib.loads.length&&!lib.bullets.length&&!lib.rifles.length&&!(lib.deleted||[]).length)return 'same';
+      // A file the base already refused is not sent again until the gear changes:
+      // each try ties up the base's web server (and live wind) for several seconds.
+      var mine=hash(canon(lib))+'@'+(info.max||0);   // retried if the gear or the base's limit changes
+      if(meta.tooBig===mine)throw new Error(meta.tooBigMsg||'gear file too big for the base station');
       var text=exportText('master');
       return gzipBlob(text).then(function(z){
+        function refuse(){meta.tooBig=mine;meta.tooBigMsg='gear file too big for the base station ('+Math.ceil(z.blob.size/1024)+' KB, limit '+Math.floor((info.max||0)/1024)+' KB)';persist();throw new Error(meta.tooBigMsg);}
+        if(info.max&&z.blob.size>info.max)refuse();
         var fd=new FormData();fd.append('file',z.blob,'gear.json');
         return fetchT('/gear?base='+base+'&gz='+(z.gz?1:0),{method:'POST',body:fd},30000).then(function(r){
           return r.json().then(function(j){
             if(r.status===409){again=true;meta.serverVer=-1;return 'conflict';}
-            if(!j.ok)throw new Error(j.err==='too_big'?'gear file too big for the base station':j.err==='flash_full'?'base station flash full':'save failed ('+(j.err||r.status)+')');
-            meta.serverVer=j.ver;meta.serverHash=hash(canon(lib));return 'pushed';
+            if(!j.ok&&j.err==='too_big')refuse();
+            if(!j.ok)throw new Error(j.err==='flash_full'?'base station flash full':'save failed ('+(j.err||r.status)+')');
+            meta.serverVer=j.ver;meta.serverHash=hash(canon(lib));delete meta.tooBig;delete meta.tooBigMsg;return 'pushed';
           });
         });
       });

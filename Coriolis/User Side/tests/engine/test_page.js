@@ -50,7 +50,7 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/gear.js') return send(200, 'application/javascript', GEAR);
   if (u.pathname === '/sky.js') return send(200, 'application/javascript', SKY);
   if (u.pathname === '/data.json') return send(200, 'application/json', dataJson());
-  if (u.pathname === '/gear/info') return send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver, bytes: gear.body.length, gz: gear.gz, max: 393216 }));
+  if (u.pathname === '/gear/info') return send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver, bytes: gear.body.length, gz: gear.gz, max: gear.hideMax ? undefined : (gear.max || 393216) }));
   if (u.pathname === '/gear' && req.method === 'GET') {
     if (!gear.body.length) return send(204, 'application/json', '');
     return send(200, 'application/json', gear.body, Object.assign({ 'X-Gear-Ver': String(gear.ver) }, gear.gz ? { 'Content-Encoding': 'gzip' } : {}));
@@ -59,7 +59,10 @@ const server = http.createServer((req, res) => {
     const chunks = []; req.on('data', c => chunks.push(c));
     req.on('end', () => {
       if (+u.searchParams.get('base') !== gear.ver) { gear.conflicts++; return send(409, 'application/json', JSON.stringify({ ok: false, err: 'conflict', ver: gear.ver })); }
-      gear.body = Buffer.from(multipartFile(Buffer.concat(chunks), req.headers['content-type']));
+      const file = Buffer.from(multipartFile(Buffer.concat(chunks), req.headers['content-type']));
+      gear.tries = (gear.tries || 0) + 1;
+      if (gear.max && file.length > gear.max) return send(413, 'application/json', JSON.stringify({ ok: false, err: 'too_big' }));
+      gear.body = file;
       gear.gz = u.searchParams.get('gz') === '1'; gear.ver++; gear.posts++;
       send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver }));
     });
@@ -315,6 +318,20 @@ const skyFile = JSON.stringify({
     await A.evaluate(() => SkyUI.close());
   }
 
+  // a library bigger than the base's limit is refused once and not resent every sync
+  gear.max = 300; gear.tries = 0;
+  await A.evaluate(() => Gear.importText(JSON.stringify({ format: 'skyward-library', version: 1, kind: 'bullets',
+    bullets: [{ id: 'big1', maker: 'Test', name: 'Too big', diameterIn: 0.308, weightGr: 175, dragModel: 'G7', bcPoints: [{ bc: 0.25, minVelFps: 0 }], source: 'library', updatedAt: Date.now() }] })));
+  await A.evaluate(() => Gear.sync()); await A.evaluate(() => Gear.sync());
+  const big1 = await A.evaluate(() => Gear.meta().err);
+  check('Gear: file over the base limit is not uploaded', gear.tries === 0 && /too big/.test(big1), { tries: gear.tries, err: big1 });
+  gear.hideMax = true; gear.tries = 0;      // older base: no "max" in /gear/info, refuses with 413
+  await A.evaluate(() => Gear.sync()); await A.evaluate(() => Gear.sync()); await A.evaluate(() => Gear.sync());
+  check('Gear: a refused upload is sent once, not on every sync', gear.tries === 1, gear.tries);
+  for (let i = errors.length - 1; i >= 0; i--) if (/status of 413/.test(errors[i])) errors.splice(i, 1);   // the browser logs the refused POST
+  gear.hideMax = false; gear.max = 0; gear.tries = 0;   // limit raised: it goes through
+  const v0 = gear.ver; await A.evaluate(() => Gear.sync());
+  check('Gear: retried once the base limit changes', gear.tries === 1 && gear.ver === v0 + 1 && !(await A.evaluate(() => Gear.meta().tooBig)), { tries: gear.tries });
   check('no request fell back to the ESP32 solver', legacyCalls.length === 0, legacyCalls);
   check('no JS errors or dialogs', errors.length === 0, errors);
   if (process.env.SHOT_DIR) {
