@@ -1160,6 +1160,11 @@ function SolutionScreen(which){
     toolbar({back:back,title:SOL_TITLES[me.sub],actions:acts});
     bottomNav(SOL_TABS,me.sub,function(id){var order=SOL_TABS.map(function(t){return t.id;});var dir=order.indexOf(id)>order.indexOf(me.sub)?1:-1;me.sub=id;
       col.innerHTML='';col.className='sk-col sk-in'+(dir<0?' back':'');me.render(col);me.scroll.scrollTop=0;});
+    // live wind is on but there is none: say these numbers use the typed wind
+    if(me.sub!=='calibrate'&&liveOn('live_wind')&&wl()&&!liveWind().ok){
+      var nw=el('div','sk-note',(stale()?'Lost the base station, so there is no live wind. ':'No meter has valid wind. ')+
+        'These numbers use the typed wind: '+speedTxt(fin(getv('windmph',0),0))+' at '+Math.round(fin(getv('windrel',0),0))+'°.');
+      nw.className+=' sk-nowind';nw.style.cssText='color:var(--error);font-weight:600;padding:10px 16px';col.appendChild(nw);}
     if(me.sub==='solution')renderSolution(col,c);
     else if(me.sub==='table')renderTable(col,c);
     else if(me.sub==='card')renderCard(col,c);

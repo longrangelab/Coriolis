@@ -381,6 +381,9 @@ const skyFile = JSON.stringify({
   await new Promise(r => setTimeout(r, 1200));
   const off = await A.evaluate(() => ({ ok: avgWind().ok, hint: (document.querySelector('#sky .sk-res') || {}).textContent || '', hold: document.getElementById('windHold').textContent }));
   check('Lost base: no live wind, and the Solver says so', !off.ok && /Lost the base station/.test(off.hint) && !/\d MOA/.test(off.hold), off);
+  await A.click('#sky .sk-res .sk-btn'); await A.waitForSelector('#sky .sk-big');
+  check('Lost base: full solution says it uses the typed wind', await A.evaluate(() => /Lost the base station.*typed wind/.test((document.querySelector('#sky .sk-nowind') || {}).textContent || '')));
+  await A.goBack(); await new Promise(r => setTimeout(r, 150));
   gear.offline = false;
   await A.waitForFunction(() => avgWind().ok, null, { timeout: 5000 });
   check('Lost base: live wind comes back on its own', true);
