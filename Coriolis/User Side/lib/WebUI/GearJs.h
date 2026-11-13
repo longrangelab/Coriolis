@@ -54,6 +54,13 @@ function n(v,d){v=parseFloat(v);return isFinite(v)?v:d;}
 function r(v,dp){var m=Math.pow(10,dp);return Math.round(v*m)/m;}
 function clone(o){return JSON.parse(JSON.stringify(o));}
 function emptyLib(){return {rifles:[],loads:[],bullets:[],deleted:[],cards:[],shots:[]};}
+function hash(s){   // cyrb53: 53-bit content hash
+  var h1=0xdeadbeef,h2=0x41c6ce57;
+  for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);h1=Math.imul(h1^c,2654435761);h2=Math.imul(h2^c,1597334677);}
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  return (h2>>>0).toString(16)+':'+(h1>>>0).toString(16)+':'+s.length;
+}
 function canon(lib){   // order-independent content key, for "did anything change"
   function srt(a){return (a||[]).slice().sort(function(x,y){return x.id<y.id?-1:x.id>y.id?1:0;});}
   return JSON.stringify([srt(lib.rifles),srt(lib.loads),srt(lib.bullets),srt(lib.cards),srt(lib.shots),
@@ -70,6 +77,7 @@ function persist(){
 function load(){
   try{var t=JSON.parse(lsGet(KEY));if(t&&t.rifles)lib=normalize(t);}catch(e){}
   try{var m=JSON.parse(lsGet(META));if(m)meta=Object.assign(meta,m);}catch(e){}
+  delete meta.serverCanon;   // older builds kept a whole second copy here
 }
 
 // ---------- merge (Skyward rule) ----------
@@ -187,7 +195,7 @@ function loadsSorted(){return lib.loads.slice().sort(function(a,b){var x=label(a
 
 // ---------- flat profile <-> records ----------
 function bandsToText(rows){
-  return rows.slice().sort(function(a,b){return b.minVelFps-a.minVelFps;}).map(function(p){return r(p.bc,4)+'@'+r(p.minVelFps||0,0);}).join(', ');
+  return rows.slice().sort(function(a,b){return b.minVelFps-a.minVelFps;}).map(function(p){return (+p.bc)+'@'+(+(p.minVelFps||0));}).join(', ');
 }
 function parseBands(t){
   if(t===undefined||t===null||(''+t).trim()==='')return null;
@@ -206,7 +214,7 @@ function parseBands(t){
 // 1.0:0.290". One pair per line also works ("0.5,0.142" or "0.5 0.142"), so a
 // two-column table pasted from a spreadsheet or Skyward's CSV reads as is.
 function curveToText(pts){
-  return (pts||[]).slice().sort(function(a,b){return a.mach-b.mach;}).map(function(p){return r(p.mach,3)+':'+r(p.cd,4);}).join(', ');
+  return (pts||[]).slice().sort(function(a,b){return a.mach-b.mach;}).map(function(p){return (+p.mach)+':'+(+p.cd);}).join(', ');
 }
 function parseCurve(t){
   if(t===undefined||t===null||(''+t).trim()==='')return null;
@@ -250,7 +258,9 @@ function flat(loadId){
 }
 function same(a,b){return JSON.stringify(a)===JSON.stringify(b);}
 function put(list,rec){var i=-1;list.forEach(function(x,k){if(x.id===rec.id)i=k;});if(i<0)list.push(rec);else list[i]=rec;}
-function stamp(list,rec,old){if(!old||!same(Object.assign({},old,{updatedAt:0}),Object.assign({},rec,{updatedAt:0}))){rec.updatedAt=now();put(list,rec);return true;}return false;}
+// An edit must beat the copy it replaces even when that copy came from a
+// device whose clock runs ahead, so its stamp is never older than the old one.
+function stamp(list,rec,old){if(!old||!same(Object.assign({},old,{updatedAt:0}),Object.assign({},rec,{updatedAt:0}))){rec.updatedAt=Math.max(now(),(old?(+old.updatedAt||0):0)+1);put(list,rec);return true;}return false;}
 function bulletFromFlat(p,base){
   var model=modelName(p.model);
   var rows=parseBands(p.bcBands)||(model==='CUSTOM'?(base&&base.bcPoints)||[]:[{bc:n(p.bc,0.243),minVelFps:0}]);
@@ -260,9 +270,11 @@ function bulletFromFlat(p,base){
   // A typed curve replaces the bullet's; a blank field keeps whatever it has.
   b.dragModel=model;b.bcPoints=rows;b.dragCurve=parseCurve(p.dragCurve)||(base&&base.dragCurve)||[];
   if(model==='CUSTOM'&&b.dragCurve.length<2)throw new Error('This bullet has no drag curve. Pick G1 or G7.');
-  if(!b.name)b.name=b.weightGr+' gr '+model+(model==='CUSTOM'?'':' '+rows[0].bc);
+  // names this page made up ("175 gr G7 0.243") follow the data; real names stay
+  if(!b.name||AUTO_NAME.test(b.name))b.name=b.weightGr+' gr '+model+(model==='CUSTOM'?'':' '+rows[0].bc);
   return b;
 }
+var AUTO_NAME=/^[0-9.]+ gr (G1|G7|CUSTOM)( [0-9.]+)?$/;
 function bulletMatches(b,p){
   if(!b)return false;
   var t=bulletFromFlat(p,b);
@@ -271,12 +283,24 @@ function bulletMatches(b,p){
 // Save a flat profile as load `name`. loadId = the load it was opened from
 // (null for a brand-new one); asNew = "Save As": a new load on the same rifle.
 // Returns the load id. Throws on bad input.
-function saveFlat(name,p,loadId,asNew){
+// Does saving p change twist/sight height on a rifle other loads also use?
+// Returns {name, others} so the page can ask, or null.
+function rifleShare(p,loadId,asNew){
+  var src=loadId?loadRec(loadId):null,rf0=src?rifle(src.rifleId):null;if(!rf0)return null;
+  var dir=(''+p.twistDir)==='-1'?'LEFT':'RIGHT';
+  if(n(p.twist,10)===rf0.twistIn&&dir===rf0.twistDirection&&n(p.sh,1.75)===rf0.sightHeightIn)return null;
+  var others=lib.loads.filter(function(x){return x.rifleId===rf0.id&&(asNew||x.id!==loadId);}).length;
+  return others?{name:rf0.name,others:others}:null;
+}
+function saveFlat(name,p,loadId,asNew,rifleAll){
   name=(''+name).trim();if(!name)throw new Error('name required');
   var src=loadId?loadRec(loadId):null,l0=asNew?null:src;
   var l=l0?clone(l0):(src?Object.assign(clone(src),{id:uuid()}):{id:uuid(),rifleId:'',bulletId:''});
   var rf0=src?rifle(src.rifleId):null;
   var rf=rf0?clone(rf0):{id:uuid(),name:name,sightOffsetIn:0};
+  // Changing twist/sight height on a rifle other loads share: change it for
+  // all of them only when asked (rifleAll); otherwise this load gets its own.
+  if(rf0&&!rifleAll&&rifleShare(p,loadId,asNew)){rf0=null;rf={id:uuid(),name:name,sightOffsetIn:0};}
   // a rifle that was made for this one load follows its rename
   if(rf0&&l0&&rf0.name===l0.name&&l0.name!==name&&lib.loads.filter(function(x){return x.rifleId===rf0.id;}).length===1)rf.name=name;
   rf.twistIn=n(p.twist,10);rf.twistDirection=(''+p.twistDir)==='-1'?'LEFT':'RIGHT';rf.sightHeightIn=n(p.sh,1.75);
@@ -302,8 +326,15 @@ function saveFlat(name,p,loadId,asNew){
   var zero=n(p.zero,100),inPerMoa=IN_PER_MOA_100*zero/100;
   var eM=n(p.zeroElevMag,0)*(p.zeroElevDir==='low'?-1:1),wM=n(p.zeroWindMag,0)*(p.zeroWindDir==='left'?-1:1);
   l.name=name;l.rifleId=rf.id;l.bulletId=b.id;l.muzzleVelocityFps=n(p.mv,2700);l.zeroRangeYd=zero;
-  l.zeroHeightIn=r(eM*inPerMoa,4);l.zeroOffsetIn=r(wM*inPerMoa,4);
-  l.powderTempF=n(p.powderTempF,59);l.velocityPerDegFps=n(p.mvPerF,0);l.dragScaleFactor=n(p.dragScale,1);
+  // keep the stored inches when the MOA shown (2 decimals) did not change
+  var oe=l0?n(l0.zeroHeightIn,0):NaN,ow=l0?n(l0.zeroOffsetIn,0):NaN,ozr=l0?n(l0.zeroRangeYd,100):NaN;
+  var same2=function(a,b){return Math.abs(a-b)<0.005;};
+  l.zeroHeightIn=(ozr===zero&&same2(oe/inPerMoa,eM))?oe:r(eM*inPerMoa,4);
+  l.zeroOffsetIn=(ozr===zero&&same2(ow/inPerMoa,wM))?ow:r(wM*inPerMoa,4);
+  // optional Skyward fields: leave them out while they hold the default, so
+  // saving an untouched load does not count as an edit
+  function opt(k,v,d){if(l[k]!==undefined&&l[k]!==null||v!==d)l[k]=v;}
+  opt('powderTempF',n(p.powderTempF,59),59);opt('velocityPerDegFps',n(p.mvPerF,0),0);opt('dragScaleFactor',n(p.dragScale,1),1);
   var any=false;
   any=stamp(lib.rifles,rf,rf0)||any;
   any=stamp(lib.bullets,b,bullet(b.id))||any;
@@ -311,21 +342,26 @@ function saveFlat(name,p,loadId,asNew){
   persist();if(any){changed();schedulePush();}
   return l.id;
 }
-function tomb(kind,id){lib.deleted.push({kind:kind,id:id,deletedAt:now()});}
+function tomb(kind,id){
+  var list={rifle:lib.rifles,load:lib.loads,bullet:lib.bullets,library:lib.bullets}[kind]||[],t=0;
+  list.forEach(function(x){if(x.id===id)t=+x.updatedAt||0;});
+  lib.deleted.push({kind:kind,id:id,deletedAt:Math.max(now(),t+1)});
+}
 function removeLoad(loadId){
   var l=loadRec(loadId);if(!l)return;
-  lib.loads=lib.loads.filter(function(x){return x.id!==loadId;});tomb('load',loadId);
+  tomb('load',loadId);lib.loads=lib.loads.filter(function(x){return x.id!==loadId;});
   // the rifle goes too when this was its only load and it was made here for it
   var rf=rifle(l.rifleId);
-  if(rf&&!lib.loads.some(function(x){return x.rifleId===rf.id;})&&rf.name===l.name){lib.rifles=lib.rifles.filter(function(x){return x.id!==rf.id;});tomb('rifle',rf.id);}
+  if(rf&&!lib.loads.some(function(x){return x.rifleId===rf.id;})&&rf.name===l.name){tomb('rifle',rf.id);lib.rifles=lib.rifles.filter(function(x){return x.id!==rf.id;});}
   var b=bullet(l.bulletId);
-  if(b&&b.source!=='library'&&!lib.loads.some(function(x){return x.bulletId===b.id;})&&/^\d/.test(b.name||'')){lib.bullets=lib.bullets.filter(function(x){return x.id!==b.id;});tomb('bullet',b.id);}
+  if(b&&b.source!=='library'&&!lib.loads.some(function(x){return x.bulletId===b.id;})&&/^\d/.test(b.name||'')){tomb('bullet',b.id);lib.bullets=lib.bullets.filter(function(x){return x.id!==b.id;});}
   persist();changed();schedulePush();
 }
 function removeBullets(ids){
   var used={};lib.loads.forEach(function(l){used[l.bulletId]=1;});
   var gone=0;
-  lib.bullets=lib.bullets.filter(function(b){if(ids.indexOf(b.id)>=0&&!used[b.id]){tomb(b.source==='library'?'library':'bullet',b.id);gone++;return false;}return true;});
+  lib.bullets.slice().forEach(function(b){if(ids.indexOf(b.id)>=0&&!used[b.id]){tomb(b.source==='library'?'library':'bullet',b.id);gone++;}});
+  lib.bullets=lib.bullets.filter(function(b){return !(ids.indexOf(b.id)>=0&&!used[b.id]);});
   persist();changed();schedulePush();return gone;
 }
 // Engine inputs for a flat profile (p.loadId = the saved load it came from, if any). Group offsets are NOT passed here: the page
@@ -382,7 +418,7 @@ function schedulePush(){if(pushTimer)clearTimeout(pushTimer);pushTimer=setTimeou
 function sync(){
   if(syncing){again=true;return Promise.resolve();}
   syncing=true;again=false;
-  var remoteCanon=null;
+  var remoteHash=null;
   return fetchT('/gear/info').then(function(r){return r.json();}).then(function(info){
     if(!info.ok)throw new Error('base station flash unavailable');
     var pull=(info.ver!==meta.serverVer&&info.bytes>0)?fetchT('/gear',{},20000).then(function(r){
@@ -394,13 +430,13 @@ function sync(){
     return pull.then(function(got){
       var base=info.ver;
       if(got){
-        var res=parseFile(got.text);remoteCanon=canon(res.lib);
+        var res=parseFile(got.text);remoteHash=hash(canon(res.lib));
         var before=canon(lib);mergeInto(lib,res.lib,false);base=got.ver;
         if(canon(lib)!==before)changed();
-      }else if(info.bytes===0){remoteCanon=canon(emptyLib());}
-      else if(info.ver===meta.serverVer){remoteCanon=meta.serverCanon||null;}
+      }else if(info.bytes===0){remoteHash=hash(canon(emptyLib()));}
+      else if(info.ver===meta.serverVer){remoteHash=meta.serverHash||null;}
       meta.serverVer=base;persist();
-      if(remoteCanon!==null&&remoteCanon===canon(lib)){meta.serverCanon=remoteCanon;return 'same';}
+      if(remoteHash!==null&&remoteHash===hash(canon(lib))){meta.serverHash=remoteHash;return 'same';}
       if(!lib.loads.length&&!lib.bullets.length&&!lib.rifles.length&&!(lib.deleted||[]).length)return 'same';
       var text=exportText('master');
       return gzipBlob(text).then(function(z){
@@ -409,7 +445,7 @@ function sync(){
           return r.json().then(function(j){
             if(r.status===409){again=true;meta.serverVer=-1;return 'conflict';}
             if(!j.ok)throw new Error(j.err==='too_big'?'gear file too big for the base station':j.err==='flash_full'?'base station flash full':'save failed ('+(j.err||r.status)+')');
-            meta.serverVer=j.ver;meta.serverCanon=canon(lib);return 'pushed';
+            meta.serverVer=j.ver;meta.serverHash=hash(canon(lib));return 'pushed';
           });
         });
       });
@@ -443,7 +479,7 @@ root.Gear={
   loads:loadsSorted,label:label,rifle:rifle,load:loadRec,bullet:bullet,bullets:function(){return lib.bullets;},
   flat:flat,saveFlat:saveFlat,removeLoad:removeLoad,removeBullets:removeBullets,
   importText:importText,exportText:exportText,parseFile:parseFile,mergeInto:mergeInto,
-  engineGear:engineGear,solve:solve,sensitivity:sensitivity,parseBands:parseBands,parseCurve:parseCurve,curveToText:curveToText,
+  engineGear:engineGear,rifleShare:rifleShare,solve:solve,sensitivity:sensitivity,parseBands:parseBands,parseCurve:parseCurve,curveToText:curveToText,
   sync:sync,onChange:function(f){listeners.push(f);},migrated:migrated,stableId:stableId,
   _reset:function(){lib=emptyLib();meta={serverVer:-1,lastSync:0,status:'',err:''};persist();}
 };
