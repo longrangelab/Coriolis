@@ -228,6 +228,20 @@ const skyFile = JSON.stringify({
   check('Sky: no compass readings says so', true);
   await A.evaluate(() => document.querySelector('#sky .sk-sheet').parentNode.click());
   check('Sky: compass sheet closes', await A.evaluate(() => !document.querySelector('#sky .sk-sheet')));
+  // on plain http Chrome removes DeviceOrientationEvent: the button still shows and explains the fix
+  await A.evaluate(() => {
+    window.__DOE = window.DeviceOrientationEvent; delete window.DeviceOrientationEvent;
+    Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true });
+    SkyUI._goTab('gear'); SkyUI._goTab('calc');
+  });
+  await A.waitForSelector('#sky .sk-pill:has-text("Use phone compass")');
+  await A.click('#sky .sk-pill:has-text("Use phone compass")');
+  await A.waitForSelector('#sky button:has-text("Compass not available")', { timeout: 4000 });
+  check('Sky: on http the compass sheet explains the Chrome flag', await A.evaluate(() => /chrome:\/\/flags/.test(document.querySelector('#sky .sk-sheet').textContent)));
+  await A.evaluate(() => {
+    document.querySelector('#sky .sk-sheet').parentNode.click();
+    window.DeviceOrientationEvent = window.__DOE; delete window.isSecureContext;
+  });
   await A.evaluate(v => { fireAz = v; localStorage.setItem('fireAz', v); document.getElementById('az').value = v; }, az0);
 
   // full solution: WIND HOLD is the same number as Wind Lab's
