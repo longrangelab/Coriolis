@@ -2725,6 +2725,22 @@ private:
         gearVer = (uint32_t)line.substring(0, sp < 0 ? line.length() : sp).toInt();
         gearGz  = (sp >= 0 && line.substring(sp + 1).toInt() == 1);
     }
+    // At boot: a power cut between saving the file and saving gear.meta would leave
+    // the old version number and gzip flag beside the new file. Take the gzip flag
+    // from the file itself, and move to a fresh version number so no phone takes
+    // the new file for one it already has.
+    void checkGearAtBoot() {
+        loadMeta();
+        if (!fsHas(GEAR_PATH)) return;
+        File f = LittleFS.open(GEAR_PATH, "r");
+        if (!f) return;
+        uint8_t m[2] = {0, 0};
+        size_t n = f.read(m, 2);
+        f.close();
+        gearGz = (n == 2 && m[0] == 0x1f && m[1] == 0x8b);
+        gearVer++;
+        saveMeta();
+    }
     bool saveMeta() {
         File m = LittleFS.open(GEAR_META, "w");
         if (!m) return false;
@@ -2836,7 +2852,7 @@ public:
         // boot (blank or never-formatted partition) formats it once.
         fsOk = LittleFS.begin(true);
         if (fsOk) {
-            loadMeta();
+            checkGearAtBoot();
             if (fsHas(GEAR_TMP)) LittleFS.remove(GEAR_TMP);   // half-finished upload from before a reset
             Serial.printf("[gear] flash store ready: v%lu, %u bytes (%u of %u KB used)\n",
                           (unsigned long)gearVer, (unsigned)gearSize(),

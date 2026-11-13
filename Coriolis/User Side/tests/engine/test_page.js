@@ -332,6 +332,27 @@ const skyFile = JSON.stringify({
   gear.hideMax = false; gear.max = 0; gear.tries = 0;   // limit raised: it goes through
   const v0 = gear.ver; await A.evaluate(() => Gear.sync());
   check('Gear: retried once the base limit changes', gear.tries === 1 && gear.ver === v0 + 1 && !(await A.evaluate(() => Gear.meta().tooBig)), { tries: gear.tries });
+  // bad files: BOM is fine, junk records are dropped, broken JSON gets a plain message
+  const bad = await A.evaluate(() => {
+    const o = {};
+    o.bom = Gear.importText('﻿' + JSON.stringify({ format: 'skyward-library', version: 1, kind: 'bullets',
+      bullets: [null, 7, { name: 'no id' }, { id: 'bomb', maker: 'T', name: 'BOM ok', diameterIn: 0.308, weightGr: 175, dragModel: 'G7', bcPoints: [{ bc: 0.25, minVelFps: 0 }], source: 'user', updatedAt: Date.now() }] })).bullets;
+    try { Gear.importText('{"format":"skyward-library","bul'); } catch (e) { o.cut = e.message; }
+    o.junkLeft = Gear.bullets().some(b => !b || typeof b !== 'object' || !b.id);
+    return o; });
+  check('Gear: BOM file imports, junk records dropped', bad.bom === 1 && !bad.junkLeft, bad);
+  check('Gear: cut-off file gets a plain message', /not valid JSON/.test(bad.cut || ''), bad.cut);
+  // the base's copy is unreadable: the phone repairs it instead of being stuck
+  gear.body = Buffer.from('\x00garbage{{'); gear.gz = false; gear.ver++;
+  await A.evaluate(() => Gear.sync());
+  let fixed; try { fixed = JSON.parse((gear.gz ? zlib.gunzipSync(gear.body) : gear.body).toString()).format === 'skyward-library'; } catch (e) { fixed = false; }
+  check('Gear: an unreadable base file is replaced by the phone\'s gear', fixed && /synced/.test(await A.evaluate(() => Gear.meta().status)));
+  // gzip bytes without the gzip header (power cut before gear.meta was saved): still read
+  const plainNow = gear.gz ? zlib.gunzipSync(gear.body) : gear.body;
+  gear.body = zlib.gzipSync(plainNow); gear.gz = false; gear.ver++;
+  await A.evaluate(() => Gear.saveRecord('bullet', Object.assign({}, Gear.bullet('bomb'), { name: 'BOM ok 2' })));
+  await A.evaluate(() => Gear.sync());
+  check('Gear: gzip file with a stale flag is still read', await A.evaluate(() => Gear.meta().status) === 'synced with base station');
   check('no request fell back to the ESP32 solver', legacyCalls.length === 0, legacyCalls);
   check('no JS errors or dialogs', errors.length === 0, errors);
   if (process.env.SHOT_DIR) {
