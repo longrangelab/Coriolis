@@ -502,7 +502,10 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
   var i=new Image();i.className='rif';i.alt='';i.src=SkyUI.logo.rifLight;b.insertBefore(i,b.firstChild);})();
 </script>
 <script>
-var data=null, view='avg';
+var data=null, view='avg', dataAt=0;
+// The base stopped answering (phone left its Wi-Fi, base off): the last reading is
+// not live wind. Not while the poll is paused on purpose (Sandbox).
+function liveStale(){return !!(data&&pollTimer&&Date.now()-dataAt>12000);}
 var pollTimer=null;   // handle for the 350 ms poll; Sandbox suspends it
 var section=localStorage.getItem('section')||'basic';
 if(section==='forecast')view='pred';
@@ -693,12 +696,13 @@ function getMult(id){var m=nodeMults();var v=(m[id]!==undefined)?parseFloat(m[id
 function setNodeMult(id,v){var m=nodeMults();var f=parseFloat(v);m[id]=(isFinite(f)&&f>0)?f:1;storeMults(m);render();}
 function resetMultsOne(){var ns=(data&&data.nodes)||[];var m={};ns.forEach(function(n){m[n.id]=1;});storeMults(m);renderWeightsPanel(true);render();}
 function weightedAvgWind(){
-  var all=(data&&data.nodes)||[];
+  var all=(data&&data.nodes&&!liveStale())?data.nodes:[];
   // Drop nodes whose anemometer is dead or whose reading is too old (both arrive
   // as windOk:false from the receiver, which applies the same test to its own average).
   // They stay visible on their own tab -- they just don't vote on the wind call.
   // Legacy receivers don't send windOk at all; undefined means "trust it", so
   // this degrades to the old behaviour rather than zeroing everything out.
+  if(liveStale())return{speed:0,dir:0,speedSd:0,dirSd:0,count:0,bad:0,stale:true};
   var weights=effectiveNodeWeights(),ns=weights.nodes;
   var nBad=all.length-ns.length;
   if(!ns.length)return{speed:0,dir:0,speedSd:0,dirSd:0,count:0,bad:nBad};
@@ -2151,7 +2155,7 @@ async function doSolve(){
   try{ await doSolveInner(); } finally { solveBusy=false; autoSolveLast=Date.now(); }
 }
 async function doSolveInner(){
-  if(liveWindMissing()){document.getElementById('results').innerHTML='<div class="card" style="color:var(--warn)">No meter has valid wind. Turn off live wind and enter it by hand, or check the meters.</div>';return;}
+  if(liveWindMissing()){document.getElementById('results').innerHTML='<div class="card" style="color:var(--warn)">'+(liveStale()?'Lost the base station: no live wind. Rejoin its Wi-Fi, or turn off live wind and enter it by hand.':'No meter has valid wind. Turn off live wind and enter it by hand, or check the meters.')+'</div>';return;}
   var p=solverParams();
   try{
     var s=await solveP(p);
@@ -2194,12 +2198,15 @@ function maybeAutoSolve(){
 
 async function poll(){
   try{
-    var r=await fetch('/data.json',{cache:'no-store'});data=await r.json();
+    var r=await fetch('/data.json',{cache:'no-store'});data=await r.json();dataAt=Date.now();
     var s=document.getElementById('status');s.textContent='live';s.className='status live';
     if(view!=='avg'&&view!=='pred'&&view!=='solver'&&view!=='log'&&!(data.nodes||[]).some(function(n){return n.id==view;}))view=(section==='forecast')?'pred':'avg';
     render();maybeAutoSolve();
     if(window.SkyUI&&SkyUI.isOpen())SkyUI.onData();
-  }catch(e){var s=document.getElementById('status');s.textContent='offline';s.className='status off';}
+  }catch(e){var s=document.getElementById('status');s.textContent='offline';s.className='status off';
+    // once the last reading is too old, every wind call must say there is none
+    if(liveStale()){try{render();if(typeof updateWindHold==='function')updateWindHold(true);}catch(x){}
+      if(window.SkyUI&&SkyUI.isOpen())SkyUI.onData();}}
 }
 // ===== SANDBOX MODULE =====
 // ============================ SANDBOX (virtual BC lab) =======================

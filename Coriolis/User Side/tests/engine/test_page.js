@@ -49,7 +49,7 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/engine.js') return send(200, 'application/javascript', ENGINE);
   if (u.pathname === '/gear.js') return send(200, 'application/javascript', GEAR);
   if (u.pathname === '/sky.js') return send(200, 'application/javascript', SKY);
-  if (u.pathname === '/data.json') return send(200, 'application/json', dataJson());
+  if (u.pathname === '/data.json') { if (gear.offline) { req.socket.destroy(); return; } return send(200, 'application/json', dataJson()); }
   if (u.pathname === '/gear/info') return send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver, bytes: gear.body.length, gz: gear.gz, max: gear.hideMax ? undefined : (gear.max || 393216) }));
   if (u.pathname === '/gear' && req.method === 'GET') {
     if (!gear.body.length) return send(204, 'application/json', '');
@@ -61,6 +61,8 @@ const server = http.createServer((req, res) => {
       if (+u.searchParams.get('base') !== gear.ver) { gear.conflicts++; return send(409, 'application/json', JSON.stringify({ ok: false, err: 'conflict', ver: gear.ver })); }
       const file = Buffer.from(multipartFile(Buffer.concat(chunks), req.headers['content-type']));
       gear.tries = (gear.tries || 0) + 1;
+      if (gear.slow) { const f2 = file, d = gear.slow; gear.slow = 0; return setTimeout(() => { gear.body = f2; gear.gz = u.searchParams.get('gz') === '1'; gear.ver++; gear.posts++;
+        send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver })); }, d); }
       if (gear.max && file.length > gear.max) return send(413, 'application/json', JSON.stringify({ ok: false, err: 'too_big' }));
       gear.body = file;
       gear.gz = u.searchParams.get('gz') === '1'; gear.ver++; gear.posts++;
@@ -353,6 +355,37 @@ const skyFile = JSON.stringify({
   await A.evaluate(() => Gear.saveRecord('bullet', Object.assign({}, Gear.bullet('bomb'), { name: 'BOM ok 2' })));
   await A.evaluate(() => Gear.sync());
   check('Gear: gzip file with a stale flag is still read', await A.evaluate(() => Gear.meta().status) === 'synced with base station');
+  // an edit saved while an upload is still going reaches the base afterwards
+  gear.slow = 1200;
+  const pend = A.evaluate(() => { Gear.saveRecord('bullet', Object.assign({}, Gear.bullet('bomb'), { name: 'During 1' })); return Gear.sync(); });
+  await new Promise(r => setTimeout(r, 300));
+  await A.evaluate(() => Gear.saveRecord('bullet', Object.assign({}, Gear.bullet('bomb'), { name: 'During 2' })));
+  await pend; await new Promise(r => setTimeout(r, 2500));
+  const baseHas = (gear.gz ? zlib.gunzipSync(gear.body) : gear.body).toString();
+  check('Gear: an edit made during an upload still reaches the base', /During 2/.test(baseHas), baseHas.length);
+  // a record with an id but no name can't break the load list
+  const nn = await A.evaluate(() => { Gear.importText(JSON.stringify({ format: 'skyward-library', version: 1, kind: 'master', loads: [{ id: 'nameless' }] }));
+    try { return Gear.loads().some(l => l.id === 'nameless' && l.name === 'Unnamed'); } catch (e) { return 'throws: ' + e.message; } });
+  check('Gear: nameless record gets a name instead of breaking the list', nn === true, nn);
+  await A.evaluate(() => Gear.removeRecord && Gear.removeRecord('load', 'nameless'));
+  // two copies saved in the same millisecond settle the same way in either order
+  const tie = await A.evaluate(() => { const a = { id: 't', name: 'A', updatedAt: 5 }, b = { id: 't', name: 'B', updatedAt: 5 };
+    const L1 = { rifles: [], loads: [], bullets: [Object.assign({}, a)], cards: [], shots: [], deleted: [] }, L2 = { rifles: [], loads: [], bullets: [Object.assign({}, b)], cards: [], shots: [], deleted: [] };
+    Gear.mergeInto(L1, { bullets: [b] }); Gear.mergeInto(L2, { bullets: [a] }); return [L1.bullets[0].name, L2.bullets[0].name]; });
+  check('Gear: same-millisecond edits settle the same way everywhere', tie[0] === tie[1], tie);
+  // the phone loses the base station: the last reading is not live wind any more
+  await A.evaluate(() => { setView('avg'); localStorage.setItem('skyTab', 'calc'); setView('solver'); });
+  await new Promise(r => setTimeout(r, 1500));
+  gear.offline = true;
+  await A.evaluate(() => { dataAt = Date.now() - 13000; });
+  await new Promise(r => setTimeout(r, 1200));
+  const off = await A.evaluate(() => ({ ok: avgWind().ok, hint: (document.querySelector('#sky .sk-res') || {}).textContent || '', hold: document.getElementById('windHold').textContent }));
+  check('Lost base: no live wind, and the Solver says so', !off.ok && /Lost the base station/.test(off.hint) && !/\d MOA/.test(off.hold), off);
+  gear.offline = false;
+  await A.waitForFunction(() => avgWind().ok, null, { timeout: 5000 });
+  check('Lost base: live wind comes back on its own', true);
+  for (let i = errors.length - 1; i >= 0; i--) if (/ERR_|Failed to (load|fetch)|EMPTY_RESPONSE/.test(errors[i])) errors.splice(i, 1);   // the dropped polls
+  await A.evaluate(() => SkyUI.close());
   check('no request fell back to the ESP32 solver', legacyCalls.length === 0, legacyCalls);
   check('no JS errors or dialogs', errors.length === 0, errors);
   if (process.env.SHOT_DIR) {

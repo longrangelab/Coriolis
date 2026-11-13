@@ -870,6 +870,7 @@ function compassPill(row,onSet){
   on(b,'click',function(ev){ev.stopPropagation();blurAll();compassSheet(onSet);});under.appendChild(b);row.appendChild(under);
 }
 
+function stale(){return !!(root.liveStale&&root.liveStale());}
 function liveBadge(){var b=el('span','sk-live');add(b,el('i'),doc.createTextNode('LIVE'));return b;}
 
 // ============================================================================
@@ -992,7 +993,7 @@ function CalcScreen(){
   function windLiveText(w,isLive){
     if(!isLive)return 'Off: type the wind below';
     if(!wl())return 'Waiting for the base station…';
-    if(!w.ok)return 'No meter has valid wind right now';
+    if(!w.ok)return stale()?'Lost the base station: this is not live wind. Rejoin its Wi-Fi or turn live wind off':'No meter has valid wind right now';
     return 'Weighted wind from '+w.count+' meter'+(w.count===1?'':'s')+(w.bad?' ('+w.bad+' with no wind)':'')+', relative to your direction of fire';
   }
   function setLiveEnabled(lv){
@@ -1073,7 +1074,7 @@ function CalcScreen(){
     if(!c.load)return showHint('Next, add the ammo you shoot in '+c.rifle.name+'.','Add ammo');
     if(!c.bullet)return showHint('This ammo’s bullet isn’t available. Import the bullet library or edit the ammo.','Full solution & table');
     var pr=guard(c.rifle,c.load,c.bullet);if(pr)return showHint(pr,'Full solution & table');
-    if(liveOn('live_wind')&&wl()&&!liveWind().ok)return showHint('No meter has valid wind. Turn off live wind and type it, or check the meters.','Full solution & table');
+    if(liveOn('live_wind')&&wl()&&!liveWind().ok)return showHint(stale()?'Lost the base station, so there is no live wind. Rejoin its Wi-Fi, or turn off live wind and type it.':'No meter has valid wind. Turn off live wind and type it, or check the meters.','Full solution & table');
     var sol;
     try{sol=solveNow();}catch(e){return showHint('Can’t work out this shot: '+(e.message||'check the inputs'),'Full solution & table');}
     if(g0!==gen)return;
