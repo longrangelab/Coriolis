@@ -22,6 +22,11 @@
  * The file lives in the 896 KB data partition of huge_app.csv (LittleFS), which
  * a normal reflash of the merged .bin does not touch.
  *
+ * The SOLVER tab opens /sky.js (SkyUiJs.h): Skyward Ballistics' calculator,
+ * gear, solution/table/target card/calibrate and hit-probability screens, full
+ * screen over the page. It uses the same gear, live wind and group offsets as
+ * the rest of the page; the classic form is under More -> Classic Coriolis solver.
+ *
  * FLASH: WiFi + web server is large -> use "Huge APP" partition if it overflows.
  */
 
@@ -33,6 +38,7 @@
 #include <sys/stat.h>
 #include "EngineJs.h"
 #include "GearJs.h"
+#include "SkyUiJs.h"
 
 // Largest gear file we accept. The old file stays on flash until the new one is
 // complete, so two copies must fit in the 896 KB partition with room to spare.
@@ -442,6 +448,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 </div>
 <script src="/engine.js"></script>
 <script src="/gear.js"></script>
+<script src="/sky.js"></script>
 <script>
 var data=null, view='avg';
 var pollTimer=null;   // handle for the 350 ms poll; Sandbox suspends it
@@ -520,7 +527,7 @@ function followActiveLoad(){
   var fresh=(getv('mv',null)===null);   // fields never filled (e.g. just migrated)
   if(!fresh&&st.indexOf(id+'@')!==0){stampLoad(id);return false;}  // older page: adopt as-is
   var f=Gear.flat(id);f.loadId=id;applyProfile(f);
-  if(!fresh)flash('"'+activeName()+'" was updated on another device');
+  if(!fresh&&!window.__skyQuiet)flash('"'+activeName()+'" was updated on another device');
   return true;
 }
 function saveProfile(name,asNew){
@@ -1880,7 +1887,14 @@ function tabs(){
   h+='<div class="tab'+(view==='solver'?' on':'')+'" onclick="setView(\'solver\')">SOLVER</div>';
   t.innerHTML=h;
 }
-function setView(v){view=v;
+// The SOLVER tab opens the Skyward-style solver (sky.js) full screen. The
+// classic one-page form is still here: More -> Classic Coriolis solver, or if
+// sky.js failed to load.
+var skyClassic=false;
+function openClassicSolver(){skyClassic=true;try{setView('solver');}finally{skyClassic=false;}}
+function setView(v){
+  if(v==='solver'&&!skyClassic&&window.SkyUI&&SkyUI.open()){tabs();return;}
+  view=v;
   var isSolver=(v==='solver'), isPred=(v==='pred');
   document.getElementById('windView').className=isSolver?'hide':'';
   document.getElementById('solveView').className=isSolver?'':'hide';
@@ -2036,6 +2050,11 @@ function solverParams(){
   p.earth=(localStorage.getItem('opt_earth')||'0');
   p.az=fireAz;p.bulletId=getv('bulletId','');p.loadId=activeLoadId();
   p.spinModel=localStorage.getItem('opt_spinModel')||'LITZ_CLASSIC';
+  // Shot inputs the Skyward-style Solver screen adds (all default to "off"),
+  // so WIND HOLD, the log and the aimbot dial exactly what that screen shows.
+  p.look=getv('look',0);p.cant=getv('cant',0);p.tgtMph=getv('tgtMph',0);p.wind2=getv('wind2',0);
+  p.hum=getv('hum',0);p.alt=getv('alt',0);p.localG=localStorage.getItem('opt_localG')||'0';
+  p.presAbs=liveOn('live_pres')?'1':getv('presAbs','1');
   return p;
 }
 // Ballistics run on THIS PHONE (engine.js, a port of the Skyward engine). Only
@@ -2127,6 +2146,7 @@ async function poll(){
     var s=document.getElementById('status');s.textContent='live';s.className='status live';
     if(view!=='avg'&&view!=='pred'&&view!=='solver'&&view!=='log'&&!(data.nodes||[]).some(function(n){return n.id==view;}))view=(section==='forecast')?'pred':'avg';
     render();maybeAutoSolve();
+    if(window.SkyUI&&SkyUI.isOpen())SkyUI.onData();
   }catch(e){var s=document.getElementById('status');s.textContent='offline';s.className='status off';}
 }
 // ===== SANDBOX MODULE =====
@@ -2784,6 +2804,10 @@ public:
         server.on("/gear.js", [this]() {
             server.sendHeader("Cache-Control", "no-cache");
             server.send_P(200, "application/javascript", GEAR_JS);
+        });
+        server.on("/sky.js", [this]() {
+            server.sendHeader("Cache-Control", "no-cache");
+            server.send_P(200, "application/javascript", SKY_JS);
         });
         server.on("/gear", HTTP_GET, [this]() { sendGear(); });
         server.on("/gear", HTTP_POST, [this]() { finishGearUpload(); }, [this]() { onGearUpload(); });

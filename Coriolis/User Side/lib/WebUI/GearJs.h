@@ -365,6 +365,28 @@ function removeBullets(ids){
   lib.bullets=lib.bullets.filter(function(b){return !(ids.indexOf(b.id)>=0&&!used[b.id]);});
   persist();changed();schedulePush();return gone;
 }
+// ---------- whole records (the Skyward-style screens edit these directly) ----------
+var LISTS={rifle:'rifles',load:'loads',bullet:'bullets',card:'cards',shot:'shots'};
+// Save one record as it is (new or edited). Returns its id.
+function saveRecord(kind,rec){
+  var key=LISTS[kind];if(!key)throw new Error('unknown kind '+kind);
+  var rc=clone(rec);if(!rc.id)rc.id=uuid();
+  var old=byId(lib[key],rc.id);
+  if(stamp(lib[key],rc,old)){persist();changed();schedulePush();}
+  return rc.id;
+}
+// Delete one record (tombstone, so other devices drop it too). A firearm takes
+// its ammo with it, like in Skyward.
+function removeRecord(kind,id){
+  var key=LISTS[kind];if(!key)return;
+  var rec=byId(lib[key],id);if(!rec)return;
+  if(kind==='rifle')lib.loads.filter(function(l){return l.rifleId===id;}).forEach(function(l){tomb('load',l.id);});
+  if(kind==='rifle')lib.loads=lib.loads.filter(function(l){return l.rifleId!==id;});
+  tomb(kind==='bullet'&&rec.source==='library'?'library':kind,id);
+  lib[key]=lib[key].filter(function(x){return x.id!==id;});
+  persist();changed();schedulePush();
+}
+
 // Engine inputs for a flat profile (p.loadId = the saved load it came from, if any). Group offsets are NOT passed here: the page
 // adds them to the holds in MOA exactly as before this change.
 function engineGear(p){
@@ -373,7 +395,8 @@ function engineGear(p){
   if(modelName(p.model)==='CUSTOM'&&bl.dragCurve.length<2)throw new Error('Enter a drag curve (Mach:Cd pairs) or pick G1/G7.');
   var l0=p.loadId?loadRec(p.loadId):null;   // Skyward extras the flat view doesn't show
   return {
-    rifle:{twistIn:n(p.twist,10),twistDirection:(''+p.twistDir)==='-1'?'LEFT':'RIGHT',sightHeightIn:n(p.sh,1.75)},
+    rifle:{twistIn:n(p.twist,10),twistDirection:(''+p.twistDir)==='-1'?'LEFT':'RIGHT',sightHeightIn:n(p.sh,1.75),
+           sightOffsetIn:n(((l0&&rifle(l0.rifleId))||{}).sightOffsetIn,0)},
     load:{muzzleVelocityFps:n(p.mv,2700),zeroRangeYd:n(p.zero,100),powderTempF:n(p.powderTempF,59),
           velocityPerDegFps:n(p.mvPerF,0),dragScaleFactor:n(p.dragScale,1),zeroHeightIn:0,zeroOffsetIn:0,
           zeroAtmosphere:l0&&l0.zeroAtmosphere?l0.zeroAtmosphere:null,
@@ -389,13 +412,20 @@ function solve(p){
     distanceYd:n(p.range,0),windSpeed1Mph:n(p.windmph,0),windAngleDeg:n(p.windrel,90),
     spinDrift:(''+p.spin)!=='0',aeroJump:(''+p.jump)!=='0',spinDriftModel:p.spinModel||'LITZ_CLASSIC',
     coriolis:(''+p.earth)==='1',latitudeDeg:n(p.lat,0),azimuthDeg:n(p.az,0),
-    atmosphere:{temperatureF:n(p.tempF,59),pressureInHg:n(p.pres,29.92),pressureIsAbsolute:true,humidityPct:0}});
+    lookAngleDeg:n(p.look,0),cantDeg:n(p.cant,0),targetSpeedMph:n(p.tgtMph,0),windSpeed2Mph:n(p.wind2,0),
+    localGravity:(''+p.localG)==='1',
+    atmosphere:atmoOf(p)});
+}
+// Atmosphere for a flat profile. Live base-station pressure is station
+// (absolute) pressure; a typed one can be a sea-level forecast (presAbs=0).
+function atmoOf(p){
+  return {temperatureF:n(p.tempF,59),pressureInHg:n(p.pres,29.92),pressureIsAbsolute:(''+p.presAbs)!=='0',
+          altitudeFt:n(p.alt,0),humidityPct:n(p.hum,0)};
 }
 function sensitivity(p,rangeYd){
   if(!root.SkyEngine)return {ok:false,err:'engine'};
   var g;try{g=engineGear(p);}catch(e){return {ok:false,err:e.message};}
-  return root.SkyEngine.windSensitivity(g.rifle,g.load,g.bullet,
-    {temperatureF:n(p.tempF,59),pressureInHg:n(p.pres,29.92),pressureIsAbsolute:true,humidityPct:0},n(rangeYd,n(p.range,0)));
+  return root.SkyEngine.windSensitivity(g.rifle,g.load,g.bullet,atmoOf(p),n(rangeYd,n(p.range,0)));
 }
 
 // ---------- base station sync ----------
@@ -488,6 +518,7 @@ root.Gear={
   lib:function(){return lib;},meta:function(){return meta;},
   loads:loadsSorted,label:label,rifle:rifle,load:loadRec,bullet:bullet,bullets:function(){return lib.bullets;},
   flat:flat,saveFlat:saveFlat,removeLoad:removeLoad,removeBullets:removeBullets,
+  rifles:function(){return lib.rifles;},saveRecord:saveRecord,removeRecord:removeRecord,atmoOf:atmoOf,uuid:uuid,
   importText:importText,exportText:exportText,parseFile:parseFile,mergeInto:mergeInto,
   engineGear:engineGear,rifleShare:rifleShare,solve:solve,sensitivity:sensitivity,parseBands:parseBands,parseCurve:parseCurve,curveToText:curveToText,
   sync:sync,onChange:function(f){listeners.push(f);},migrated:migrated,stableId:stableId,
