@@ -623,6 +623,7 @@ String buildDataJson() {
         j += ",\"lux\":" + String(nv.lightValid ? nv.lightLux : -1.0f, 1);
         j += ",\"battV\":" + String(nv.batteryV,2) + ",\"battPct\":" + String(battPctFromVolts(nv.batteryV));
         j += ",\"lat\":" + String(nv.lat,6) + ",\"lon\":" + String(nv.lon,6);
+        j += ",\"gps\":" + String(nv.gpsValid ? "true" : "false");   // phone-side meter weighting needs the fix flag
         j += ",\"distYd\":" + String(dist) + ",\"rssi\":" + String((int)nv.rssi);
         j += ",\"age\":" + String((int)((millis()-nv.lastSeen)/1000));
         // windOk must mean exactly "this node is voting on the wind call", i.e.
@@ -1022,6 +1023,8 @@ String handleSensitivity(WebServer& s) {
     return j;
 }
 
+static void webTick();   // defined after setup(); handed to the web server
+
 // ============================================================================
 // SETUP
 // ============================================================================
@@ -1063,7 +1066,8 @@ void setup() {
 
     aimProbe();   // detect the windage stepper controller (0x33)
 
-    webui.begin(AP_SSID, AP_PASS, buildDataJson, handleSolve, handleSensitivity, handleCmd, handleAim);   // + fleet sleep + aimbot stepper
+    webui.begin(AP_SSID, AP_PASS, buildDataJson, handleSolve, handleSensitivity, handleCmd, handleAim,   // + fleet sleep + aimbot stepper
+                webTick);                                                                                 // radio stays serviced during gear transfers
 
     lastRxMs = millis();   // start the RX watchdog window
     Serial.println(F("=== listening ===\n"));
@@ -1072,6 +1076,29 @@ void setup() {
 // ============================================================================
 // LOOP
 // ============================================================================
+// BEACON coordinator: broadcast the compact schedule at each cycle start.
+// slot 0 = beacon, slots 1..count = active nodes by rank, then one empty
+// guard slot so the last node never abuts the next beacon (computeSched).
+static void beaconIfDue() {
+    BeaconSched sc = computeSched();
+    if (millis() - lastBeacon >= sc.cycleMs) {
+        lastBeacon = millis();
+        uint8_t bf = 0;
+        if (fleetSleep)                 bf |= BFLAG_SLEEP_CMD;
+        else if (millis() < wakeUntil)  bf |= BFLAG_WAKE_CMD;
+        radio.sendBeacon(sc.count, SLOT_MS, sc.cycleMs, sc.mask, bf, nodeSleepMask);
+    }
+}
+
+// Called by the web server every ~2 KB while a gear file moves to or from
+// flash, so a big upload doesn't starve the radio: drain packets, keep beacons
+// on schedule.
+static void webTick() {
+    NodePacket pkt; float rssi, snr;
+    while (radio.poll(pkt, rssi, snr)) ingestPacket(pkt, rssi, snr);
+    beaconIfDue();
+}
+
 void loop() {
     // 1) drain radio
     NodePacket pkt; float rssi, snr;
@@ -1087,19 +1114,8 @@ void loop() {
         windStats.update(aggSpd, aggDir, na > 0);
     }
 
-    // 1a) BEACON coordinator: broadcast the compact schedule at each cycle start.
-    //     slot 0 = beacon, slots 1..count = active nodes by rank, then one empty
-    //     guard slot so the last node never abuts the next beacon (computeSched).
-    {
-        BeaconSched sc = computeSched();
-        if (millis() - lastBeacon >= sc.cycleMs) {
-            lastBeacon = millis();
-            uint8_t bf = 0;
-            if (fleetSleep)                 bf |= BFLAG_SLEEP_CMD;
-            else if (millis() < wakeUntil)  bf |= BFLAG_WAKE_CMD;
-            radio.sendBeacon(sc.count, SLOT_MS, sc.cycleMs, sc.mask, bf, nodeSleepMask);
-        }
-    }
+    // 1a) BEACON coordinator (see beaconIfDue)
+    beaconIfDue();
 
     // 1b) RX watchdog -- recover if the SX127x quietly stops listening.
     //     (This is what caused "receiver stopped until I reset a node".)
