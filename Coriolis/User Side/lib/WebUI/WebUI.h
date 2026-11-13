@@ -7,8 +7,20 @@
  * WiFi AP + web server. Phone joins the AP and opens http://192.168.4.1.
  * Tabs: AVG, each node, and SOLVER (ballistic calculator).
  *
- * The solver math lives in Ballistics.h (kept separate). This file only serves
- * the page and forwards /solve requests to a provided callback.
+ * Ballistics run on the PHONE: /engine.js (EngineJs.h) is a JavaScript port of
+ * the Skyward Ballistics engine. The ESP32 solver (Ballistics.h) still answers
+ * /solve and /sensitivity, but the page only uses them if /engine.js failed to
+ * load -- every solve on the ESP32 stalls the radio loop for 100-400 ms.
+ *
+ * GEAR (rifles, loads, bullets) is kept in Skyward Ballistics' library format
+ * (gear.js / GearJs.h) and stored on THIS box's flash, so every phone that joins
+ * sees the same gear and it survives a phone clearing its browser data:
+ *   GET  /gear        the stored library file (gzip or plain JSON); 204 if none
+ *   GET  /gear/info   {"ok","ver","bytes","gz","max","fs"}
+ *   POST /gear?base=<ver>&gz=0|1   multipart upload replacing the file; refused
+ *                     with 409 if someone else saved since <ver> (phone re-merges)
+ * The file lives in the 896 KB data partition of huge_app.csv (LittleFS), which
+ * a normal reflash of the merged .bin does not touch.
  *
  * FLASH: WiFi + web server is large -> use "Huge APP" partition if it overflows.
  */
@@ -16,6 +28,20 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <FS.h>
+#include <LittleFS.h>
+#include <sys/stat.h>
+#include "EngineJs.h"
+#include "GearJs.h"
+
+// Largest gear file we accept. The old file stays on flash until the new one is
+// complete, so two copies must fit in the 896 KB partition with room to spare.
+#define GEAR_PATH "/gear.bin"     // the library file as the phone sent it
+#define GEAR_TMP  "/gear.tmp"     // upload in progress
+#define GEAR_META "/gear.meta"    // "<version> <gzip 0|1>"
+#ifndef GEAR_MAX_BYTES
+#define GEAR_MAX_BYTES (384UL * 1024UL)
+#endif
 
 static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 <!DOCTYPE html><html lang="en"><head>
@@ -341,17 +367,34 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
       <button class="step" onclick="deleteProfile()">Delete</button>
     </div>
     <div class="stepRow">
-      <button class="step" onclick="exportProfiles()">Export .json</button>
-      <button class="step" onclick="document.getElementById('importFile').click()">Import .json</button>
+      <button class="step" onclick="exportProfiles()">Export gear</button>
+      <button class="step" onclick="document.getElementById('importFile').click()">Import gear</button>
     </div>
     <input type="file" id="importFile" accept="application/json,.json" style="display:none" onchange="importProfiles(this)">
+    <div style="font-size:.74rem;color:var(--dim);margin-top:8px">
+      Gear uses the <b>Skyward Ballistics</b> library format: import a Skyward export (rifles, loads or bullets)
+      or an old Coriolis <i>rifle_profiles.json</i>. Saved on the base station, so every phone sees it.
+    </div>
+    <div id="gearStatus" style="font-size:.74rem;color:var(--dim);margin-top:6px"></div>
+  </div>
+  <h2>Bullet</h2>
+  <div class="wheelWrap">
+    <select id="bulletSel" onchange="pickBullet(this.value)" style="width:100%;padding:12px;
+      background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:10px;
+      font-family:var(--mono);font-size:.9rem"></select>
+    <label style="display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--dim);margin-top:8px">
+      <input type="checkbox" id="bulletAll" onchange="renderGearLists()" style="width:20px;height:20px"> show every caliber</label>
   </div>
   <h2>Ballistic solver</h2>
   <div class="wheelWrap">
     <div id="loadFields"></div>
     <button class="solveBtn" onclick="doSolve()">Solve</button>
     <div class="res" id="results"></div>
-    <div class="warn">Unvalidated. Verify against a known solver before trusting for real dope. Drag tables are approximate standard curves.</div>
+    <details id="tableBox" style="margin-top:10px" ontoggle="if(this.open)renderTable()"><summary style="cursor:pointer;color:var(--dim)">Come-up table</summary>
+      <div class="stepRow" style="margin-top:8px"><label style="flex:1;color:var(--dim);font-size:.78rem">Step (yd)
+        <input id="tblStep" type="number" value="100" min="10" step="10" onchange="renderTable()" style="width:100%"></label></div>
+      <div id="tableOut" style="overflow-x:auto;font-family:var(--mono);font-size:.78rem"></div></details>
+    <div class="warn">Verify against a known solver and on paper before trusting for real dope. Standard G1/G7 curves unless the bullet carries its own drag curve.</div>
   </div>
 </div>
 
@@ -397,6 +440,8 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 
 <footer id="base">Base station: waiting&hellip;</footer>
 </div>
+<script src="/engine.js"></script>
+<script src="/gear.js"></script>
 <script>
 var data=null, view='avg';
 var pollTimer=null;   // handle for the 350 ms poll; Sandbox suspends it
@@ -408,6 +453,8 @@ var fireAz=parseInt(localStorage.getItem('fireAz')||'0',10)||0;
 var LOAD=[
  {k:'mv',l:'Muzzle vel (fps)',d:2700},{k:'bc',l:'BC',d:0.243},
  {k:'model',l:'Drag model',d:7,opt:[[7,'G7'],[1,'G1']]},
+ {k:'bcBands',l:'BC bands (bc@fps, ...)',d:'',t:'text',ph:'blank = one BC'},
+ {k:'dragCurve',l:'Drag curve (Mach:Cd, ...)',d:'',t:'area',ph:'for Custom curve: 0.5:0.142, 0.9:0.150, 1.0:0.290, ...'},
  {k:'wgt',l:'Weight (gr)',d:175},{k:'cal',l:'Caliber (in)',d:0.308},
  {k:'twist',l:'Twist (in/turn)',d:10},{k:'blen',l:'Bullet length (in)',d:1.24},
  {k:'twistDir',l:'Twist dir',d:1,opt:[[1,'Right'],[-1,'Left']]},
@@ -416,7 +463,10 @@ var LOAD=[
  {k:'zeroElevMag',l:'Group off. elev (MOA)',d:0},
  {k:'zeroElevDir',l:'Group landed (elev)',d:'high',opt:[['high','High'],['low','Low']]},
  {k:'zeroWindMag',l:'Group off. wind (MOA)',d:0},
- {k:'zeroWindDir',l:'Group landed (wind)',d:'right',opt:[['right','Right'],['left','Left']]}
+ {k:'zeroWindDir',l:'Group landed (wind)',d:'right',opt:[['right','Right'],['left','Left']]},
+ {k:'powderTempF',l:'MV measured at (F)',d:59},
+ {k:'mvPerF',l:'MV change (fps per F)',d:0},
+ {k:'dragScale',l:'Drag scale (from truing)',d:1}
 ];
 // live-capable: temp, pressure, wind speed, wind angle
 var LIVE=[
@@ -437,62 +487,103 @@ function setv(k,v){localStorage.setItem('sol_'+k,v);}
 function liveOn(key){return (localStorage.getItem(key)||'1')==='1';}
 function toggleLive(key){localStorage.setItem(key,liveOn(key)?'0':'1');renderSolver();}
 
-// ---- rifle profiles (saved on this device; export/import as .json) ----
-// A profile captures the rifle/load block + zero offsets + spin/jump toggles.
-// NOT captured: target range, temp/pressure/wind, Live/Manual toggles.
+// ---- rifle profiles = gear (rifles / loads / bullets, Skyward format) ----
+// The fields above are a working copy of ONE saved load. Gear (gear.js) keeps
+// the records in Skyward Ballistics' library format, on this phone and on the
+// base station's flash, and translates to/from these flat fields.
+// NOT captured in a profile: target range, temp/pressure/wind, Live/Manual
+// toggles, and (since gear moved to Skyward's format) the spin/jump toggles,
+// which are now plain settings like in Skyward.
 function profileFields(){return LOAD.map(function(f){return f.k;}).filter(function(k){return k!=='range';});}
-function loadProfiles(){try{return JSON.parse(localStorage.getItem('profiles')||'{}');}catch(e){return {};}}
-function storeProfiles(o){localStorage.setItem('profiles',JSON.stringify(o));}
-function activeName(){return localStorage.getItem('activeProfile')||'';}
-function setActive(n){localStorage.setItem('activeProfile',n);}
-
-// snapshot(): was calling getv(k,'') -- '' as the missing-value fallback -- so any
-// field the user never personally touched (just left at its pre-filled, sensible
-// default: mv 2700, bc .243, cal .308, wgt 175, etc.) got saved as a BLANK STRING
-// instead of that default. The profile still displayed and behaved correctly
-// everywhere else (every other reader -- solverParams(), snapshotProfileParams(),
-// the render function -- correctly falls back to f.d), so nothing ever looked
-// wrong. But it silently produced saved profiles with empty numeric fields, which
-// failed the Sandbox's stricter "has real load data" check with no visible cause:
-// pick a profile, it looks complete, Populate stays grey anyway. Use the field's
-// real default here too, so what gets saved always matches what's on screen.
+function haveGear(){if(window.Gear)return true;alert('The gear script did not load. Reload the page.');return false;}
+function activeLoadId(){var id=localStorage.getItem('activeLoadId')||'';return (window.Gear&&Gear.load(id))?id:'';}
+function setActiveId(id){localStorage.setItem('activeLoadId',id||'');}
+function activeName(){var id=activeLoadId();return id?Gear.label(Gear.load(id)):'';}
+// label -> flat profile, for code that lists or reads profiles by name
+function loadProfiles(){var o={};if(!window.Gear)return o;
+  Gear.loads().forEach(function(l){var f=Gear.flat(l.id);f.loadId=l.id;o[Gear.label(l)]=f;});return o;}
 function snapshot(){var p={};LOAD.forEach(function(f){if(f.k!=='range')p[f.k]=getv(f.k,f.d);});
-  p.__spin=localStorage.getItem('opt_spin')||'1';p.__jump=localStorage.getItem('opt_jump')||'1';return p;}
+  p.bulletId=getv('bulletId','');return p;}
 function applyProfile(p){
   profileFields().forEach(function(k){if(p[k]!==undefined)setv(k,p[k]);});
-  if(p.__spin!==undefined)localStorage.setItem('opt_spin',p.__spin);
-  if(p.__jump!==undefined)localStorage.setItem('opt_jump',p.__jump);
+  setv('bulletId',p.bulletId||'');
+  if(p.loadId)stampLoad(p.loadId);
 }
-function saveProfile(name){if(!name)return;var all=loadProfiles();all[name]=snapshot();storeProfiles(all);setActive(name);renderSolver();}
-function saveActive(){var n=activeName();if(!n){saveAsProfile();return;}saveProfile(n);flash('Saved "'+n+'"');}
-function saveAsProfile(){var n=prompt('Profile name:',activeName()||'My rifle');if(n)saveProfile(n.trim());}
-function renameProfile(){var n=activeName();if(!n)return;var nn=prompt('Rename profile:',n);if(!nn||nn===n)return;
-  var all=loadProfiles();all[nn.trim()]=all[n];delete all[n];storeProfiles(all);setActive(nn.trim());renderSolver();}
-function deleteProfile(){var n=activeName();if(!n)return;if(!confirm('Delete profile "'+n+'"?'))return;
-  var all=loadProfiles();delete all[n];storeProfiles(all);setActive('');renderSolver();}
-function loadProfile(name){if(!name)return;var all=loadProfiles();if(!all[name])return;applyProfile(all[name]);setActive(name);renderSolver();doSolve();}
+// The solver reads the form fields (sol_*). Remember which saved version of the
+// active load they came from, so an edit synced in from another phone or the
+// Skyward app replaces them instead of being silently ignored.
+function stampLoad(id){var l=window.Gear&&Gear.load(id);localStorage.setItem('sol_loadStamp',l?(id+'@'+(l.updatedAt||0)):'');}
+function followActiveLoad(){
+  var id=activeLoadId();if(!id)return false;
+  var l=Gear.load(id),st=localStorage.getItem('sol_loadStamp')||'';
+  if(st===id+'@'+(l.updatedAt||0))return false;
+  var fresh=(getv('mv',null)===null);   // fields never filled (e.g. just migrated)
+  if(!fresh&&st.indexOf(id+'@')!==0){stampLoad(id);return false;}  // older page: adopt as-is
+  var f=Gear.flat(id);f.loadId=id;applyProfile(f);
+  if(!fresh)flash('"'+activeName()+'" was updated on another device');
+  return true;
+}
+function saveProfile(name,asNew){
+  if(!haveGear())return false;
+  var snap=snapshot(),from=activeLoadId()||null,rifleAll=false;
+  var sh=Gear.rifleShare(snap,from,!!asNew);
+  if(sh)rifleAll=confirm('You changed twist or sight height. '+sh.others+' other load(s) use the rifle "'+sh.name+'".\n\n'+
+    'OK = change the rifle for all of them\nCancel = give this load its own rifle');
+  try{var id=Gear.saveFlat(name,snap,from,!!asNew,rifleAll);
+    setActiveId(id);setv('bulletId',Gear.load(id).bulletId);stampLoad(id);renderSolver();return true;
+  }catch(e){alert('Not saved: '+e.message);return false;}
+}
+function saveActive(){var l=activeLoadId()&&Gear.load(activeLoadId());if(!l){saveAsProfile();return;}
+  if(saveProfile(l.name,false))flash('Saved "'+activeName()+'"');}
+function saveAsProfile(){if(!haveGear())return;var l=activeLoadId()&&Gear.load(activeLoadId());
+  var n=prompt('Profile name:',l?l.name:'My rifle');if(n&&n.trim()&&saveProfile(n.trim(),true))flash('Saved "'+activeName()+'"');}
+function renameProfile(){var id=activeLoadId();if(!id)return;var l=Gear.load(id);
+  var nn=prompt('Rename profile:',l.name);if(!nn||!nn.trim()||nn.trim()===l.name)return;
+  try{Gear.saveFlat(nn.trim(),Gear.flat(id),id,false);stampLoad(id);}catch(e){alert('Not renamed: '+e.message);}renderSolver();}
+function deleteProfile(){var id=activeLoadId();if(!id)return;if(!confirm('Delete profile "'+activeName()+'"?'))return;
+  Gear.removeLoad(id);setActiveId('');renderSolver();}
+function loadProfile(id){if(!id||!window.Gear)return;var f=Gear.flat(id);if(!f)return;
+  f.loadId=id;applyProfile(f);setActiveId(id);renderSolver();doSolve();}
 function newProfile(){
   if(!confirm('Start a new rifle profile?\nCurrent fields will reset to defaults. Saved profiles are not affected.'))return;
   profileFields().forEach(function(k){localStorage.removeItem('sol_'+k);});   // getv() falls back to LOAD defaults
-  localStorage.setItem('opt_spin','1');localStorage.setItem('opt_jump','1');
-  setActive('');                                                             // dropdown -> "-- select / unsaved --"
+  localStorage.removeItem('sol_bulletId');
+  setActiveId('');                                                           // dropdown -> "-- select / unsaved --"
   renderSolver();
   flash('New profile - enter rifle data, then Save As');
 }
-
+// Pick a bullet from the library: copies its data into the fields.
+function pickBullet(id){
+  if(!id||!window.Gear)return;var b=Gear.bullet(id);if(!b)return;
+  var rows=(b.bcPoints||[]).slice().sort(function(x,y){return y.minVelFps-x.minVelFps;});
+  setv('cal',b.diameterIn);setv('wgt',b.weightGr);if(b.lengthIn>0)setv('blen',b.lengthIn);
+  setv('model',b.dragModel==='G1'?1:(b.dragModel==='CUSTOM'?'C':7));
+  setv('bc',rows.length?rows[0].bc:'');
+  setv('bcBands',rows.length>1?rows.map(function(x){return (+x.bc)+'@'+(+(x.minVelFps||0));}).join(', '):'');
+  setv('dragCurve',Gear.curveToText(b.dragCurve));
+  setv('bulletId',id);
+  renderSolver();flash('Bullet: '+(b.maker?b.maker+' ':'')+b.name+' - Save to keep it');
+}
+function gearDate(){return new Date().toISOString().slice(0,10);}
 function exportProfiles(){
-  var blob=new Blob([JSON.stringify(loadProfiles(),null,2)],{type:'application/json'});
-  var url=URL.createObjectURL(blob);var a=document.createElement('a');
-  a.href=url;a.download='rifle_profiles.json';document.body.appendChild(a);a.click();
-  document.body.removeChild(a);URL.revokeObjectURL(url);
+  if(!haveGear())return;
+  downloadFile('coriolis_gear_'+gearDate()+'.json','application/json',Gear.exportText('master'));
 }
 function importProfiles(input){
-  var f=input.files[0];if(!f)return;var r=new FileReader();
-  r.onload=function(){try{var imp=JSON.parse(r.result);var all=loadProfiles();var c=0;
-    Object.keys(imp).forEach(function(k){all[k]=imp[k];c++;});storeProfiles(all);renderSolver();
-    flash('Imported '+c+' profile(s)');
-  }catch(e){alert('Import failed: not a valid profiles file.');}};
+  var f=input.files[0];if(!f||!haveGear())return;var r=new FileReader();
+  r.onload=function(){
+    try{var res=Gear.importText(r.result);renderSolver();
+      flash('Imported '+res.loads+' load(s), '+res.bullets+' bullet(s), '+res.rifles+' rifle(s)');
+    }catch(e){alert('Import failed: '+e.message);}
+  };
   r.readAsText(f);input.value='';
+}
+function renderGearStatus(){
+  var el=document.getElementById('gearStatus');if(!el||!window.Gear)return;
+  var m=Gear.meta(),L=Gear.lib();
+  var txt=L.loads.length+' load(s), '+L.bullets.length+' bullet(s)';
+  var st=m.status||'checking base station\u2026';
+  el.innerHTML=txt+' &middot; <span style="color:'+(m.err?'var(--warnY)':'var(--good)')+'">'+st+'</span>'+(m.err?' ('+m.err+')':'');
 }
 function flash(msg){var s=document.getElementById('status');var old=s.textContent;
   s.textContent=msg;setTimeout(function(){s.textContent=old;},1500);}
@@ -607,6 +698,7 @@ async function autoWeights(tries){
   if(!activeName()){flash('pick a rifle profile first');return;}
   tries=tries||0;
   var p=solverParams();
+  if(engineLocal()){autoWeightsLocal(p);return;}
   var q='/sensitivity?mv='+p.mv+'&bc='+p.bc+'&model='+p.model+'&wgt='+p.wgt+'&cal='+p.cal+
     '&twist='+p.twist+'&blen='+p.blen+'&sh='+p.sh+'&zero='+p.zero+'&range='+p.range+
     '&tempF='+p.tempF+'&pres='+p.pres+'&az='+fireAz;
@@ -633,6 +725,31 @@ async function autoWeights(tries){
     storeWeights(w);renderWeightsPanel(true);render();
     flash('weights set from ballistics'+(none?(' - '+none+' node(s) need a position'):''));
   }catch(e){flash('sensitivity request failed');}
+}
+// Phone-side version of the receiver's /sensitivity weighting (same math as
+// main.cpp handleSensitivity + Sensitivity.h): one crosswind sweep, then each
+// meter's raw sensitivity at its downrange spot, normalized to 100%.
+function autoWeightsLocal(p){
+  var curve=Gear.sensitivity(p,p.range);
+  if(!curve.ok){flash('sensitivity: '+(curve.err||'solver could not converge'));return;}
+  if(effectiveNodeWeights().nodes.length<2){renderWeightsPanel(true);return;}
+  var b=(data&&data.base)||{},baseFix=!!(b.lat&&b.lon),man=nodeDownManual(),rows=[],sum=0;
+  ((data&&data.nodes)||[]).forEach(function(nd){
+    var dy=-1,src='none';
+    if(man[nd.id]!==undefined){dy=+man[nd.id];src='manual';}
+    else if(baseFix&&nd.gps!==false&&nd.lat&&nd.lon){dy=SkyEngine.projectDownrangeYd(b.lat,b.lon,fireAz,nd.lat,nd.lon);src='gps';}
+    var r=(src==='none')?0:SkyEngine.sensitivityAt(curve,dy);
+    rows.push({id:nd.id,downYd:dy,src:src,r:r});sum+=r;
+  });
+  lastSens={};var w=nodeWeights(),none=0;
+  rows.forEach(function(nd){
+    var pct=sum>0?nd.r/sum*100:0;
+    lastSens[nd.id]={downYd:nd.downYd,src:nd.src,wPct:pct};
+    if(nd.src==='none')none++;
+    w[nd.id]=Math.round(pct*10)/10;
+  });
+  storeWeights(w);renderWeightsPanel(true);render();
+  flash('weights set from ballistics'+(none?(' - '+none+' node(s) need a position'):''));
 }
 var weightsBuiltFor='';
 function renderWeightsPanel(force){
@@ -829,7 +946,10 @@ function renderAimRow(){
     else if(!aimBusy){btn.textContent=aimHoldOk?('AIMBOT '+(aimHoldMOA>=0?'R':'L')+' '+Math.abs(aimHoldMOA).toFixed(1)):'AIMBOT -- no wind';}
   }
 }
+// The receiver solver needed ~2 s between solves; the phone engine takes a few
+// ms, so it can follow the live wind closely (see minMs below).
 var WINDHOLD_MIN_MS=2000, AUTOSOLVE_MIN_MS=2000;
+function minMs(ms){return engineLocal()?500:ms;}
 
 async function updateWindHold(force){
   var el=document.getElementById('windHold');
@@ -839,16 +959,12 @@ async function updateWindHold(force){
   if(liveWindMissing()){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv" style="color:var(--warn)">NO VALID WIND METER</div>';return;}
   if(!force){
     if(solveBusy)return;
-    if(Date.now()-windHoldLast<WINDHOLD_MIN_MS)return;
+    if(Date.now()-windHoldLast<minMs(WINDHOLD_MIN_MS))return;
   }
   solveBusy=true; windHoldLast=Date.now();
   try{
     var p=solverParams();
-    var q='/solve?mv='+p.mv+'&bc='+p.bc+'&model='+p.model+'&wgt='+p.wgt+'&cal='+p.cal+
-      '&twist='+p.twist+'&blen='+p.blen+'&twistDir='+p.twistDir+'&sh='+p.sh+'&zero='+p.zero+
-      '&range='+p.range+'&tempF='+p.tempF+'&pres='+p.pres+'&windmph='+p.windmph+'&windrel='+p.windrel+
-      '&lat='+p.lat+'&az='+fireAz+'&earth='+p.earth+'&spin='+p.spin+'&jump='+p.jump;
-    var r=await fetch(q,{cache:'no-store'});var s=await r.json();
+    var s=await solveP(p);
     // The aimbot may only dial the hold that is on screen. A solver error or a
     // failed request shows no hold, so the previous one must not stay armed.
     if(!s.ok){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">solver error</div>';return;}
@@ -1141,12 +1257,8 @@ async function solveNow(){
   if(!data||!activeName())return null;
   if(liveWindMissing())return null;          // no wind call -> nothing to log
   var p=solverParams();
-  var q='/solve?mv='+p.mv+'&bc='+p.bc+'&model='+p.model+'&wgt='+p.wgt+'&cal='+p.cal+
-    '&twist='+p.twist+'&blen='+p.blen+'&twistDir='+p.twistDir+'&sh='+p.sh+'&zero='+p.zero+
-    '&range='+p.range+'&tempF='+p.tempF+'&pres='+p.pres+'&windmph='+p.windmph+'&windrel='+p.windrel+
-    '&lat='+p.lat+'&az='+fireAz+'&earth='+p.earth+'&spin='+p.spin+'&jump='+p.jump;
   try{
-    var r=await fetch(q,{cache:'no-store'});var s=await r.json();if(!s.ok)return null;
+    var s=await solveP(p);if(!s.ok)return null;
     var wmag=parseFloat(getv('zeroWindMag',0))||0,wdir=getv('zeroWindDir','right');
     var emag=parseFloat(getv('zeroElevMag',0))||0,edir=getv('zeroElevDir','high');
     var zw=(wdir==='right')?-wmag:wmag, ze=(edir==='high')?-emag:emag;
@@ -1773,7 +1885,7 @@ function setView(v){view=v;
   document.getElementById('windView').className=isSolver?'hide':'';
   document.getElementById('solveView').className=isSolver?'':'hide';
   document.getElementById('stabView').className=isPred?'':'hide';
-  if(isSolver)renderSolver();
+  if(isSolver){renderSolver();if(window.Gear)Gear.sync();}
   render();
 }
 
@@ -1838,11 +1950,23 @@ function render(){
 }
 
 // ---- solver UI ----
+function setCurve(el){
+  var t=el.value.trim();
+  if(t&&window.Gear){try{Gear.parseCurve(t);}catch(e){flash(e.message);el.style.borderColor='var(--warn)';return;}}
+  el.style.borderColor='';setv('dragCurve',t);
+  if(t&&getv('model',7)!=='C'){setv('model','C');renderSolver();flash('Drag model set to Custom curve');}
+}
 function renderSolver(){
   var h='';
   LOAD.forEach(function(f){
-    if(f.opt){var o='';f.opt.forEach(function(p){o+='<option value="'+p[0]+'"'+((''+getv(f.k,f.d))==(''+p[0])?' selected':'')+'>'+p[1]+'</option>';});
+    if(f.opt){var opts=f.opt.slice();
+      if(f.k==='model')opts.push(['C','Custom curve']);
+      var o='';opts.forEach(function(p){o+='<option value="'+p[0]+'"'+((''+getv(f.k,f.d))==(''+p[0])?' selected':'')+'>'+p[1]+'</option>';});
       h+='<div class="field"><span class="lab">'+f.l+'</span><select onchange="setv(\''+f.k+'\',this.value)">'+o+'</select></div>';
+    }else if(f.t==='area'){
+      h+='<div class="field" style="flex-wrap:wrap"><span class="lab">'+f.l+'</span><textarea rows="3" placeholder="'+(f.ph||'')+'" style="width:100%;margin-top:6px;padding:8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:.85rem" onchange="setCurve(this)">'+escHtml(getv(f.k,f.d))+'</textarea></div>';
+    }else if(f.t==='text'){
+      h+='<div class="field"><span class="lab">'+f.l+'</span><input type="text" placeholder="'+(f.ph||'')+'" value="'+String(getv(f.k,f.d)).replace(/"/g,'&quot;')+'" onchange="setv(\''+f.k+'\',this.value.trim())"></div>';
     }else{
       h+='<div class="field"><span class="lab">'+f.l+'</span><input type="number" step="any" value="'+getv(f.k,f.d)+'" onchange="setv(\''+f.k+'\',this.value)"></div>';
     }
@@ -1850,6 +1974,9 @@ function renderSolver(){
   h+='<div class="field"><span class="lab" style="color:var(--good)">Spin drift</span><input class="lm" type="checkbox" style="width:24px;height:24px" id="chkSpin" '+((localStorage.getItem('opt_spin')||'1')==='1'?'checked':'')+' onchange="localStorage.setItem(\'opt_spin\',this.checked?1:0)"></div>';
   h+='<div class="field"><span class="lab" style="color:var(--good)">Aero jump</span><input class="lm" type="checkbox" style="width:24px;height:24px" id="chkJump" '+((localStorage.getItem('opt_jump')||'1')==='1'?'checked':'')+' onchange="localStorage.setItem(\'opt_jump\',this.checked?1:0)"></div>';
   h+='<div class="field"><span class="lab" style="color:var(--good)">Earth (Coriolis/Eotvos)</span><input class="lm" type="checkbox" style="width:24px;height:24px" '+((localStorage.getItem('opt_earth')||'0')==='1'?'checked':'')+' onchange="localStorage.setItem(\'opt_earth\',this.checked?1:0)"></div>';
+  var sm=localStorage.getItem('opt_spinModel')||'LITZ_CLASSIC';
+  h+='<div class="field"><span class="lab">Spin drift formula</span><select onchange="localStorage.setItem(\'opt_spinModel\',this.value)">'+
+     [['LITZ_CLASSIC','Litz (Coriolis)'],['LITZ','Litz, zeroed (Skyward)'],['MEASURED','Measured (Skyward)']].map(function(o){return '<option value="'+o[0]+'"'+(o[0]===sm?' selected':'')+'>'+o[1]+'</option>';}).join('')+'</select></div>';
   LIVE.forEach(function(f){
     var on=liveOn(f.live);
     h+='<div class="field"><span class="lab">'+f.l+'</span>'+
@@ -1857,13 +1984,36 @@ function renderSolver(){
        '<button class="lm'+(on?' live':'')+'" onclick="toggleLive(\''+f.live+'\')">'+(on?'LIVE':'MAN')+'</button></div>';
   });
   document.getElementById('loadFields').innerHTML=h;
-  // profile dropdown
-  var sel=document.getElementById('profileSel');
-  if(sel){var names=Object.keys(loadProfiles()).sort();var act=activeName();
-    var o='<option value="">-- select / unsaved --</option>';
-    names.forEach(function(n){o+='<option value="'+n+'"'+(n===act?' selected':'')+'>'+n+'</option>';});
-    sel.innerHTML=o;}
+  renderGearLists();
   syncLiveInputs();
+}
+function escHtml(t){return String(t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+// Profile dropdown + bullet picker + gear status (cheap; safe while typing)
+function renderGearLists(){
+  var sel=document.getElementById('profileSel');
+  if(sel&&window.Gear){var act=activeLoadId();
+    var o='<option value="">-- select / unsaved --</option>';
+    Gear.loads().forEach(function(l){o+='<option value="'+escHtml(l.id)+'"'+(l.id===act?' selected':'')+'>'+escHtml(Gear.label(l))+'</option>';});
+    sel.innerHTML=o;}
+  var bs=document.getElementById('bulletSel');
+  if(bs&&window.Gear){
+    var cal=parseFloat(getv('cal',0.308))||0,all=document.getElementById('bulletAll')&&document.getElementById('bulletAll').checked;
+    var cur=getv('bulletId','');
+    var list=Gear.bullets().filter(function(b){return all||Math.abs(b.diameterIn-cal)<=0.0015||b.id===cur;})
+      .sort(function(a,b){var x=((a.maker||'')+' '+a.name).toLowerCase(),y=((b.maker||'')+' '+b.name).toLowerCase();return x<y?-1:x>y?1:0;});
+    var o2='<option value="">'+(list.length?'-- pick a bullet ('+list.length+(all?'':' for this caliber')+') --':'-- no bullets'+(all?'':' for this caliber')+' --')+'</option>';
+    var labs=list.map(function(b){
+      var rows=b.bcPoints||[],tag=b.dragModel==='CUSTOM'?'custom curve':(b.dragModel+' '+(rows.length?rows.slice().sort(function(x,y){return y.minVelFps-x.minVelFps;})[0].bc:'?')+(rows.length>1?' +'+(rows.length-1)+' bands':''));
+      // names made up by this page already say weight/model/BC
+      if(/^[0-9.]+ gr (G1|G7|CUSTOM)/.test(b.name||''))return b.name+(rows.length>1?' +'+(rows.length-1)+' bands':'')+(b.dragModel==='CUSTOM'?' curve':'');
+      return (b.maker?b.maker+' ':'')+b.name+' \u00b7 '+b.weightGr+' gr \u00b7 '+tag;});
+    var seen={};labs.forEach(function(t){seen[t]=(seen[t]||0)+1;});
+    var k={};list.forEach(function(b,i){var t=labs[i];
+      if(seen[t]>1){k[t]=(k[t]||0)+1;t+=' ('+k[t]+')';}
+      o2+='<option value="'+escHtml(b.id)+'"'+(b.id===cur?' selected':'')+'>'+escHtml(t)+'</option>';});
+    bs.innerHTML=o2;
+  }
+  renderGearStatus();
 }
 function syncLiveInputs(){
   if(!data)return;
@@ -1884,7 +2034,44 @@ function solverParams(){
   p.lat = (liveOn('live_lat')&&data.base.gps)?data.base.lat:getv('lat',45);
   p.spin=(localStorage.getItem('opt_spin')||'1');p.jump=(localStorage.getItem('opt_jump')||'1');
   p.earth=(localStorage.getItem('opt_earth')||'0');
+  p.az=fireAz;p.bulletId=getv('bulletId','');p.loadId=activeLoadId();
+  p.spinModel=localStorage.getItem('opt_spinModel')||'LITZ_CLASSIC';
   return p;
+}
+// Ballistics run on THIS PHONE (engine.js, a port of the Skyward engine). Only
+// if that script failed to load does the page ask the receiver (/solve) the
+// old way -- which blocks the base station's radio loop while it computes.
+function engineLocal(){return !!(window.Gear&&window.SkyEngine);}
+async function solveP(p){
+  if(engineLocal())return Gear.solve(p);
+  var q='/solve?mv='+p.mv+'&bc='+p.bc+'&model='+(p.model==='C'?7:p.model)+'&wgt='+p.wgt+'&cal='+p.cal+
+    '&twist='+p.twist+'&blen='+p.blen+'&twistDir='+p.twistDir+'&sh='+p.sh+'&zero='+p.zero+
+    '&range='+p.range+'&tempF='+p.tempF+'&pres='+p.pres+'&windmph='+p.windmph+'&windrel='+p.windrel+
+    '&lat='+p.lat+'&az='+fireAz+'&earth='+p.earth+'&spin='+p.spin+'&jump='+p.jump;
+  var r=await fetch(q,{cache:'no-store'});return await r.json();
+}
+function renderTable(){
+  var box=document.getElementById('tableOut');if(!box)return;
+  if(!engineLocal()){box.textContent='Table needs the phone solver (reload the page).';return;}
+  var p;try{p=solverParams();}catch(e){box.textContent='Waiting for base station data.';return;}
+  var step=Math.max(10,parseFloat((document.getElementById('tblStep')||{}).value)||100);
+  var max=Math.max(step,parseFloat(p.range)||500);
+  var g;try{g=Gear.engineGear(p);}catch(e){box.textContent=e.message;return;}
+  var sol;try{sol=SkyEngine.solve(g.rifle,g.load,g.bullet,{distanceYd:max,windSpeed1Mph:+p.windmph||0,windAngleDeg:+p.windrel||90,
+    spinDrift:p.spin!=='0',aeroJump:p.jump!=='0',spinDriftModel:p.spinModel,coriolis:p.earth==='1',latitudeDeg:+p.lat||0,azimuthDeg:+fireAz||0,
+    atmosphere:{temperatureF:+p.tempF,pressureInHg:+p.pres,pressureIsAbsolute:true}},{maxRangeYd:max,stepYd:step,extraRangesYd:[]});}
+  catch(e){box.textContent='Solver: '+e.message;return;}
+  var emag=parseFloat(getv('zeroElevMag',0))||0,edir=getv('zeroElevDir','high'),wmag=parseFloat(getv('zeroWindMag',0))||0,wdir=getv('zeroWindDir','right');
+  var ze=(edir==='high')?-emag:emag,zw=(wdir==='right')?-wmag:wmag,K=SkyEngine.MOA_PER_MIL;
+  var h='<table style="width:100%;border-collapse:collapse"><tr style="color:var(--dim)"><td>yd</td><td>elev MOA</td><td>mil</td><td>wind MOA</td><td>mil</td><td>fps</td><td>TOF</td></tr>';
+  sol.rows.forEach(function(r){if(r.rangeYd<=0)return;
+    var e=r.comeUpMil*K+ze,w=r.windageMil*K+zw;
+    h+='<tr><td>'+Math.round(r.rangeYd)+'</td><td>'+e.toFixed(1)+'</td><td>'+(e/K).toFixed(2)+'</td><td>'+Math.abs(w).toFixed(1)+(w>=0?'R':'L')+
+       '</td><td>'+Math.abs(w/K).toFixed(2)+(w>=0?'R':'L')+'</td><td>'+Math.round(r.velocityFps)+'</td><td>'+r.tofS.toFixed(2)+'</td></tr>';});
+  h+='</table><div style="color:var(--dim);margin-top:6px">'+
+     (sol.transonicYd?'Transonic (Mach 1.2) at '+Math.round(sol.transonicYd)+' yd. ':'')+
+     (sol.subsonicYd?'Subsonic at '+Math.round(sol.subsonicYd)+' yd. ':'')+'Wind as entered above, group offsets applied.</div>';
+  box.innerHTML=h;
 }
 async function doSolve(){
   if(!data)return;
@@ -1895,18 +2082,11 @@ async function doSolve(){
 async function doSolveInner(){
   if(liveWindMissing()){document.getElementById('results').innerHTML='<div class="card" style="color:var(--warn)">No meter has valid wind. Turn off live wind and enter it by hand, or check the meters.</div>';return;}
   var p=solverParams();
-  var q='/solve?mv='+p.mv+'&bc='+p.bc+'&model='+p.model+'&wgt='+p.wgt+'&cal='+p.cal+
-    '&twist='+p.twist+'&blen='+p.blen+'&twistDir='+p.twistDir+'&sh='+p.sh+'&zero='+p.zero+
-    '&range='+p.range+'&tempF='+p.tempF+'&pres='+p.pres+'&windmph='+p.windmph+'&windrel='+p.windrel+
-    '&lat='+p.lat+'&az='+fireAz+'&earth='+p.earth+
-    '&spin='+p.spin+'&jump='+p.jump;
   try{
-    var r=await fetch(q,{cache:'no-store'});
-    var rawText=await r.text();
-    var s=JSON.parse(rawText);
+    var s=await solveP(p);
     var g=document.getElementById('results');
     function c(k,v){return '<div class="card"><div class="k">'+k+'</div><div class="big">'+v+'</div></div>';}
-    if(!s.ok){g.innerHTML='<div class="card">Solver could not converge - check inputs.</div>';return;}
+    if(!s.ok){g.innerHTML='<div class="card">Solver could not converge - check inputs.'+(s.err&&s.err!=='range'?' ('+escHtml(s.err)+')':'')+'</div>';return;}
     // Zero offset = WHERE THE GROUP LANDED vs point of aim. Correct against it:
     //   group HIGH  -> hold LOWER (less come-up)   group LOW   -> more come-up
     //   group RIGHT -> hold LEFT                    group LEFT  -> hold right
@@ -1924,6 +2104,7 @@ async function doSolveInner(){
       c('Spin drift',s.spinDriftIn.toFixed(1)+' in')+c('Aero jump',s.aeroJumpMOA.toFixed(2)+' MOA')+
       c('TOF',s.tof.toFixed(2)+' s')+c('Vel @ tgt',Math.round(s.vRemain)+' fps')+
       c('SG',s.sg.toFixed(2))+c('Drop',s.dropIn.toFixed(1)+' in')+offNote;
+    var tb=document.getElementById('tableBox');if(tb&&tb.open)renderTable();
   }catch(e){
     document.getElementById('results').innerHTML='<div class="card">Solve failed.</div>';
   }
@@ -1935,7 +2116,7 @@ function maybeAutoSolve(){
   // Same throttle as WIND HOLD: live inputs jitter every poll, so this fired a
   // full receiver-blocking solve every 350 ms while the Solver tab was open.
   if(solveBusy)return;
-  if(Date.now()-autoSolveLast<AUTOSOLVE_MIN_MS)return;
+  if(Date.now()-autoSolveLast<minMs(AUTOSOLVE_MIN_MS))return;
   autoSolveLast=Date.now();
   doSolve();
 }
@@ -1950,7 +2131,7 @@ async function poll(){
 }
 // ===== SANDBOX MODULE =====
 // ============================ SANDBOX (virtual BC lab) =======================
-// Self-contained. Reuses the solver's profile store (localStorage 'profiles')
+// Self-contained. Reuses the solver's gear store (window.Gear)
 // and the same segmented wind model the device uses. No receiver round-trips.
 var sbSub='setup';
 var SB_N=15;
@@ -2033,12 +2214,15 @@ function sbPopulateCurve(){
 // Key of the ballistic inputs that change the sensitivity curve. Wind does NOT
 // affect the curve (same reasoning as Sensitivity.h), so it's excluded -- the
 // curve is cached across wind edits and only refetched when geometry/load change.
+function sbProfileFlat(id){
+  if(!id||!window.Gear||!Gear.load(id))return {};
+  var f=Gear.flat(id);f.loadId=id;return f;
+}
 function sbSensParams(){
-  var name=(document.getElementById('sbProfileSel')||{}).value||'';
-  var all={};try{all=JSON.parse(localStorage.getItem('profiles')||'{}');}catch(e){}
-  var p=all[name]||{};
+  var id=(document.getElementById('sbProfileSel')||{}).value||'';
+  var p=sbProfileFlat(id);
   function g(k,d){return (p[k]!==undefined&&p[k]!=='')?p[k]:d;}
-  return {
+  return {loadId:id, flat:p,
     mv:g('mv',2700), bc:g('bc',0.243), model:g('model',7), wgt:g('wgt',175),
     cal:g('cal',0.308), twist:g('twist',10), blen:g('blen',1.24), sh:g('sh',1.75),
     zero:g('zero',100),
@@ -2052,11 +2236,19 @@ function sbSensParams(){
 // input change (keyed), never per Monte Carlo run.
 async function sbFetchSensitivity(){
   var p=sbSensParams();
-  var key=[p.mv,p.bc,p.model,p.wgt,p.cal,p.twist,p.blen,p.sh,p.zero,p.range,p.tempF,p.pres].join('|');
+  var key=[p.loadId,JSON.stringify(p.flat),p.range,p.tempF,p.pres].join('|');
   if(key===sbSensKey && sbRealCoef) return;          // cache hit
   if(sbSensBusy) return;
   // Need a real load to ask the solver: MV/BC/cal/wgt must be present.
   if(!(p.mv>0&&p.bc>0&&p.cal>0&&p.wgt>0)){sbCoefSrc='approx';return;}
+  if(engineLocal()&&p.loadId){
+    var fp=Object.assign({},p.flat,{range:p.range,tempF:p.tempF,pres:p.pres});
+    var c=Gear.sensitivity(fp,p.range);
+    if(c.ok&&c.coef&&c.coef.length){
+      sbRealCoef=c.coef.slice();sbRealSegYd=c.segYd;sbRealRange=c.rangeYd;sbCoefSrc='device';sbSensKey=key;
+    }else{sbCoefSrc='approx';flash('sensitivity: '+(c.err||'could not compute curve for this profile'));}
+    sbSensPollN=0;sbPopulateT0=0;sbSyncPopulateBtn(false);sbRecalc();return;
+  }
   sbSensBusy=true;
   try{
     var q='/sensitivity?mv='+p.mv+'&bc='+p.bc+'&model='+p.model+'&wgt='+p.wgt+'&cal='+p.cal+
@@ -2216,8 +2408,8 @@ function sbRecalc(){
   sbDrawSens();
   if(el=document.getElementById('sbCurveSrc'))
     el.innerHTML=(sbCoefSrc==='device')
-      ?'<span style="color:var(--good)">device curve</span> &middot; true per-segment sensitivity for the loaded rifle'
-      :'<span style="color:var(--warnY)">approximate shape</span> &middot; no device curve yet (load a profile / connect receiver); smooth decay, not physical';
+      ?'<span style="color:var(--good)">true curve</span> &middot; per-segment sensitivity for the loaded rifle'
+      :'<span style="color:var(--warnY)">approximate shape</span> &middot; no true curve yet (pick a profile and press Populate); smooth decay, not physical';
   if(sbSub==='sim')sbRunSim();
 }
 
@@ -2305,10 +2497,14 @@ function sbActiveProfile(){return localStorage.getItem('sbActiveProfile')||'';}
 function sbSetActiveProfile(n){localStorage.setItem('sbActiveProfile',n||'');}
 function sbRefreshProfiles(){
   var sel=document.getElementById('sbProfileSel');if(!sel)return;
-  var all={};try{all=JSON.parse(localStorage.getItem('profiles')||'{}');}catch(e){}
+  var loads=window.Gear?Gear.loads():[];
   var h='<option value="">-- Solver profile (optional) --</option>';
-  Object.keys(all).forEach(function(k){h+='<option>'+k+'</option>';});
+  loads.forEach(function(l){h+='<option value="'+escHtml(l.id)+'">'+escHtml(Gear.label(l))+'</option>';});
   sel.innerHTML=h;
+  // Picks saved before gear storage were profile NAMES; map one to its load id.
+  var old=sbActiveProfile();
+  if(old&&window.Gear&&!Gear.load(old)){var m=loadProfiles()[old];sbSetActiveProfile(m?m.loadId:'');}
+  var all={};loads.forEach(function(l){all[l.id]=1;});
   // Restore the previously chosen profile, if it still exists. Setting .value
   // alone does not fire onchange, so drive the normal load path explicitly --
   // that's what re-populates the "Loaded: ..." summary and re-syncs Populate.
@@ -2319,8 +2515,7 @@ function sbLoadProfile(name){
   var box=document.getElementById('sbLoadInputs');if(!box)return;
   sbSetActiveProfile(name||'');
   if(!name){box.innerHTML='';sbInvalidateCurve();return;}
-  var all={};try{all=JSON.parse(localStorage.getItem('profiles')||'{}');}catch(e){}
-  var p=all[name]||{};
+  var p=sbProfileFlat(name);
   if(p.range){document.getElementById('sbRange').value=p.range;}
   var show=['mv','bc','wgt','cal','range'];
   box.innerHTML='<div style="font-size:.76rem;color:var(--dim);margin-top:8px">Loaded: '+
@@ -2398,6 +2593,21 @@ function wirePressFx(){
   },true);
 }
 wirePressFx();
+// Gear (rifles/loads/bullets) lives on the base station; this phone keeps a copy.
+// Pull/push on load, when the page comes back to the front, and every 30 s.
+function startGear(){
+  if(!window.Gear)return;
+  followActiveLoad();
+  Gear.onChange(function(){
+    if(followActiveLoad()&&view==='solver'){renderSolver();return;}
+    if(view==='solver')renderGearLists();
+  });
+  Gear.sync();
+  setInterval(function(){if(!document.hidden)Gear.sync();},30000);
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)Gear.sync();});
+  if(Gear.migrated)flash(Gear.migrated+' rifle profile(s) moved to the new gear store');
+}
+startGear();
 setSection(section);saveAz();drawWheel();poll();pollTimer=setInterval(poll,350);
 </script></body></html>
 )HTMLPAGE";
@@ -2410,18 +2620,177 @@ private:
     String (*sensProvider)(WebServer&) = nullptr;
     String (*cmdProvider)(WebServer&) = nullptr;
     String (*aimProvider)(WebServer&) = nullptr;
+    void   (*tickFn)() = nullptr;          // keeps the radio serviced during long transfers
+
+    // ---- gear store (LittleFS) ----
+    bool     fsOk = false;
+    uint32_t gearVer = 0;                  // bumps on every accepted save
+    bool     gearGz = false;               // stored bytes are gzip
+    // upload in progress
+    File     upFile;
+    size_t   upBytes = 0;
+    int      upStatus = 0;                 // 0 ok so far, else HTTP status to answer
+    bool     upSeen = false;               // a file part actually arrived
+    bool     upGz = false;
+
+
+    void tick() { if (tickFn) tickFn(); }
+
+    // File present? Uses stat() because on core 2.0.x LittleFS.open()/exists()
+    // print an [E] log line for every missing file.
+    static bool fsHas(const char* path) {
+        struct stat st;
+        return stat((String("/littlefs") + path).c_str(), &st) == 0;
+    }
+    void loadMeta() {
+        gearVer = 0; gearGz = false;
+        if (!fsHas(GEAR_META)) return;
+        File m = LittleFS.open(GEAR_META, "r");
+        if (!m) return;
+        String line = m.readStringUntil('\n');
+        m.close();
+        int sp = line.indexOf(' ');
+        gearVer = (uint32_t)line.substring(0, sp < 0 ? line.length() : sp).toInt();
+        gearGz  = (sp >= 0 && line.substring(sp + 1).toInt() == 1);
+    }
+    bool saveMeta() {
+        File m = LittleFS.open(GEAR_META, "w");
+        if (!m) return false;
+        m.printf("%lu %d\n", (unsigned long)gearVer, gearGz ? 1 : 0);
+        m.close();
+        return true;
+    }
+    size_t gearSize() {
+        if (!fsOk || !fsHas(GEAR_PATH)) return 0;
+        File f = LittleFS.open(GEAR_PATH, "r");
+        size_t n = f ? f.size() : 0;
+        if (f) f.close();
+        return n;
+    }
+    String gearInfoJson() {
+        String j = "{\"ok\":" + String(fsOk ? "true" : "false");
+        j += ",\"ver\":" + String(gearVer) + ",\"bytes\":" + String(gearSize());
+        j += ",\"gz\":" + String(gearGz ? "true" : "false") + ",\"max\":" + String((unsigned long)GEAR_MAX_BYTES);
+        if (fsOk) j += ",\"fsTotal\":" + String((unsigned long)LittleFS.totalBytes()) +
+                       ",\"fsUsed\":" + String((unsigned long)LittleFS.usedBytes());
+        return j + "}";
+    }
+
+    void sendGear() {
+        server.sendHeader("Cache-Control", "no-store");
+        if (!fsOk) { server.send(503, "application/json", "{\"ok\":false,\"err\":\"fs\"}"); return; }
+        File f = fsHas(GEAR_PATH) ? LittleFS.open(GEAR_PATH, "r") : File();
+        if (!f || f.size() == 0) { if (f) f.close(); server.send(204); return; }
+        server.sendHeader("X-Gear-Ver", String(gearVer));
+        server.sendHeader("Access-Control-Expose-Headers", "X-Gear-Ver");
+        if (gearGz) server.sendHeader("Content-Encoding", "gzip");
+        server.setContentLength(f.size());
+        server.send(200, "application/json", "");
+        static uint8_t buf[2048];
+        while (f.available()) {
+            size_t n = f.read(buf, sizeof(buf));
+            if (n == 0) break;
+            server.sendContent((const char*)buf, n);
+            tick();
+        }
+        f.close();
+    }
+
+    // multipart chunks for POST /gear
+    void onGearUpload() {
+        HTTPUpload& up = server.upload();
+        if (up.status == UPLOAD_FILE_START) {
+            upBytes = 0; upStatus = 0; upSeen = true;
+            upGz = (server.arg("gz") == "1");
+            if (!fsOk) { upStatus = 503; return; }
+            if (server.hasArg("base") && (uint32_t)server.arg("base").toInt() != gearVer) { upStatus = 409; return; }
+            if (fsHas(GEAR_TMP)) LittleFS.remove(GEAR_TMP);
+            upFile = LittleFS.open(GEAR_TMP, "w");
+            if (!upFile) upStatus = 500;
+        } else if (up.status == UPLOAD_FILE_WRITE) {
+            if (upStatus) return;
+            if (upBytes + up.currentSize > GEAR_MAX_BYTES) {
+                upStatus = 413; upFile.close(); LittleFS.remove(GEAR_TMP); return;
+            }
+            if (upFile.write(up.buf, up.currentSize) != up.currentSize) {
+                upStatus = 507; upFile.close(); LittleFS.remove(GEAR_TMP); return;   // flash full
+            }
+            upBytes += up.currentSize;
+            tick();
+        } else if (up.status == UPLOAD_FILE_END) {
+            if (upStatus) return;
+            upFile.close();
+            if (upBytes == 0) { upStatus = 400; LittleFS.remove(GEAR_TMP); return; }
+            // LittleFS renames over an existing file atomically; the remove is
+            // only a fallback for a VFS layer that refuses to replace.
+            if (!LittleFS.rename(GEAR_TMP, GEAR_PATH)) {
+                if (fsHas(GEAR_PATH)) LittleFS.remove(GEAR_PATH);
+                if (!LittleFS.rename(GEAR_TMP, GEAR_PATH)) { upStatus = 500; return; }
+            }
+            gearVer++; gearGz = upGz;
+            if (!saveMeta()) upStatus = 500;
+            Serial.printf("[gear] saved v%lu, %u bytes%s\n", (unsigned long)gearVer, (unsigned)upBytes, upGz ? " (gzip)" : "");
+        } else if (up.status == UPLOAD_FILE_ABORTED) {
+            if (upFile) upFile.close();
+            LittleFS.remove(GEAR_TMP);
+            upStatus = 400;
+        }
+    }
+    void finishGearUpload() {
+        server.sendHeader("Cache-Control", "no-store");
+        if (!upSeen) upStatus = 400;           // POST with no file part
+        int code = upStatus ? upStatus : 200;
+        String err = code == 409 ? "conflict" : code == 413 ? "too_big" : code == 507 ? "flash_full" :
+                     code == 503 ? "fs" : code == 400 ? "empty" : "write";
+        String j = (code == 200) ? "{\"ok\":true,\"ver\":" + String(gearVer) + ",\"bytes\":" + String((unsigned)upBytes) + "}"
+                                 : "{\"ok\":false,\"err\":\"" + err + "\",\"ver\":" + String(gearVer) + "}";
+        server.send(code, "application/json", j);
+        upStatus = 0; upSeen = false;
+    }
+
 public:
+    // tick: optional, called every ~2 KB during gear transfers so the receiver
+    // keeps draining the radio and sending beacons while a big file moves.
     void begin(const char* ssid, const char* pass,
                String (*jprov)(), String (*sprov)(WebServer&),
                String (*senprov)(WebServer&) = nullptr,
                String (*cprov)(WebServer&) = nullptr,
-               String (*aprov)(WebServer&) = nullptr) {
+               String (*aprov)(WebServer&) = nullptr,
+               void (*tickCb)() = nullptr) {
         jsonProvider = jprov; solveProvider = sprov; sensProvider = senprov;
-        cmdProvider = cprov; aimProvider = aprov;
+        cmdProvider = cprov; aimProvider = aprov; tickFn = tickCb;
+
+        // Data partition "spiffs" in huge_app.csv, mounted as LittleFS. First
+        // boot (blank or never-formatted partition) formats it once.
+        fsOk = LittleFS.begin(true);
+        if (fsOk) {
+            loadMeta();
+            if (fsHas(GEAR_TMP)) LittleFS.remove(GEAR_TMP);   // half-finished upload from before a reset
+            Serial.printf("[gear] flash store ready: v%lu, %u bytes (%u of %u KB used)\n",
+                          (unsigned long)gearVer, (unsigned)gearSize(),
+                          (unsigned)(LittleFS.usedBytes() / 1024), (unsigned)(LittleFS.totalBytes() / 1024));
+        } else {
+            Serial.println(F("[gear] LittleFS mount FAILED -- gear stays on each phone only"));
+        }
+
         WiFi.mode(WIFI_AP);
         WiFi.softAP(ssid, pass);
         IPAddress ip = WiFi.softAPIP();
         server.on("/", [this]() { server.send_P(200, "text/html", WEBUI_PAGE); });
+        server.on("/engine.js", [this]() {
+            server.sendHeader("Cache-Control", "no-cache");
+            server.send_P(200, "application/javascript", ENGINE_JS);
+        });
+        server.on("/gear.js", [this]() {
+            server.sendHeader("Cache-Control", "no-cache");
+            server.send_P(200, "application/javascript", GEAR_JS);
+        });
+        server.on("/gear", HTTP_GET, [this]() { sendGear(); });
+        server.on("/gear", HTTP_POST, [this]() { finishGearUpload(); }, [this]() { onGearUpload(); });
+        server.on("/gear/info", HTTP_GET, [this]() {
+            server.sendHeader("Cache-Control", "no-store");
+            server.send(200, "application/json", gearInfoJson());
+        });
         server.on("/data.json", [this]() {
             server.sendHeader("Cache-Control","no-store");
             server.send(200, "application/json", jsonProvider ? jsonProvider() : "{}");
