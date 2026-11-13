@@ -187,6 +187,27 @@ check('Custom with no curve gives a clear error', !sNo.ok && /drag curve/i.test(
   check('saving unchanged offsets does not touch the load', H.load('Z').zeroHeightIn === 0.3333 && H.load('Z').updatedAt === zt);
   check('meta keeps no second copy of the library', !/serverCanon/.test(st.gearMeta || ''));
 }
+{
+  // a made-up bullet name shared by two loads: the edited copy gets a fresh made-up name, not "(edited)"
+  const st = { profiles: JSON.stringify({ Orig: { mv: 2800, bc: 0.3, model: 7, wgt: 140, cal: 0.264, twist: 8, blen: 1.4, twistDir: 1, sh: 1.75, zero: 100 } }), activeProfile: 'Orig' };
+  const H = load(st).Gear; const oid = st.activeLoadId;
+  const p = H.flat(oid); p.loadId = oid;
+  const cid = H.saveFlat('Copy', p, oid, true);
+  const p4 = H.flat(cid); p4.bc = 0.31;
+  H.saveFlat('Copy', p4, cid, false);
+  check('shared made-up bullet name follows the new BC', H.bullet(H.load(cid).bulletId).name === '140 gr G7 0.31', H.bullet(H.load(cid).bulletId).name);
+  check('the other load keeps its bullet', H.bullet(H.load(oid).bulletId).name === '140 gr G7 0.3');
+}
+{
+  // another tab on the same phone saved gear: merge it, so this tab can't later write over it
+  const st = {}; const on = {};
+  const H = load(st, { addEventListener: (t, f) => { on[t] = f; } }).Gear;
+  const id = H.saveFlat('Tab1', { mv: 2700, bc: 0.3, model: 7, wgt: 140, cal: 0.264, twist: 8, sh: 1.75, zero: 100 }, null, false);
+  const other = JSON.parse(st.gearLib); other.loads[0].muzzleVelocityFps = 2777; other.loads[0].updatedAt = H.load(id).updatedAt + 5;
+  st.gearLib = JSON.stringify(other);
+  on.storage({ key: 'gearLib', newValue: st.gearLib });
+  check('edit saved by another tab merges in', H.load(id).muzzleVelocityFps === 2777, H.load(id).muzzleVelocityFps);
+}
 
 // --- 10. errors ---
 let threw = '';
