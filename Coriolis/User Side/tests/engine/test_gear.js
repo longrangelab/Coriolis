@@ -119,7 +119,28 @@ const before = G.loads().length;
 G.importText(JSON.stringify(oldProfiles));
 check('re-import of rifle_profiles.json updates in place', G.loads().length === before);
 
-// --- 8. errors ---
+// --- 8. custom drag curve typed in the page ---
+check('curve text: pairs', JSON.stringify(G.parseCurve('0.9:0.15, 0.5:0.142 ,1.0:0.29')) === JSON.stringify([{ mach: 0.5, cd: 0.142 }, { mach: 0.9, cd: 0.15 }, { mach: 1, cd: 0.29 }]));
+check('curve text: pasted two-column table with header', G.parseCurve('mach,cd\n0.5,0.142\n1.0\t0.29\n2 0.25').length === 3);
+check('curve text: round trip', G.curveToText(G.parseCurve('0.5:0.142, 1:0.29')) === '0.5:0.142, 1:0.29');
+let cerr = ''; try { G.parseCurve('0.5:0.142'); } catch (e) { cerr = e.message; }
+check('curve text: one point refused', /at least 2/.test(cerr));
+// G7 reference curve as a custom curve, Cd = i * Cd_G7 with i = SD/BC: must solve like G7 with that BC
+const g7 = w.SkyEngine.G7, bcC = 0.315, sdC = 140 / 7000 / (0.264 * 0.264), ff = sdC / bcC, pts = [];
+for (let k = 0; k < g7.length; k += 2) if (g7[k] <= 3) pts.push(g7[k] + ':' + (g7[k + 1] * ff).toFixed(6));
+const cFlat = { mv: 2700, bc: 0.315, model: 'C', wgt: 140, cal: 0.264, twist: 8, blen: 1.41, twistDir: 1, sh: 1.75, zero: 100, dragCurve: pts.join(', ') };
+const cid = G.saveFlat('Curve typed', cFlat, null, false);
+const cb = G.bullet(G.load(cid).bulletId);
+check('typed curve saved on the bullet as CUSTOM', cb.dragModel === 'CUSTOM' && cb.dragCurve.length === pts.length);
+check('typed curve comes back in flat', G.flat(cid).dragCurve.split(',').length === pts.length && G.flat(cid).model === 'C');
+const env = { range: 1000, tempF: 59, pres: 29.92, windmph: 10, windrel: 90, spin: '0', jump: '0' };
+const sC = G.solve(Object.assign({}, G.flat(cid), env, { loadId: cid }));
+const sG = G.solve(Object.assign({}, cFlat, { model: '7', dragCurve: '' }, env));
+check('typed G7-shaped curve solves like G7 (1000 yd)', sC.ok && sG.ok && Math.abs(sC.elevMil - sG.elevMil) < 0.05, [sC.elevMil, sG.elevMil]);
+const sNo = G.solve(Object.assign({}, cFlat, { dragCurve: '', bulletId: '' }, env));
+check('Custom with no curve gives a clear error', !sNo.ok && /drag curve/i.test(sNo.err), sNo);
+
+// --- 9. errors ---
 let threw = '';
 try { G.importText(JSON.stringify({ format: 'epv5-user-data' })); } catch (e) { threw = e.message; }
 check('Empirical backup gets a helpful message', /Empirical Precision/.test(threw));

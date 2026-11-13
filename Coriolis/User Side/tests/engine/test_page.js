@@ -147,8 +147,24 @@ const skyFile = JSON.stringify({
   check('A: multi-BC load shows its bands', /0\.326@2800/.test(sky.bands), sky.bands);
   check('A: multi-BC load solves', sky.s.ok, sky.s);
   await A.evaluate(() => Gear.sync());
+  // typing a drag curve switches the model to Custom and the solver uses it
+  const cur = await A.evaluate(() => {
+    renderSolver();
+    const ta = document.querySelector('#loadFields textarea');
+    ta.value = '0.5:0.120, 0.9:0.125, 1.0:0.190, 1.2:0.180, 2.0:0.150, 3.0:0.130';
+    ta.dispatchEvent(new Event('change'));
+    const s = Gear.solve(solverParams());
+    return { model: getv('model', 7), ok: s.ok, e: s.elevMil, bad: (() => { const t = document.querySelector('#loadFields textarea'); t.value = '0.5'; t.dispatchEvent(new Event('change')); return getv('dragCurve', '').length > 5; })() };
+  });
+  check('A: typed drag curve sets Custom and solves', cur.model === 'C' && cur.ok && cur.e > 0, cur);
+  check('A: bad curve text is refused and the old curve kept', cur.bad, cur);
+  await A.evaluate(() => { saveActive(); });
+  check('A: saved curve is on the bullet', await A.evaluate(() => (Gear.bullet(Gear.load(activeLoadId()).bulletId).dragCurve || []).length === 6));
   const stored = () => JSON.parse((gear.gz ? zlib.gunzipSync(gear.body) : gear.body).toString());
-  check('A: import pushed (stored ' + (gear.gz ? 'gzipped' : 'plain') + ')', stored().loads.length === 3);
+  for (let i = 0; i < 40 && !(gear.body.length && stored().bullets.some(b => (b.dragCurve || []).length === 6)); i++) {
+    await A.evaluate(() => Gear.sync()); await new Promise(r => setTimeout(r, 100));
+  }
+  check('A: import pushed (stored ' + (gear.gz ? 'gzipped' : 'plain') + ')', stored().loads.length === 3 && stored().bullets.some(b => (b.dragCurve || []).length === 6));
 
   // ---- sandbox true curve ----
   await A.evaluate(() => setSection('sandbox'));

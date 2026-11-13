@@ -453,6 +453,7 @@ var LOAD=[
  {k:'mv',l:'Muzzle vel (fps)',d:2700},{k:'bc',l:'BC',d:0.243},
  {k:'model',l:'Drag model',d:7,opt:[[7,'G7'],[1,'G1']]},
  {k:'bcBands',l:'BC bands (bc@fps, ...)',d:'',t:'text',ph:'blank = one BC'},
+ {k:'dragCurve',l:'Drag curve (Mach:Cd, ...)',d:'',t:'area',ph:'for Custom curve: 0.5:0.142, 0.9:0.150, 1.0:0.290, ...'},
  {k:'wgt',l:'Weight (gr)',d:175},{k:'cal',l:'Caliber (in)',d:0.308},
  {k:'twist',l:'Twist (in/turn)',d:10},{k:'blen',l:'Bullet length (in)',d:1.24},
  {k:'twistDir',l:'Twist dir',d:1,opt:[[1,'Right'],[-1,'Left']]},
@@ -554,6 +555,7 @@ function pickBullet(id){
   setv('model',b.dragModel==='G1'?1:(b.dragModel==='CUSTOM'?'C':7));
   setv('bc',rows.length?rows[0].bc:'');
   setv('bcBands',rows.length>1?rows.map(function(x){return (+x.bc).toFixed(4).replace(/0+$/,'')+'@'+Math.round(x.minVelFps||0);}).join(', '):'');
+  setv('dragCurve',Gear.curveToText(b.dragCurve));
   setv('bulletId',id);
   renderSolver();flash('Bullet: '+(b.maker?b.maker+' ':'')+b.name+' - Save to keep it');
 }
@@ -1943,14 +1945,21 @@ function render(){
 }
 
 // ---- solver UI ----
-function curBulletHasCurve(){var b=window.Gear&&Gear.bullet(getv('bulletId',''));return !!(b&&b.dragCurve&&b.dragCurve.length>=2);}
+function setCurve(el){
+  var t=el.value.trim();
+  if(t&&window.Gear){try{Gear.parseCurve(t);}catch(e){flash(e.message);el.style.borderColor='var(--warn)';return;}}
+  el.style.borderColor='';setv('dragCurve',t);
+  if(t&&getv('model',7)!=='C'){setv('model','C');renderSolver();flash('Drag model set to Custom curve');}
+}
 function renderSolver(){
   var h='';
   LOAD.forEach(function(f){
     if(f.opt){var opts=f.opt.slice();
-      if(f.k==='model'&&(curBulletHasCurve()||getv('model',7)==='C'))opts.push(['C','Custom curve']);
+      if(f.k==='model')opts.push(['C','Custom curve']);
       var o='';opts.forEach(function(p){o+='<option value="'+p[0]+'"'+((''+getv(f.k,f.d))==(''+p[0])?' selected':'')+'>'+p[1]+'</option>';});
       h+='<div class="field"><span class="lab">'+f.l+'</span><select onchange="setv(\''+f.k+'\',this.value)">'+o+'</select></div>';
+    }else if(f.t==='area'){
+      h+='<div class="field" style="flex-wrap:wrap"><span class="lab">'+f.l+'</span><textarea rows="3" placeholder="'+(f.ph||'')+'" style="width:100%;margin-top:6px;padding:8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:.85rem" onchange="setCurve(this)">'+escHtml(getv(f.k,f.d))+'</textarea></div>';
     }else if(f.t==='text'){
       h+='<div class="field"><span class="lab">'+f.l+'</span><input type="text" placeholder="'+(f.ph||'')+'" value="'+String(getv(f.k,f.d)).replace(/"/g,'&quot;')+'" onchange="setv(\''+f.k+'\',this.value.trim())"></div>';
     }else{
