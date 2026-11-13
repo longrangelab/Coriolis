@@ -85,6 +85,12 @@ var KINDS=[['rifles','rifle'],['loads','load'],['bullets','bullet'],['cards','ca
 function tombKind(listKey,rec){return listKey==='bullets'&&rec&&rec.source==='library'?'library':(KINDS.filter(function(k){return k[0]===listKey;})[0][1]);}
 // Merge `inc` into `base` in place. manual=true for a file the user picked:
 // records without a timestamp count as "now", so the import wins.
+// Later edit wins; two different copies saved in the same millisecond are settled
+// the same way on every phone (by content), so they can't flip-flop forever.
+function newer(x,y){
+  var a=+x.updatedAt||0,b=+y.updatedAt||0;if(a!==b)return a>b;
+  var sx=JSON.stringify(x),sy=JSON.stringify(y);return sx!==sy&&sx>sy;
+}
 function mergeInto(base,inc,manual){
   var t=now(),tombs={},changedN=0;
   (base.deleted||[]).concat(inc.deleted||[]).forEach(function(d){
@@ -103,7 +109,7 @@ function mergeInto(base,inc,manual){
       if(i===undefined){
         if(tb&&tb.deletedAt>=x.updatedAt)return;      // deleted after that copy was saved
         have[x.id]=base[key].length;base[key].push(x);changedN++;
-      }else if(x.updatedAt>(base[key][i].updatedAt||0)&&JSON.stringify(x)!==JSON.stringify(base[key][i])){
+      }else if(newer(x,base[key][i])){
         base[key][i]=x;changedN++;
       }
     });
@@ -122,6 +128,7 @@ function normalize(o){
   // keep only real records: a bad file must not reach the base station and break every phone
   function okId(x){return x&&typeof x==='object'&&!Array.isArray(x)&&(typeof x.id==='string'&&x.id!==''||typeof x.id==='number');}
   ['rifles','loads','bullets','cards','shots'].forEach(function(k){if(Array.isArray(o[k]))l[k]=o[k].filter(okId);});
+  ['rifles','loads','bullets'].forEach(function(k){l[k].forEach(function(x){if(typeof x.name!=='string')x.name=x.name==null||x.name===''?'Unnamed':String(x.name);});});
   if(Array.isArray(o.deleted))l.deleted=o.deleted.filter(function(t){return okId(t)&&typeof t.kind==='string';});
   return l;
 }
@@ -195,7 +202,7 @@ function byId(list,id){for(var i=0;i<list.length;i++)if(list[i].id===id)return l
 function rifle(id){return byId(lib.rifles,id);}
 function loadRec(id){return byId(lib.loads,id);}
 function bullet(id){return byId(lib.bullets,id);}
-function label(l){var rf=rifle(l.rifleId);return (!rf||!rf.name||rf.name===l.name)?l.name:(rf.name+' · '+l.name);}
+function label(l){var rf=rifle(l.rifleId),nm=String(l.name==null?'':l.name);return (!rf||!rf.name||rf.name===nm)?nm:(String(rf.name)+' · '+nm);}
 function loadsSorted(){return lib.loads.slice().sort(function(a,b){var x=label(a).toLowerCase(),y=label(b).toLowerCase();return x<y?-1:x>y?1:0;});}
 
 // ---------- flat profile <-> records ----------
@@ -489,7 +496,7 @@ function sync(){
       if(!lib.loads.length&&!lib.bullets.length&&!lib.rifles.length&&!(lib.deleted||[]).length)return 'same';
       // A file the base already refused is not sent again until the gear changes:
       // each try ties up the base's web server (and live wind) for several seconds.
-      var mine=hash(canon(lib))+'@'+(info.max||0);   // retried if the gear or the base's limit changes
+      var sent=hash(canon(lib)),mine=sent+'@'+(info.max||0);   // retried if the gear or the base's limit changes
       if(meta.tooBig===mine)throw new Error(meta.tooBigMsg||'gear file too big for the base station');
       var text=exportText('master');
       return gzipBlob(text).then(function(z){
@@ -501,7 +508,10 @@ function sync(){
             if(r.status===409){again=true;meta.serverVer=-1;return 'conflict';}
             if(!j.ok&&j.err==='too_big')refuse();
             if(!j.ok)throw new Error(j.err==='flash_full'?'base station flash full':'save failed ('+(j.err||r.status)+')');
-            meta.serverVer=j.ver;meta.serverHash=hash(canon(lib));delete meta.tooBig;delete meta.tooBigMsg;return 'pushed';
+            // record what was SENT: an edit made during the upload still needs pushing
+            meta.serverVer=j.ver;meta.serverHash=sent;delete meta.tooBig;delete meta.tooBigMsg;
+            if(hash(canon(lib))!==sent)again=true;
+            return 'pushed';
           });
         });
       });
