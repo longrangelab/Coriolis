@@ -119,7 +119,10 @@ function mergeInto(base,inc,manual){
 // ---------- file formats ----------
 function normalize(o){
   var l=emptyLib();
-  ['rifles','loads','bullets','deleted','cards','shots'].forEach(function(k){if(Array.isArray(o[k]))l[k]=o[k];});
+  // keep only real records: a bad file must not reach the base station and break every phone
+  function okId(x){return x&&typeof x==='object'&&!Array.isArray(x)&&(typeof x.id==='string'&&x.id!==''||typeof x.id==='number');}
+  ['rifles','loads','bullets','cards','shots'].forEach(function(k){if(Array.isArray(o[k]))l[k]=o[k].filter(okId);});
+  if(Array.isArray(o.deleted))l.deleted=o.deleted.filter(function(t){return okId(t)&&typeof t.kind==='string';});
   return l;
 }
 // Old Coriolis profile -> rifle + load + bullet (stable ids from the name)
@@ -143,7 +146,9 @@ function fromLegacy(name,p){
 // Parse any supported file: Skyward library (any kind, incl. the older
 // dragcurve/arcledger names) or an old Coriolis rifle_profiles.json.
 function parseFile(text){
-  var o=JSON.parse(text);
+  var o;
+  try{o=JSON.parse(String(text==null?'':text).replace(/^\uFEFF/,''));}
+  catch(e){var err=new Error(String(text||'').trim()?'This file is not valid JSON. It may be cut off, or not a gear file.':'The file is empty.');err.unreadable=true;throw err;}
   if(o&&typeof o==='object'&&typeof o.format==='string'){
     if([FORMAT,'dragcurve-library','arcledger-library'].indexOf(o.format)<0)
       throw new Error(o.format==='epv5-user-data'?'This is an Empirical Precision backup. Import it into Skyward Ballistics first, then export from there.':
@@ -437,6 +442,14 @@ function fetchT(url,opt,ms){
   opt=Object.assign({cache:'no-store'},opt||{});if(ctl)opt.signal=ctl.signal;
   return fetch(url,opt).then(function(r){clearTimeout(t);return r;},function(e){clearTimeout(t);throw e;});
 }
+// gzip bytes served without a gzip header (e.g. after a power cut while saving)
+function gunzipIfNeeded(buf){
+  var u=new Uint8Array(buf);
+  if(u.length>2&&u[0]===0x1f&&u[1]===0x8b&&root.DecompressionStream&&root.Response){
+    return new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).text().catch(function(){return '';});
+  }
+  return new TextDecoder().decode(u);
+}
 function gzipBlob(text){
   if(!root.CompressionStream||!root.Response)return Promise.resolve({blob:new Blob([text],{type:'application/json'}),gz:false});
   try{
@@ -456,12 +469,17 @@ function sync(){
       if(r.status===204)return null;
       if(!r.ok)throw new Error('read failed ('+r.status+')');
       var v=parseInt(r.headers.get('X-Gear-Ver'),10);
-      return r.text().then(function(t){return {text:t,ver:isFinite(v)?v:info.ver};});
+      return r.arrayBuffer().then(gunzipIfNeeded).then(function(t){return {text:t,ver:isFinite(v)?v:info.ver};});
     }):Promise.resolve(null);
     return pull.then(function(got){
       var base=info.ver;
-      if(got){
-        var res=parseFile(got.text);remoteHash=hash(canon(res.lib));
+      var res=null;
+      if(got){try{res=parseFile(got.text);}catch(e){
+        // The base's copy is unreadable (not a format or version we don't know: those are
+        // kept). Nobody can read it, so this phone's gear replaces it.
+        if(!e.unreadable)throw e;base=got.ver;meta.repairedBase=true;}}
+      if(res){
+        remoteHash=hash(canon(res.lib));
         var before=canon(lib);mergeInto(lib,res.lib,false);base=got.ver;
         if(canon(lib)!==before)changed();
       }else if(info.bytes===0){remoteHash=hash(canon(emptyLib()));}
