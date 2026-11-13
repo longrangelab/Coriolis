@@ -806,6 +806,68 @@ function windDial(angle,onPick,onRelease){
     requestAnimationFrame(step);}
   return {el:svg,set:function(v){cur=nrm(v);if(!dragging){shown=cur;draw();}},enable:function(b){enabled=b;svg.setAttribute('class','sk-dial'+(b?'':' off'));}};
 }
+
+// ============================================================================
+// Phone compass for the direction of fire (DeviceOrientation). Browsers only
+// give it to secure pages, so on http://192.168.4.1 it may not be offered.
+// ============================================================================
+var Compass={
+  // true if the browser has the API at all; whether it reports is found by listening
+  maybe:function(){return typeof root.DeviceOrientationEvent!=='undefined';},
+  decl:function(){return fin(ls('compassDecl','0'),0);},
+  start:function(onHeading,onFail){
+    var got=false,evs=['deviceorientationabsolute','deviceorientation'],stopped=false;
+    function h(e){
+      var hd=null;
+      if(typeof e.webkitCompassHeading==='number'&&e.webkitCompassHeading>=0)hd=e.webkitCompassHeading;          // iOS: clockwise from magnetic north
+      else if((e.absolute||e.type==='deviceorientationabsolute')&&typeof e.alpha==='number'){                    // Android: alpha counter-clockwise
+        var so=(root.screen&&root.screen.orientation&&root.screen.orientation.angle)||root.orientation||0;hd=360-e.alpha+so;}
+      if(hd===null)return;got=true;onHeading(nrm(hd+Compass.decl()));
+    }
+    // Listen straight away: newer Chrome has requestPermission too and may refuse it while
+    // still sending events. Only report a failure if no heading arrives.
+    var refused=false;
+    function wait(){setTimeout(function(){if(!got&&!stopped)onFail(root.isSecureContext===false?'insecure':refused?'denied':'none');},1800);}
+    var D=root.DeviceOrientationEvent;
+    if(!D){onFail('none');return function(){};}
+    evs.forEach(function(n){root.addEventListener(n,h,true);});
+    if(typeof D.requestPermission==='function'){
+      var pr;try{pr=D.requestPermission();}catch(e){pr=null;}
+      if(pr&&pr.then)pr.then(function(r){if(r!=='granted')refused=true;wait();},function(){refused=true;wait();});else wait();
+    }else wait();
+    return function(){stopped=true;evs.forEach(function(n){root.removeEventListener(n,h,true);});};
+  }
+};
+// Bottom sheet: point the phone at the target, read the heading, use it.
+function compassSheet(done){
+  sheet('Direction of fire from the phone compass',function(list,close){
+    var big=el('div','','—°');big.style.cssText='font-size:56px;font-weight:700;text-align:center;color:var(--on);padding:8px 0 0';
+    var sub=el('div','sk-note','Hold the phone flat or upright with its top edge pointing at the target. Keep it away from the rifle and other metal.');sub.style.textAlign='center';
+    var bw=el('div','sk-bwrap');var use=el('button','sk-btn','Waiting for the compass…');use.disabled=true;bw.appendChild(use);
+    var d=Compass.decl(),dl=el('div','sk-note',d?'Includes your declination correction of '+(d>0?'+':'')+Num.trim(d,1)+'°.':'Magnetic heading. If your meters are set to true north, add your declination under More → Settings.');dl.style.textAlign='center';
+    add(list,big,sub,bw,dl);
+    var samples=[],stop=null,shown=null;
+    function avg(){var x=0,y=0;samples.forEach(function(a){x+=Math.cos(a*Math.PI/180);y+=Math.sin(a*Math.PI/180);});return nrm(Math.atan2(y,x)*180/Math.PI);}
+    stop=Compass.start(function(hd){
+      samples.push(hd);if(samples.length>12)samples.shift();shown=Math.round(avg())%360;
+      big.textContent=shown+'°';use.disabled=false;use.textContent='Use '+shown+'°';
+    },function(why){
+      big.textContent='—';use.disabled=true;use.textContent='Compass not available';
+      sub.textContent=why==='insecure'?'This browser only gives the compass to secure (https) pages, and the base station page is http. On Android Chrome you can allow it: open chrome://flags, find “Insecure origins treated as secure”, add http://192.168.4.1 and restart Chrome.'
+        :why==='denied'?'Compass access was refused. Allow motion and orientation access for this page in the browser settings, then try again.'
+        :'This device or browser does not report a compass heading. Type the direction of fire instead.';
+    });
+    on(use,'click',function(){if(shown===null)return;if(stop)stop();close();done(shown);});
+    // stop listening when the sheet is dismissed
+    var sc=list.parentNode.parentNode;new MutationObserver(function(m,o){if(!sc.isConnected){if(stop)stop();o.disconnect();}}).observe(shell.root,{childList:true});
+  });
+}
+function compassPill(row,onSet){
+  if(!Compass.maybe())return;
+  var under=el('div','sk-under');var b=el('button','sk-pill','Use phone compass');
+  on(b,'click',function(ev){ev.stopPropagation();blurAll();compassSheet(onSet);});under.appendChild(b);row.appendChild(under);
+}
+
 function liveBadge(){var b=el('span','sk-live');add(b,el('i'),doc.createTextNode('LIVE'));return b;}
 
 // ============================================================================
@@ -858,6 +920,7 @@ function CalcScreen(){
         {decimals:0,sub:'The dial snaps to the half hour. Type any angle here',width:'84px'});
       live.az=g.stepper('Direction of fire',Q.ANGLE,fireAz(),function(v){if(v!==null&&v>=0&&v<=360){setFireAz(v);changed();}},function(dir){
         setFireAz(fireAz()+dir);live.az.set(fireAz());changed();},{sub:'Compass bearing to the target. Turns the meters’ wind into the wind you shoot through',decimals:0,unit:'°'});
+      compassPill(live.az.row,function(v){setFireAz(v);live.az.set(fireAz());changed();snack('Direction of fire set to '+fireAz()+'°');});
       g.number('Second wind speed',Q.SPEED,fin(getv('wind2',0),0),function(v){if(v!==null&&v>=0&&v<100){setv('wind2',v);changed();}},
         {sub:'Optional. For gusts: shows a second windage. 0 = not used'});
     });
@@ -917,6 +980,7 @@ function CalcScreen(){
         var az=g.number('Direction of fire',Q.ANGLE,fireAz(),function(v){if(v!==null&&v>=0&&v<=360){setFireAz(v);changed();}},
           {decimals:0,sub:'Compass bearing (azimuth). 0 = north, 90 = east. Same as the Wind Lab firing azimuth'});
         live.az2=az;
+        compassPill(az.row,function(v){setFireAz(v);az.set(fireAz());if(live.az)live.az.set(fireAz());changed();snack('Direction of fire set to '+fireAz()+'°');});
       }
     });
 
@@ -2312,6 +2376,8 @@ function SettingsScreen(){
     f.header('Entering a shot');
     f.group(function(g){
       g.sw('Enter density altitude',s.useDensityAltitude,'Type one density-altitude number and the temperature, instead of altitude, pressure and humidity',function(c){put('useDensityAltitude',c);});
+      g.number('Compass declination',Q.ANGLE,fin(ls('compassDecl','0'),0),function(v){if(v!==null&&Math.abs(v)<=60)lsSet('compassDecl',v);},
+        {signed:true,decimals:1,sub:'Added to the phone compass reading. + east, − west. 0 keeps magnetic north'});
       g.number('Distance step',Q.DISTANCE,s.solutionStepYd,function(v){if(v!==null&&v>0)put('solutionStepYd',v);},{decimals:1,sub:'How far each tap of − or + moves the distance'});
     });
     f.header('Showing the answer');

@@ -214,6 +214,21 @@ const skyFile = JSON.stringify({
   // the live wind follows the meters
   const lw = await A.evaluate(() => ({ live: liveOn('live_wind'), speed: document.querySelectorAll('#sky .sk-steprow input')[1].value, avg: avgWind().speed }));
   check('Sky: live wind speed comes from the meters', lw.live && Math.abs(parseFloat(lw.speed) - lw.avg) < 0.06, lw);
+  // phone compass: a heading from the device sets the direction of fire
+  const az0 = await A.evaluate(() => fireAz);
+  await A.click('#sky .sk-pill:has-text("Use phone compass")');
+  await A.waitForSelector('#sky button:has-text("Waiting for the compass")');
+  await A.evaluate(() => { for (let i = 0; i < 3; i++) window.dispatchEvent(Object.assign(new Event('deviceorientationabsolute'), { alpha: 90, absolute: true })); });
+  await A.click('#sky button:has-text("Use 270°")');
+  await new Promise(r => setTimeout(r, 150));
+  const cz = await A.evaluate(() => ({ az: fireAz, stored: localStorage.getItem('fireAz'), field: document.getElementById('az').value }));
+  check('Sky: phone compass sets the direction of fire', cz.az === 270 && cz.stored === '270' && cz.field === '270', cz);
+  await A.click('#sky .sk-pill:has-text("Use phone compass")');
+  await A.waitForSelector('#sky button:has-text("Compass not available")', { timeout: 4000 });
+  check('Sky: no compass readings says so', true);
+  await A.evaluate(() => document.querySelector('#sky .sk-sheet').parentNode.click());
+  check('Sky: compass sheet closes', await A.evaluate(() => !document.querySelector('#sky .sk-sheet')));
+  await A.evaluate(v => { fireAz = v; localStorage.setItem('fireAz', v); document.getElementById('az').value = v; }, az0);
 
   // full solution: WIND HOLD is the same number as Wind Lab's
   await A.click('#sky .sk-res .sk-btn');
