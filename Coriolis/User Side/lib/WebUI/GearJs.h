@@ -321,7 +321,8 @@ function saveFlat(name,p,loadId,asNew,rifleAll){
   else{
     var shared=b0&&(b0.source==='library'||lib.loads.some(function(x){return x.bulletId===b0.id&&x.id!==l.id;}));
     b=bulletFromFlat(p,shared?null:b0);
-    if(shared){b.name=(b0.name||'bullet')+' (edited)';b.maker=b0.maker||'';if(!parseCurve(p.dragCurve))b.dragCurve=b0.dragCurve||[];}
+    // a made-up name ("175 gr G7 0.243") is just regenerated for the copy
+    if(shared){if(!AUTO_NAME.test(b0.name||''))b.name=(b0.name||'bullet')+' (edited)';b.maker=b0.maker||'';if(!parseCurve(p.dragCurve))b.dragCurve=b0.dragCurve||[];}
   }
   var zero=n(p.zero,100),inPerMoa=IN_PER_MOA_100*zero/100;
   var eM=n(p.zeroElevMag,0)*(p.zeroElevDir==='low'?-1:1),wM=n(p.zeroWindMag,0)*(p.zeroWindDir==='left'?-1:1);
@@ -473,6 +474,15 @@ function migrate(){
 }
 
 load();
+// Another tab on this phone saved gear (same localStorage, different memory):
+// merge it in, so this tab's next persist() can't write over that tab's edit.
+if(root.addEventListener)root.addEventListener('storage',function(e){
+  if(!e||e.key!==KEY||!e.newValue)return;
+  var inc;try{inc=normalize(JSON.parse(e.newValue));}catch(x){return;}
+  var before=canon(lib);mergeInto(lib,inc,false);var after=canon(lib);
+  if(after!==canon(inc))lsSet(KEY,JSON.stringify(lib));   // we hold something that tab lacks
+  if(after!==before)changed();
+});
 var migrated=migrate();
 root.Gear={
   lib:function(){return lib;},meta:function(){return meta;},
