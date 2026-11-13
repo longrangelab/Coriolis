@@ -140,7 +140,55 @@ check('typed G7-shaped curve solves like G7 (1000 yd)', sC.ok && sG.ok && Math.a
 const sNo = G.solve(Object.assign({}, cFlat, { dragCurve: '', bulletId: '' }, env));
 check('Custom with no curve gives a clear error', !sNo.ok && /drag curve/i.test(sNo.err), sNo);
 
-// --- 9. errors ---
+// --- 9. bench-test regressions ---
+{
+  const st = {}; const w9 = load(st); const H = w9.Gear;
+  const AHEAD = Date.now() + 6 * 3600e3;   // a device whose clock runs 6 h fast
+  const lib9 = { format: 'skyward-library', version: 1, kind: 'master',
+    rifles: [{ id: 'R', name: 'Rifle', twistIn: 8, twistDirection: 'RIGHT', sightHeightIn: 1.9, updatedAt: AHEAD }],
+    loads: [{ id: 'L', rifleId: 'R', name: 'Load', bulletId: 'B', muzzleVelocityFps: 2900, zeroRangeYd: 100, updatedAt: AHEAD },
+            { id: 'L2', rifleId: 'R', name: 'Other load', bulletId: 'B', muzzleVelocityFps: 2800, zeroRangeYd: 100, updatedAt: AHEAD }],
+    bullets: [{ id: 'B', maker: 'Lib', name: 'Lib 140', diameterIn: 0.264, weightGr: 140, lengthIn: 1.4, dragModel: 'G7',
+      bcPoints: [{ bc: 0.14253, minVelFps: 0 }], dragCurve: [], source: 'library', updatedAt: AHEAD }],
+    deleted: [], cards: [], shots: [] };
+  H.importText(JSON.stringify(lib9));
+  const f9 = H.flat('L'); f9.mv = 2950;
+  H.saveFlat('Load', f9, 'L', false);
+  const L = H.load('L');
+  check('edit beats a copy stamped by a clock running ahead', L.updatedAt > AHEAD && L.muzzleVelocityFps === 2950, L.updatedAt - AHEAD);
+  const inc = JSON.parse(JSON.stringify(lib9)); const A9 = JSON.parse(H.exportText('master'));
+  H.mergeInto(A9, inc, false);
+  check('...and survives merging the old ahead-of-time copy back in', A9.loads.find(x => x.id === 'L').muzzleVelocityFps === 2950);
+  check('unchanged library bullet (BC 0.14253) is not copied as "(edited)"', H.bullets().length === 1 && L.bulletId === 'B', H.bullets().map(b => b.name));
+  check('band text keeps full precision', H.flat('L').bc === 0.14253);
+  // twist change on a rifle shared with another load
+  const f10 = H.flat('L'); f10.twist = 7.5;
+  check('rifleShare reports the other load', JSON.stringify(H.rifleShare(f10, 'L', false)) === JSON.stringify({ name: 'Rifle', others: 1 }));
+  H.saveFlat('Load', f10, 'L', false, false);
+  check('twist change without "all": this load gets its own rifle', H.load('L').rifleId !== 'R' && H.rifle('R').twistIn === 8 && H.rifle(H.load('L').rifleId).twistIn === 7.5);
+  const f11 = H.flat('L2'); f11.sh = 2.1;
+  H.saveFlat('Other load', f11, 'L2', false, true);
+  check('change with "all" updates the shared rifle', H.load('L2').rifleId === 'R' && H.rifle('R').sightHeightIn === 2.1);
+  const f12 = H.flat('L2');
+  const saId = H.saveFlat('Copy', f12, 'L2', true);
+  check('Save As without rifle changes keeps the same rifle', H.load(saId).rifleId === 'R');
+  // tombstone beats an ahead-of-time record
+  H.removeLoad(saId);
+  const tb = H.lib().deleted.find(d => d.id === saId);
+  check('tombstone is newer than the record it deletes', tb && tb.deletedAt > H.lib().loads.concat([]).length - 1);
+  // auto names follow the data
+  const auto = H.saveFlat('Auto', { mv: 2700, bc: 0.3, model: '7', wgt: 150, cal: 0.284, twist: 9, sh: 1.8, zero: 100 }, null, false);
+  const fa = H.flat(auto); fa.bc = 0.31; H.saveFlat('Auto', fa, auto, false);
+  check('auto-named bullet follows its BC', H.bullet(H.load(auto).bulletId).name === '150 gr G7 0.31', H.bullet(H.load(auto).bulletId).name);
+  // group offsets that round the same are kept exactly
+  H.importText(JSON.stringify({ format: 'skyward-library', version: 1, kind: 'loads', loads: [{ id: 'Z', rifleId: 'R', name: 'Off', bulletId: 'B',
+    muzzleVelocityFps: 2900, zeroRangeYd: 100, zeroHeightIn: 0.3333, zeroOffsetIn: -0.2222, updatedAt: Date.now() - 5 }], rifles: [], bullets: [], deleted: [] }));
+  const zt = H.load('Z').updatedAt; H.saveFlat('Off', H.flat('Z'), 'Z', false);
+  check('saving unchanged offsets does not touch the load', H.load('Z').zeroHeightIn === 0.3333 && H.load('Z').updatedAt === zt);
+  check('meta keeps no second copy of the library', !/serverCanon/.test(st.gearMeta || ''));
+}
+
+// --- 10. errors ---
 let threw = '';
 try { G.importText(JSON.stringify({ format: 'epv5-user-data' })); } catch (e) { threw = e.message; }
 check('Empirical backup gets a helpful message', /Empirical Precision/.test(threw));

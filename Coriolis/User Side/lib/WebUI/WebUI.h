@@ -30,6 +30,7 @@
 #include <WebServer.h>
 #include <FS.h>
 #include <LittleFS.h>
+#include <sys/stat.h>
 #include "EngineJs.h"
 #include "GearJs.h"
 
@@ -524,7 +525,11 @@ function followActiveLoad(){
 }
 function saveProfile(name,asNew){
   if(!haveGear())return false;
-  try{var id=Gear.saveFlat(name,snapshot(),activeLoadId()||null,!!asNew);
+  var snap=snapshot(),from=activeLoadId()||null,rifleAll=false;
+  var sh=Gear.rifleShare(snap,from,!!asNew);
+  if(sh)rifleAll=confirm('You changed twist or sight height. '+sh.others+' other load(s) use the rifle "'+sh.name+'".\n\n'+
+    'OK = change the rifle for all of them\nCancel = give this load its own rifle');
+  try{var id=Gear.saveFlat(name,snap,from,!!asNew,rifleAll);
     setActiveId(id);setv('bulletId',Gear.load(id).bulletId);stampLoad(id);renderSolver();return true;
   }catch(e){alert('Not saved: '+e.message);return false;}
 }
@@ -554,7 +559,7 @@ function pickBullet(id){
   setv('cal',b.diameterIn);setv('wgt',b.weightGr);if(b.lengthIn>0)setv('blen',b.lengthIn);
   setv('model',b.dragModel==='G1'?1:(b.dragModel==='CUSTOM'?'C':7));
   setv('bc',rows.length?rows[0].bc:'');
-  setv('bcBands',rows.length>1?rows.map(function(x){return (+x.bc).toFixed(4).replace(/0+$/,'')+'@'+Math.round(x.minVelFps||0);}).join(', '):'');
+  setv('bcBands',rows.length>1?rows.map(function(x){return (+x.bc)+'@'+(+(x.minVelFps||0));}).join(', '):'');
   setv('dragCurve',Gear.curveToText(b.dragCurve));
   setv('bulletId',id);
   renderSolver();flash('Bullet: '+(b.maker?b.maker+' ':'')+b.name+' - Save to keep it');
@@ -1997,9 +2002,15 @@ function renderGearLists(){
     var list=Gear.bullets().filter(function(b){return all||Math.abs(b.diameterIn-cal)<=0.0015||b.id===cur;})
       .sort(function(a,b){var x=((a.maker||'')+' '+a.name).toLowerCase(),y=((b.maker||'')+' '+b.name).toLowerCase();return x<y?-1:x>y?1:0;});
     var o2='<option value="">'+(list.length?'-- pick a bullet ('+list.length+(all?'':' for this caliber')+') --':'-- no bullets'+(all?'':' for this caliber')+' --')+'</option>';
-    list.forEach(function(b){
+    var labs=list.map(function(b){
       var rows=b.bcPoints||[],tag=b.dragModel==='CUSTOM'?'custom curve':(b.dragModel+' '+(rows.length?rows.slice().sort(function(x,y){return y.minVelFps-x.minVelFps;})[0].bc:'?')+(rows.length>1?' +'+(rows.length-1)+' bands':''));
-      o2+='<option value="'+escHtml(b.id)+'"'+(b.id===cur?' selected':'')+'>'+escHtml((b.maker?b.maker+' ':'')+b.name+' \u00b7 '+b.weightGr+' gr \u00b7 '+tag)+'</option>';});
+      // names made up by this page already say weight/model/BC
+      if(/^[0-9.]+ gr (G1|G7|CUSTOM)/.test(b.name||''))return b.name+(rows.length>1?' +'+(rows.length-1)+' bands':'')+(b.dragModel==='CUSTOM'?' curve':'');
+      return (b.maker?b.maker+' ':'')+b.name+' \u00b7 '+b.weightGr+' gr \u00b7 '+tag;});
+    var seen={};labs.forEach(function(t){seen[t]=(seen[t]||0)+1;});
+    var k={};list.forEach(function(b,i){var t=labs[i];
+      if(seen[t]>1){k[t]=(k[t]||0)+1;t+=' ('+k[t]+')';}
+      o2+='<option value="'+escHtml(b.id)+'"'+(b.id===cur?' selected':'')+'>'+escHtml(t)+'</option>';});
     bs.innerHTML=o2;
   }
   renderGearStatus();
@@ -2625,8 +2636,15 @@ private:
 
     void tick() { if (tickFn) tickFn(); }
 
+    // File present? Uses stat() because on core 2.0.x LittleFS.open()/exists()
+    // print an [E] log line for every missing file.
+    static bool fsHas(const char* path) {
+        struct stat st;
+        return stat((String("/littlefs") + path).c_str(), &st) == 0;
+    }
     void loadMeta() {
         gearVer = 0; gearGz = false;
+        if (!fsHas(GEAR_META)) return;
         File m = LittleFS.open(GEAR_META, "r");
         if (!m) return;
         String line = m.readStringUntil('\n');
@@ -2643,7 +2661,7 @@ private:
         return true;
     }
     size_t gearSize() {
-        if (!fsOk || !LittleFS.exists(GEAR_PATH)) return 0;
+        if (!fsOk || !fsHas(GEAR_PATH)) return 0;
         File f = LittleFS.open(GEAR_PATH, "r");
         size_t n = f ? f.size() : 0;
         if (f) f.close();
@@ -2661,7 +2679,7 @@ private:
     void sendGear() {
         server.sendHeader("Cache-Control", "no-store");
         if (!fsOk) { server.send(503, "application/json", "{\"ok\":false,\"err\":\"fs\"}"); return; }
-        File f = LittleFS.open(GEAR_PATH, "r");
+        File f = fsHas(GEAR_PATH) ? LittleFS.open(GEAR_PATH, "r") : File();
         if (!f || f.size() == 0) { if (f) f.close(); server.send(204); return; }
         server.sendHeader("X-Gear-Ver", String(gearVer));
         server.sendHeader("Access-Control-Expose-Headers", "X-Gear-Ver");
@@ -2686,7 +2704,7 @@ private:
             upGz = (server.arg("gz") == "1");
             if (!fsOk) { upStatus = 503; return; }
             if (server.hasArg("base") && (uint32_t)server.arg("base").toInt() != gearVer) { upStatus = 409; return; }
-            LittleFS.remove(GEAR_TMP);
+            if (fsHas(GEAR_TMP)) LittleFS.remove(GEAR_TMP);
             upFile = LittleFS.open(GEAR_TMP, "w");
             if (!upFile) upStatus = 500;
         } else if (up.status == UPLOAD_FILE_WRITE) {
@@ -2706,7 +2724,7 @@ private:
             // LittleFS renames over an existing file atomically; the remove is
             // only a fallback for a VFS layer that refuses to replace.
             if (!LittleFS.rename(GEAR_TMP, GEAR_PATH)) {
-                LittleFS.remove(GEAR_PATH);
+                if (fsHas(GEAR_PATH)) LittleFS.remove(GEAR_PATH);
                 if (!LittleFS.rename(GEAR_TMP, GEAR_PATH)) { upStatus = 500; return; }
             }
             gearVer++; gearGz = upGz;
@@ -2747,7 +2765,7 @@ public:
         fsOk = LittleFS.begin(true);
         if (fsOk) {
             loadMeta();
-            LittleFS.remove(GEAR_TMP);       // half-finished upload from before a reset
+            if (fsHas(GEAR_TMP)) LittleFS.remove(GEAR_TMP);   // half-finished upload from before a reset
             Serial.printf("[gear] flash store ready: v%lu, %u bytes (%u of %u KB used)\n",
                           (unsigned long)gearVer, (unsigned)gearSize(),
                           (unsigned)(LittleFS.usedBytes() / 1024), (unsigned)(LittleFS.totalBytes() / 1024));
