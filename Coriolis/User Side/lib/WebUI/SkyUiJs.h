@@ -813,7 +813,9 @@ function windDial(angle,onPick,onRelease){
 // ============================================================================
 var Compass={
   // true if the browser has the API at all; whether it reports is found by listening
-  maybe:function(){return typeof root.DeviceOrientationEvent!=='undefined';},
+  // On plain http (the base station page) Chrome removes the API entirely, so still offer the
+  // button there: the sheet then explains how to allow it.
+  maybe:function(){return typeof root.DeviceOrientationEvent!=='undefined'||root.isSecureContext===false;},
   decl:function(){return fin(ls('compassDecl','0'),0);},
   start:function(onHeading,onFail){
     var got=false,evs=['deviceorientationabsolute','deviceorientation'],stopped=false;
@@ -829,7 +831,7 @@ var Compass={
     var refused=false;
     function wait(){setTimeout(function(){if(!got&&!stopped)onFail(root.isSecureContext===false?'insecure':refused?'denied':'none');},1800);}
     var D=root.DeviceOrientationEvent;
-    if(!D){onFail('none');return function(){};}
+    if(!D){setTimeout(function(){onFail(root.isSecureContext===false?'insecure':'none');},0);return function(){};}
     evs.forEach(function(n){root.addEventListener(n,h,true);});
     if(typeof D.requestPermission==='function'){
       var pr;try{pr=D.requestPermission();}catch(e){pr=null;}
@@ -853,7 +855,7 @@ function compassSheet(done){
       big.textContent=shown+'°';use.disabled=false;use.textContent='Use '+shown+'°';
     },function(why){
       big.textContent='—';use.disabled=true;use.textContent='Compass not available';
-      sub.textContent=why==='insecure'?'This browser only gives the compass to secure (https) pages, and the base station page is http. On Android Chrome you can allow it: open chrome://flags, find “Insecure origins treated as secure”, add http://192.168.4.1 and restart Chrome.'
+      sub.textContent=why==='insecure'?'This browser only gives the compass to secure (https) pages, and the base station page is http. On Android Chrome you can allow it once: open chrome://flags, find “Insecure origins treated as secure”, add http://192.168.4.1, set it to Enabled and relaunch Chrome. Safari on iPhone has no such setting, so type the direction of fire there.'
         :why==='denied'?'Compass access was refused. Allow motion and orientation access for this page in the browser settings, then try again.'
         :'This device or browser does not report a compass heading. Type the direction of fire instead.';
     });
