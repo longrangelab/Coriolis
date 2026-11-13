@@ -1,0 +1,39 @@
+# Tests the phone-side ballistics engine and gear store that the base station
+# serves to the phone page (Coriolis/User Side/lib/WebUI/EngineJs.h, GearJs.h):
+#   test_engine.js  engine vs the ESP32 solver (Ballistics.h, built on the host)
+#   test_gear.js    Skyward gear format, profile migration, merge rules
+#   test_page.js    the real page in headless Chromium against a mock base station
+name: Phone engine
+
+on:
+  push:
+    paths: ['Coriolis/User Side/lib/**', 'Coriolis/User Side/tests/**', '.github/workflows/phone-engine.yml']
+  pull_request:
+    paths: ['Coriolis/User Side/lib/**', 'Coriolis/User Side/tests/**', '.github/workflows/phone-engine.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Coriolis/User Side/tests/engine
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Rebuild golden output from the current Ballistics.h
+        run: |
+          g++ -O2 -I../../lib/Ballistics make_golden.cpp -o make_golden
+          ./make_golden > golden_ballistics_h.json
+      - run: node test_engine.js
+      - run: node test_gear.js
+      - name: Page test (headless Chromium)
+        run: |
+          npm install --no-save --no-package-lock playwright@1.49.1
+          npx playwright install --with-deps chromium
+          node test_page.js
