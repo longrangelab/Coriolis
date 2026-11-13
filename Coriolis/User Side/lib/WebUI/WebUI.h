@@ -52,7 +52,7 @@
 static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Wind Station</title>
+<title>Wind Lab</title><meta name="theme-color" content="#01274A">
 <style>
   :root{--bg:#10151b;--panel:#1a212b;--line:#2b3543;--ink:#f2f6fa;--dim:#8ea1b5;
     --fire:#ffb000;--wind:#4cc2ff;--good:#39d98a;--warnY:#ffd23f;--warn:#ff6b6b;
@@ -70,7 +70,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   .tabs::-webkit-scrollbar{display:none}
   .tab{flex:0 0 auto;min-width:58px;padding:12px 16px;border:1px solid var(--line);
     background:var(--panel);color:var(--dim);border-radius:12px;font-weight:700;font-size:1rem;cursor:pointer}
-  .tab.on{background:var(--fire);color:#1a1200;border-color:var(--fire)}
+  .tab.on{background:var(--fire);color:var(--onFire);border-color:var(--fire)}
   .hero{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-top:6px}
   .heroTop{display:flex;justify-content:space-between;align-items:baseline}
   .heroLbl{color:var(--dim);font-size:.85rem;letter-spacing:.1em;text-transform:uppercase}
@@ -93,7 +93,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   .big{font-family:var(--mono);font-size:1.9rem;font-weight:700}
   .ctrl{margin-top:16px}
   .ctrl label{display:flex;justify-content:space-between;color:var(--dim);font-size:.85rem;margin-bottom:6px}
-  .azVal{font-family:var(--mono);color:var(--fire);font-size:1.4rem;font-weight:700}
+  .azVal{font-family:var(--mono);color:var(--fireInk);font-size:1.4rem;font-weight:700}
   input[type=range]{width:100%;height:38px;accent-color:var(--fire)}
   .stepRow{display:flex;gap:8px;margin-top:8px}
   .step{flex:1;padding:14px;background:var(--bg);border:1px solid var(--line);border-radius:10px;
@@ -112,11 +112,11 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   .lm{width:64px;padding:8px;border-radius:8px;border:1px solid var(--line);font-weight:700;
     font-size:.8rem;background:var(--panel);color:var(--dim)}
   .lm.live{background:var(--good);color:#00140a;border-color:var(--good)}
-  .solveBtn{width:100%;padding:16px;margin-top:12px;background:var(--fire);color:#1a1200;
+  .solveBtn{width:100%;padding:16px;margin-top:12px;background:var(--fire);color:var(--onFire);
     border:none;border-radius:12px;font-weight:800;font-size:1.1rem;letter-spacing:.05em}
   .res{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
   .res .card{text-align:center}
-  .res .big{color:var(--fire)}
+  .res .big{color:var(--fireInk)}
   .warn{color:var(--warn);font-size:.78rem;margin-top:10px;line-height:1.5}
   .hide{display:none}
   /* Basic / Forecast section switch */
@@ -155,7 +155,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   .stbl .num{width:64px}
   .tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
   .statline{color:var(--ink);font-family:var(--mono);font-size:.86rem;margin:4px 0}
-  .statline b{color:var(--fire)}
+  .statline b{color:var(--fireInk)}
   .chartbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;margin-top:12px}
   .chartbox svg{max-width:none}
   .rawmodal{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px;z-index:50}
@@ -172,14 +172,61 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   #sbNodeTbl td{padding:3px}
   .sbi{width:56px;padding:6px 4px;background:var(--bg2b,#151a22);color:var(--ink);
     border:1px solid var(--line);border-radius:6px;text-align:right;font-size:.8rem}
-</style></head><body><div class="wrap">
+  /* ===== Skyward look: same colours, toolbar, logo and bottom bar as the Solver (sky.js) ===== */
+  :root{--bg:#FCF9F5;--panel:#FFFFFF;--line:#CCD3DB;--ink:#01274A;--dim:#3A4D66;
+    --fire:#01D1FF;--onFire:#01274A;--fireInk:#005F80;--accentStroke:#01274A;--wind:#0A6FB0;--good:#1B7F4B;--warnY:#8A5E00;--warn:#B00020;
+    --bg2b:#F8F4EE;--plot:#01274A;--toolbar:#01274A;--onToolbar:#FCF9F5;--cyan:#01D1FF;
+    --mono:Roboto,"Google Sans",system-ui,-apple-system,"Segoe UI",sans-serif}
+  :root[data-theme=dark]{--bg:#04182E;--panel:#0E2F52;--line:#2B4666;--ink:#FCF9F5;--dim:#C5D0DC;
+    --fire:#01D1FF;--onFire:#01274A;--fireInk:#5CDDFF;--accentStroke:#01D1FF;--wind:#7FE3FF;--good:#7BE0A6;--warnY:#FFD23F;--warn:#FFB4AB;
+    --bg2b:#071F3A;--plot:#03111F}
+  body{font-family:Roboto,"Google Sans",system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;padding-bottom:96px}
+  header{position:sticky;top:0;z-index:60;margin:-14px -14px 6px;padding:0 10px 0 14px;min-height:64px;border:0;
+    background:var(--toolbar);color:var(--onToolbar)}
+  .brand{display:flex;align-items:center;gap:12px;font-size:20px;font-weight:700;letter-spacing:.14em}
+  .wlLogo{position:relative;width:34px;height:34px;flex:0 0 auto}
+  .wlLogo>*{position:absolute;inset:0;width:100%;height:100%;max-width:none;margin:0}
+  .wlLogo .rif{animation:wlSpin 24s linear infinite}
+  @keyframes wlSpin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.wlLogo .rif{animation:none}}
+  .status{padding:6px 12px;border-radius:14px;background:rgba(255,255,255,.1);color:#C5D0DC;font-family:inherit;font-weight:700}
+  .status.live{color:#7BE0A6}.status.off{color:#FFB4AB}
+  .sections{position:fixed;left:0;right:0;bottom:0;z-index:55;margin:0;gap:0;background:var(--panel);
+    border-top:1px solid var(--line);padding:10px 0 calc(12px + env(safe-area-inset-bottom))}
+  .sec{display:flex;flex-direction:column;align-items:center;gap:4px;padding:0;border:0;border-radius:0;background:transparent;
+    color:var(--dim);font-weight:500;letter-spacing:0;font-size:13px;cursor:pointer}
+  .sec .ind{width:60px;height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center;transition:background .18s}
+  .sec .ind svg{width:26px;height:26px;max-width:none;margin:0;fill:currentColor}
+  .sec.on{background:transparent;color:var(--ink);font-weight:700;border:0}
+  .sec.on .ind{background:var(--cyan);color:#01274A}
+  h2{display:flex;align-items:center;color:var(--ink);font-size:15px;font-weight:700;letter-spacing:.06em;margin:24px 0 8px}
+  h2::before{content:"";flex:0 0 auto;width:5px;height:20px;background:var(--cyan);margin-right:8px}
+  .card2 h2{margin:0 0 10px}
+  .hero,.wheelWrap,.card2,.chartbox,.logbar{border-radius:16px}
+  .tab{border-radius:24px;border:1.5px solid var(--line);min-height:48px}
+  .tab.on{background:var(--cyan);color:#01274A;border-color:var(--cyan)}
+  .solveBtn{border-radius:28px;border:1.5px solid var(--accentStroke);color:var(--onFire);min-height:56px}
+  .step{border-radius:12px;background:var(--panel)}
+  .field input,.field select{background:var(--panel)}
+  .lm.live{color:#FCF9F5}
+  :root[data-theme=dark] .lm.live{color:#00140a}
+</style>
+<script>
+// Light or dark, the same as the Solver's Settings -> Colours (default: same as the phone).
+function wlTheme(){var t='system';try{t=(JSON.parse(localStorage.getItem('skySettings'))||{}).theme||'system';}catch(e){}
+  var dark=t==='dark'||(t!=='light'&&!!(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches));
+  document.documentElement.setAttribute('data-theme',dark?'dark':'light');}
+wlTheme();
+try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme);}catch(e){}
+</script></head><body><div class="wrap">
 
-<header><div class="brand">WIND LAB</div><div id="status" class="status off">connecting</div></header>
+<header><div class="brand"><span class="wlLogo" id="wlLogo"><svg class="bore" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><clipPath id="wlc"><circle cx="50" cy="50" r="23.6"/></clipPath></defs><circle cx="50" cy="50" r="23.6" fill="#01D1FF"/><g clip-path="url(#wlc)" fill="none" stroke="#FFFFFF" stroke-width="3.6" stroke-linecap="round"><path d="M24,43.5H55.5a5.2,5.2 0 1 0 -5.2,-5.2"/><path d="M24,51.5H67"/><path d="M24,59.5H51.5a5.2,5.2 0 1 1 -5.2,5.2"/></g></svg></span>WIND LAB</div><div id="status" class="status off">connecting</div></header>
 <div class="sections">
-  <div id="secBasic" class="sec on" onclick="setSection('basic')">BASIC</div>
-  <div id="secFore" class="sec" onclick="setSection('forecast')">FORECAST</div>
-  <div id="secSand" class="sec" onclick="setSection('sandbox')">SANDBOX</div>
-  <div id="secLog" class="sec" onclick="setSection('log')">LOG</div>
+  <div id="secBasic" class="sec on" onclick="setSection('basic')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4,10h11.5c1.9,0 3.5,-1.6 3.5,-3.5S17.4,3 15.5,3c-1.6,0 -2.9,1 -3.3,2.5l1.9,0.6c0.2,-0.6 0.8,-1.1 1.4,-1.1 0.8,0 1.5,0.7 1.5,1.5S16.3,8 15.5,8H4V10zM4,12v2h14.5c0.8,0 1.5,0.7 1.5,1.5S19.3,17 18.5,17c-0.6,0 -1.2,-0.4 -1.4,-1l-1.9,0.6c0.5,1.4 1.8,2.4 3.3,2.4 1.9,0 3.5,-1.6 3.5,-3.5S20.4,12 18.5,12H4z"/></svg></span>Basic</div>
+  <div id="secFore" class="sec" onclick="setSection('forecast')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5,18.49l6,-6.01 4,4L22,6.92l-1.41,-1.41 -7.09,7.97 -4,-4L2,16.99z"/></svg></span>Forecast</div>
+  <div id="secSand" class="sec" onclick="setSection('sandbox')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.8,18.4L14,10.67V6.5l1.35,-1.69C15.61,4.48 15.38,4 14.96,4H9.04C8.62,4 8.39,4.48 8.65,4.81L10,6.5v4.17L4.2,18.4C3.71,19.06 4.18,20 5,20h14c0.82,0 1.29,-0.94 0.8,-1.6z"/></svg></span>Sandbox</div>
+  <div id="secLog" class="sec" onclick="setSection('log')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,13h2v-2H3v2zm0,4h2v-2H3v2zm0,-8h2V7H3v2zm4,4h14v-2H7v2zm0,4h14v-2H7v2zM7,7v2h14V7H7z"/></svg></span>Log</div>
+  <div id="secSolver" class="sec" onclick="setView('solver')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM13,19.93V17h-2v2.93C7.38,19.48 4.52,16.62 4.07,13H7v-2H4.07C4.52,7.38 7.38,4.52 11,4.07V7h2V4.07c3.62,0.45 6.48,3.31 6.93,6.93H17v2h2.93c-0.45,3.620 -3.31,6.48 -6.93,6.93zM12,10.5c-0.83,0 -1.5,0.67 -1.5,1.5s0.67,1.5 1.5,1.5 1.5,-0.67 1.5,-1.5 -0.67,-1.5 -1.5,-1.5z"/></svg></span>Solver</div>
 </div>
 <div id="tabs" class="tabs"></div>
 
@@ -188,11 +235,11 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
      padding:10px 12px;border:1px solid var(--line);border-radius:12px">
   <div id="sleepInfo" style="flex:1;font-size:.8rem;color:var(--dim)"></div>
   <button id="rewakeBtn" onclick="rewakeFleet()" class="hide" style="flex:0 0 auto;padding:10px 16px;
-     border-radius:10px;border:2px solid var(--fire);background:transparent;
-     color:var(--fire);font-weight:800;letter-spacing:.04em;margin-right:6px"></button>
+     border-radius:10px;border:2px solid var(--fireInk);background:transparent;
+     color:var(--fireInk);font-weight:800;letter-spacing:.04em;margin-right:6px"></button>
   <button id="sleepBtn" onclick="toggleFleetSleep()" style="flex:0 0 auto;padding:10px 16px;
      border-radius:10px;border:1px solid var(--fire);background:var(--fire);
-     color:#1a1200;font-weight:800;letter-spacing:.04em"></button>
+     color:var(--onFire);font-weight:800;letter-spacing:.04em"></button>
 </div>
 
 <!-- ======================= SANDBOX (virtual BC lab) ======================= -->
@@ -266,10 +313,10 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 
     <div class="card2">
       <div class="grid2">
-        <div class="card"><div class="k">Hit probability</div><div class="v" id="sbHitPct" style="color:var(--fire)">--</div></div>
+        <div class="card"><div class="k">Hit probability</div><div class="v" id="sbHitPct" style="color:var(--fireInk)">--</div></div>
         <div class="card"><div class="k">90% cone</div><div class="v" id="sbCone">--</div></div>
       </div>
-      <canvas id="sbTargetCv" width="320" height="320" style="width:100%;max-width:340px;display:block;margin:10px auto;background:#0c1016;border:1px solid var(--line);border-radius:12px"></canvas>
+      <canvas id="sbTargetCv" width="320" height="320" style="width:100%;max-width:340px;display:block;margin:10px auto;background:var(--plot);border:1px solid var(--line);border-radius:12px"></canvas>
       <div style="text-align:center;font-size:.76rem;color:var(--dim)">Impact dispersion vs target (horizontal = wind miss)</div>
     </div>
 
@@ -284,9 +331,9 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
       <div id="sbPopulateHint" style="font-size:.72rem;color:var(--warnY);margin:0 0 8px">
         Select a saved rifle profile above, then press Populate to compute the true curve.
       </div>
-      <canvas id="sbSensCv" width="320" height="170" style="width:100%;background:#0c1016;border:1px solid var(--line);border-radius:12px"></canvas>
+      <canvas id="sbSensCv" width="320" height="170" style="width:100%;background:var(--plot);border:1px solid var(--line);border-radius:12px"></canvas>
       <div id="sbCurveSrc" style="text-align:center;font-size:.72rem;color:var(--dim);margin-top:6px">--</div>
-      <canvas id="sbHistCv" width="320" height="150" style="width:100%;background:#0c1016;border:1px solid var(--line);border-radius:12px;margin-top:10px"></canvas>
+      <canvas id="sbHistCv" width="320" height="150" style="width:100%;background:var(--plot);border:1px solid var(--line);border-radius:12px;margin-top:10px"></canvas>
       <div style="text-align:center;font-size:.76rem;color:var(--dim)">Miss distribution across all runs</div>
     </div>
   </div>
@@ -324,7 +371,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
        under WIND HOLD so it rides along in both BASIC (avg) and FORECAST (pred). -->
   <div id="aimRow" class="hide" style="display:flex;gap:8px;margin-bottom:10px">
     <button id="aimBtn" onclick="aimGo()" style="flex:2;padding:14px;border-radius:12px;
-      border:1px solid var(--fire);background:var(--fire);color:#1a1200;font-weight:800;
+      border:1px solid var(--fire);background:var(--fire);color:var(--onFire);font-weight:800;
       letter-spacing:.06em;font-size:1rem">AIMBOT</button>
     <button id="zeroBtn" onclick="aimZero()" style="flex:1;padding:14px;border-radius:12px;
       border:1px solid var(--line);background:var(--bg);color:var(--ink);font-weight:800;
@@ -449,6 +496,11 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 <script src="/engine.js"></script>
 <script src="/gear.js"></script>
 <script src="/sky.js"></script>
+<script>
+// The rifling ring of the logo comes with sky.js (the same artwork as the Solver's).
+(function(){var b=document.getElementById('wlLogo');if(!b||!window.SkyUI||!SkyUI.logo)return;
+  var i=new Image();i.className='rif';i.alt='';i.src=SkyUI.logo.rifLight;b.insertBefore(i,b.firstChild);})();
+</script>
 <script>
 var data=null, view='avg';
 var pollTimer=null;   // handle for the 350 ms poll; Sandbox suspends it
@@ -1785,7 +1837,7 @@ function renderNodeSleep(){
   // so from here the countdown looked like it never started until you switched
   // to the Basic/Forecast tab. render() re-runs every poll, so this ticks down live.
   if(st.waking){
-    sub+=' &middot; <b style="color:var(--fire)">WAKE BROADCAST '+st.wakeRemain+'s left</b>';
+    sub+=' &middot; <b style="color:var(--fireInk)">WAKE BROADCAST '+st.wakeRemain+'s left</b>';
   }
   // If the fleet is asleep, the per-node control is informational: the fleet
   // command already sleeps everyone. Disable to avoid a confusing no-op.
@@ -1793,7 +1845,7 @@ function renderNodeSleep(){
   row.innerHTML=
     '<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line,#333);border-radius:12px;background:var(--panel,#1a1a1a)">'+
       '<button onclick="toggleNodeSleep('+id+')" '+(dis?'disabled ':'')+
-        'style="flex:0 0 auto;padding:12px 16px;border-radius:10px;border:1px solid '+bg+';background:'+bg+';color:#1a1200;font-weight:700;'+(dis?'opacity:.45;':'')+'">'+btnLbl+'</button>'+
+        'style="flex:0 0 auto;padding:12px 16px;border-radius:10px;border:1px solid '+bg+';background:'+bg+';color:var(--onFire);font-weight:700;'+(dis?'opacity:.45;':'')+'">'+btnLbl+'</button>'+
       '<div style="flex:1 1 auto;font-size:13px;color:var(--dim,#9aa)">'+sub+'</div>'+
     '</div>';
 }
@@ -1809,19 +1861,19 @@ function renderSleepBar(){
   var nTot=(data.nodes||[]).length;
   if(st.mode){
     btn.textContent='WAKE NODES';
-    btn.style.background='var(--fire)';btn.style.color='#1a1200';btn.style.borderColor='var(--fire)';
+    btn.style.background='var(--fire)';btn.style.color='var(--onFire)';btn.style.borderColor='var(--fire)';
     info.innerHTML='<b style="color:var(--ink)">FLEET SLEEPING</b> &middot; '+nSlp+'/'+nTot+
       ' acked &middot; nodes check in every 20 s&ndash;5 min (battery/temp)';
     rewake.className='hide';
   }else if(st.waking){
     btn.textContent='WAKING…';
-    btn.style.background='var(--fire)';btn.style.color='#1a1200';btn.style.borderColor='var(--fire)';
+    btn.style.background='var(--fire)';btn.style.color='var(--onFire)';btn.style.borderColor='var(--fire)';
     info.innerHTML='<b style="color:var(--ink)">WAKE BROADCAST</b> &middot; '+st.wakeRemain+
       ' s left &middot; '+nSlp+' node'+(nSlp==1?'':'s')+' still down (caught as they check in)';
     rewake.className='hide';
   }else{
     btn.textContent='SLEEP NODES';
-    btn.style.background='var(--fire)';btn.style.color='#1a1200';btn.style.borderColor='var(--fire)';
+    btn.style.background='var(--fire)';btn.style.color='var(--onFire)';btn.style.borderColor='var(--fire)';
     info.innerHTML=nSlp
       ?('<b style="color:var(--warn)">'+nSlp+' node'+(nSlp==1?'':'s')+' still sleeping</b> &middot; press RE-WAKE or wait for next check-in')
       :'All nodes awake &middot; sleep saves battery between strings';

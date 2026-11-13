@@ -317,7 +317,7 @@ var Num={
 var SET_DEF={distanceUnit:'yd',atmosphereUnits:'imperial',otherUnits:'imperial',outputPrecision:'tenth',usePlusMinus:false,
   solutionStepYd:5,tableStepYd:50,tableMaxYd:2000,tableSortDescending:false,useDensityAltitude:false,theme:'system',motion:'full'};
 function S(){var s=lsJson('skySettings',{});var o={};for(var k in SET_DEF)o[k]=(s&&s[k]!==undefined)?s[k]:SET_DEF[k];return o;}
-function saveS(s){lsSet('skySettings',JSON.stringify(s));applyTheme();}
+function saveS(s){lsSet('skySettings',JSON.stringify(s));applyTheme();if(root.wlTheme)try{root.wlTheme();}catch(e){}}
 
 // ---- units (Skyward ui/calc/Units.kt) ----
 var Q={DISTANCE:'distance',ALTITUDE:'altitude',PRESSURE:'pressure',TEMPERATURE:'temperature',HUMIDITY:'humidity',LENGTH:'length',
@@ -2366,6 +2366,7 @@ root.SkyUI={
   close:function(){closeSky(false);},
   isOpen:function(){return openFlag;},
   onData:function(){if(!openFlag)return;var sc=current();if(sc&&sc.onData)try{sc.onData();}catch(e){}},
+  logo:LOGO,
   screen:function(){var sc=current();return sc?(sc.tab||sc.sub||''):'';},
   // for tests
   _solveNow:function(){return solveNow();},_params:function(){return params();},_goTab:function(id){goTab(id);}
