@@ -37,6 +37,8 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <lwip/sockets.h>        // select()/send() for the non-blocking gear download
 #include "EngineJs.h"
 #include "GearJs.h"
 #include "SkyUiJs.h"
@@ -61,6 +63,7 @@
 #define GEAR_API_VERSION    1
 #define GEAR_FORMATS_JSON   "[1]"
 #define GEAR_ENGINE_BASIS   "skyward-72b788e"
+#define GEAR_SEND_STALL_MS 4000UL   // drop a phone that takes no gear bytes for this long
 
 static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 <!DOCTYPE html><html lang="en"><head>
@@ -2796,14 +2799,36 @@ private:
         if (gearGz) server.sendHeader("Content-Encoding", "gzip");
         server.setContentLength(f.size());
         server.send(200, "application/json", "");
+        // Write the body ourselves, only when the socket can take it. A
+        // WiFiClient::write() to a phone that has stopped reading (screen off,
+        // walked out of range, tab frozen) blocks for up to 10 s per call, and
+        // sendContent() then starts the next 2 KB chunk anyway: an 82 KB file
+        // froze the radio and the page for about 2 minutes on the bench. Here
+        // the radio is serviced between every try, and a phone that takes
+        // nothing for GEAR_SEND_STALL_MS is dropped (its sync retries later).
         static uint8_t buf[2048];
-        while (f.available()) {
+        WiFiClient cl = server.client();
+        int fd = cl.fd();
+        uint32_t lastMove = millis();
+        bool ok = fd >= 0;
+        while (ok && f.available()) {
             size_t n = f.read(buf, sizeof(buf));
             if (n == 0) break;
-            server.sendContent((const char*)buf, n);
-            tick();
+            size_t off = 0;
+            while (ok && off < n) {
+                fd_set ws; FD_ZERO(&ws); FD_SET(fd, &ws);
+                struct timeval tv = { 0, 20000 };                  // 20 ms
+                if (select(fd + 1, NULL, &ws, NULL, &tv) > 0 && FD_ISSET(fd, &ws)) {
+                    int r = send(fd, buf + off, n - off, MSG_DONTWAIT);
+                    if (r > 0) { off += (size_t)r; lastMove = millis(); }
+                    else if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) ok = false;
+                }
+                if (millis() - lastMove > GEAR_SEND_STALL_MS) ok = false;
+                tick();
+            }
         }
         f.close();
+        if (!ok && fd >= 0) shutdown(fd, SHUT_RDWR);           // body cut short: close it
     }
 
     // multipart chunks for POST /gear
