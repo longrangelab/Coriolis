@@ -3081,17 +3081,24 @@ public:
         WiFi.mode(WIFI_AP);
         WiFi.softAP(ssid, pass);
         IPAddress ip = WiFi.softAPIP();
-        server.on("/", [this]() { server.send_P(200, "text/html", WEBUI_PAGE); });
+        // no-store, not no-cache: Chrome restores a tab (and serves back/forward) from
+        // a cached copy under no-cache without asking the base. A tab left open across a
+        // firmware update then keeps running the old page code; with gear sync that
+        // old code merged into Skyward's view-only gear and wrote it back as its own.
+        server.on("/", [this]() {
+            server.sendHeader("Cache-Control", "no-store");
+            server.send_P(200, "text/html", WEBUI_PAGE);
+        });
         server.on("/engine.js", [this]() {
-            server.sendHeader("Cache-Control", "no-cache");
+            server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", ENGINE_JS);
         });
         server.on("/gear.js", [this]() {
-            server.sendHeader("Cache-Control", "no-cache");
+            server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", GEAR_JS);
         });
         server.on("/sky.js", [this]() {
-            server.sendHeader("Cache-Control", "no-cache");
+            server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", SKY_JS);
         });
         server.on("/gear", HTTP_GET, [this]() { sendGear(); });

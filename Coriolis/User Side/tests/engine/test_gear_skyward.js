@@ -17,7 +17,7 @@ function fakeBase(initial) {
   });
   b.fetch = async (url, opt) => {
     const path = url.split('?')[0];
-    if (path === '/gear/info') return resp(200, { ok: true, ver: b.ver, bytes: b.text.length, gz: false, max: 384 * 1024 });
+    if (path === '/gear/info') return resp(200, { ok: true, ver: b.ver, bytes: b.text.length, gz: false, max: 384 * 1024, fw: b.fw });
     if (path === '/gear' && (!opt || !opt.method || opt.method === 'GET'))
       return b.text ? resp(200, b.text, { 'X-Gear-Ver': String(b.ver) }) : resp(204, '');
     if (path === '/gear' && opt.method === 'POST') {
@@ -122,6 +122,26 @@ function throwsManaged(f) { try { f(); return false; } catch (e) { return !!e.ma
     await load(st, globals(b)).Gear.sync();
     const G2 = load(st).Gear;
     check('reloaded page remembers view only', G2.managed() === true && throwsManaged(() => G2.removeRecord('rifle', 'r1')));
+  }
+
+  {
+    // the base is reflashed while this page stays open (or Chrome restores an old copy of
+    // the page): the page reloads before touching the gear, so old code can't write over it
+    const b = fakeBase(''); b.fw = '1.2.0';
+    let reloads = 0;
+    const w = load({}, Object.assign(globals(b), { location: { reload: () => { reloads++; } } }));
+    const G = w.Gear;
+    G.saveRecord('rifle', { id: 'mine', name: 'Phone rifle', twistIn: 10, twistDirection: 'RIGHT', sightHeightIn: 1.5 });
+    await G.sync();
+    const postsBefore = b.posts.length;
+    check('same firmware: no reload', reloads === 0 && postsBefore === 1, reloads + ' ' + postsBefore);
+    b.fw = '1.3.0'; b.text = skyFile(2705); b.ver++;
+    G.saveRecord('rifle', { id: 'mine2', name: 'Another', twistIn: 10, twistDirection: 'RIGHT', sightHeightIn: 1.5 });
+    await G.sync();
+    check('new firmware: page reloads', reloads === 1, reloads);
+    check('new firmware: nothing written by the old page', b.posts.length === postsBefore && JSON.parse(b.text).app === 'Skyward Ballistics');
+    await G.sync();
+    check('only one reload asked for', reloads === 1, reloads);
   }
 
   if (fails) { console.log(fails + ' FAILURE(S)'); process.exit(1); }
