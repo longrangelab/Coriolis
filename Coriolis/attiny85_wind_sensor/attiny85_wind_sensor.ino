@@ -17,16 +17,16 @@
  * after flashing -- it confirms which calibration is actually running.
  *
  * What gets reported (refreshed every 1 s). speed_avg and dir_avg cover the
- * last 3 s so the phone follows a change within a few seconds; the spread
+ * last 2 s so the phone follows a change within a few seconds; the spread
  * figures (speed_sd, dir_sd) and gust keep the rolling 10 s window:
- *   speed_avg : mean speed over the newest 3 s, from revolution times (the same
- *               3 s mean the gust search uses). Calm time counts as calm.
+ *   speed_avg : mean speed over the newest 2 s, from revolution times (worked
+ *               out like one gust span). Calm time counts as calm.
  *   speed_sd  : time-weighted SD of per-revolution speeds. Reads 0 in a
  *               perfectly steady wind; a lull counts as slow air, not as a gap.
  *   gust      : highest 3 s mean speed within the window, from revolution
  *               times, so it equals the speed in a steady wind
  *   dir_avg   : unit-vector mean of the 100 ms vane samples taken while moving
- *               in the newest 3 s (the 10 s mean if those 3 s have none)
+ *               in the newest 2 s (held if those 2 s have none)
  *   dir_sd    : Yamartino SD of the vane samples over the 10 s window. Reads 103.9 (the maximum)
  *               when the cups are turning but the vane signal is out of range
  *               (broken wire, unplugged vane): direction unknown, not "steady".
@@ -60,7 +60,7 @@
 #define TICKS_PER_BUCKET   10      // 10 x 100 ms = 1 s bucket
 #define WINDOW_BUCKETS     10      // stats window = 10 s, republished every 1 s
 #define GUST_BUCKETS       3       // gust = highest 3 s mean in the window
-#define LIVE_BUCKETS       3       // speed_avg/dir_avg = the last 3 s (SD and gust keep 10 s)
+#define LIVE_BUCKETS       2       // speed_avg/dir_avg = the last 2 s (SD and gust keep 10 s)
 #define CALM_US            2000000UL   // no pulse for 2 s -> cups stopped; skip vane
 #define STOPPED_US         60000000UL  // a gap this long is not a revolution period
 #define PERIOD_RING        8       // ISR -> loop queue (100 Hz max = 10 per tick)
@@ -375,6 +375,24 @@ static float spanDivisor(float cov, uint16_t n, float whole) {
     return cov;
 }
 
+// Mean speed over `span` buckets starting `start` buckets back (0 = newest),
+// from revolution times so a steady wind reads exactly.
+static float __attribute__((noinline)) spanMean(uint8_t start, uint8_t span) {
+    uint16_t gN = 0, gP = 0; uint32_t gT = 0;
+    for (uint8_t k = 0; k < span; k++) {
+        const Bucket& b = bk[bucketAgo(start + k)];
+        gN += b.pulses; gP += b.nPer; gT += b.sumT;
+    }
+    float spanSec = (float)span * (TICK_MS * TICKS_PER_BUCKET) / 1000.0f;
+    if (gP == 0 || gN > gP + 1) {
+        // No revolution times to use, or some are missing: wind too light
+        // to turn the cups every CALM_US, or the ISR queue overflowed (only
+        // above ~80 Hz). Fall back to the plain count.
+        return K_MPH_HZ * (float)gN / spanSec;
+    }
+    return K_MPH_US * (float)gP / spanDivisor((float)gT, gP, spanSec * 1000000.0f);
+}
+
 // Recompute every statistic over the window and publish it for I2C.
 void publishWindow() {
     // ---- totals over the window ----
@@ -401,27 +419,15 @@ void publishWindow() {
         if (var > 0.0f) spdSd = sqrt(var);
     }
 
+    // ---- live speed: the newest LIVE_BUCKETS, worked out like one gust span ----
+    float live = spanMean(0, (filledB < LIVE_BUCKETS) ? filledB : LIVE_BUCKETS);
+
     // ---- gust: highest GUST_BUCKETS-second mean inside the window ----
-    float gust = 0.0f, live = 0.0f;
+    // Starts at the live speed: a rising wind shows in 2 s before it fills 3 s.
+    float gust = live;
     uint8_t span = (filledB < GUST_BUCKETS) ? filledB : GUST_BUCKETS;
-    float spanSec = (float)span * (TICK_MS * TICKS_PER_BUCKET) / 1000.0f;
-    float spanUs  = spanSec * 1000000.0f;
     for (uint8_t start = 0; start + span <= filledB; start++) {
-        uint16_t gN = 0, gP = 0; uint32_t gT = 0;
-        for (uint8_t k = 0; k < span; k++) {
-            const Bucket& b = bk[bucketAgo(start + k)];
-            gN += b.pulses; gP += b.nPer; gT += b.sumT;
-        }
-        float g;
-        if (gP == 0 || gN > gP + 1) {
-            // No revolution times to use, or some are missing: wind too light
-            // to turn the cups every CALM_US, or the ISR queue overflowed (only
-            // above ~80 Hz). Fall back to the plain count.
-            g = K_MPH_HZ * (float)gN / spanSec;
-        } else {
-            g = K_MPH_US * (float)gP / spanDivisor((float)gT, gP, spanUs);
-        }
-        if (start == 0) live = g;                  // newest 3 s: the live speed
+        float g = spanMean(start, span);
         if (g > gust) gust = g;
     }
     if (gust < spdAvg) gust = spdAvg;
@@ -430,16 +436,18 @@ void publishWindow() {
     WindData out = windData;
     if (nD > 0) {
         float meanSin = (float)sS / (1000.0f * nD), meanCos = (float)cS / (1000.0f * nD);
-        // Live direction from the newest LIVE_BUCKETS; the SD below keeps the whole window.
-        float dirAvg = (lD > 0) ? atan2((float)lS, (float)lC) * (float)RAD_TO_DEG
-                                : atan2(meanSin, meanCos) * (float)RAD_TO_DEG;
-        if (dirAvg < 0) dirAvg += 360.0f;
+        // Live direction: the newest LIVE_BUCKETS only. With no moving sample in
+        // them (cups just stopped) keep the last one; the SD keeps the 10 s window.
+        if (lD > 0) {
+            float dirAvg = atan2((float)lS, (float)lC) * (float)RAD_TO_DEG;
+            if (dirAvg < 0) dirAvg += 360.0f;
+            out.dir_avg = toU16(dirAvg, 10.0f);
+            if (out.dir_avg >= 3600) out.dir_avg -= 3600;
+        }
         float R = sqrt(meanSin * meanSin + meanCos * meanCos);
         if (R > 1.0f) R = 1.0f;
         float eps   = sqrt(1.0f - R * R);
         float dirSd = asin(eps) * (1.0f + 0.1547f * eps * eps * eps) * (float)RAD_TO_DEG;   // Yamartino
-        out.dir_avg = toU16(dirAvg, 10.0f);
-        if (out.dir_avg >= 3600) out.dir_avg -= 3600;
         out.dir_sd  = toU16(dirSd, 10.0f);
     } else if (N > 0) {
         // Cups turning but not one usable vane sample in the window: the vane
