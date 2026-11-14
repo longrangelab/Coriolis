@@ -386,6 +386,15 @@ var DA={
 // sandbox always work from what this screen shows.
 // ============================================================================
 function G(){return root.Gear;}
+// Gear from the Skyward Ballistics app is view only here (see gear.js).
+function viewOnly(){return !!(G()&&G().managed&&G().managed());}
+var viewOnlyShownAt=0;
+function viewOnlyAlert(){var t=Date.now();if(t-viewOnlyShownAt<1500)return;viewOnlyShownAt=t;alertBox('Gear from Skyward Ballistics',G().MANAGED_MSG);}
+function takeOverGear(){
+  confirmBox('Edit gear here instead?','The gear on the base station becomes editable on this page. '+
+    'If the Skyward app still sends to this base station, its next change replaces this gear again. To keep editing here, stop sending in Skyward first.',
+    'Edit here',function(){Promise.resolve(G().takeOver()).then(function(){rerender();});});
+}
 function getv(k,d){return root.getv?root.getv(k,d):ls('sol_'+k,d);}
 function setv(k,v){if(root.setv)root.setv(k,v);else lsSet('sol_'+k,v);}
 function liveOn(key){return root.liveOn?root.liveOn(key):ls(key,'1')==='1';}
@@ -1448,7 +1457,16 @@ function SolutionScreen(which){
         g.info('Typical remaining error',Num.fixed(toDial(res.rmsBeforeMil),2)+' → '+Num.fixed(toDial(res.rmsAfterMil),2)+' '+Adjust.unitLabel(u.eu));
         res.imp.forEach(function(im,i){var off=offsets().e;g.info(dist(im.rangeYd),'actual '+Num.fixed(toDial(im.actualComeUpMil+off),2)+' · before '+Num.fixed(toDial(res.predictedBefore[i]+off),2)+' · after '+Num.fixed(toDial(res.predictedAfter[i]+off),2));});
       });
-      f.button('Apply to ammo',function(){
+      if(viewOnly())f.button('Use on this phone',function(){
+        // Skyward's gear is view only: use the result in the working values (not saved as gear) until
+        // Skyward sends a change to this ammo. To keep it, enter it in Skyward.
+        if(res.mode==='mv')setv('mv',Math.round(res.loadMuzzleVelocityFps*10)/10);else setv('dragScale',Math.round(res.value*10000)/10000);
+        calib.result=null;
+        alertBox('Used on this phone','The '+(res.mode==='mv'?'muzzle velocity':'drag scale factor')+' is used on this phone until Skyward Ballistics sends a change to "'+c.load.name+'". '+
+          'It is not saved as gear: to keep it, enter it in Skyward.');
+        rerender();
+      });
+      else f.button('Apply to ammo',function(){
         var l=JSON.parse(JSON.stringify(c.load));
         var what=res.mode==='mv'?'Set the muzzle velocity of "'+l.name+'" to '+Units.text(Q.VELOCITY,res.value,0)+' at this temperature?':'Set the drag scale factor of "'+l.name+'" to '+Num.fixed(res.value,4)+'?';
         confirmBox('Apply to ammo',what,'Apply',function(){
@@ -1592,6 +1610,7 @@ function GearScreen(){
     toolbar({back:toWindLab,backLabel:'Back to Wind Lab',title:'My gear',actions:[{icon:'sync',label:'Sync with base station',fn:syncNow}]});
     bottomNav(TABS,'gear',goTab);
     var f=new Form(col),rs=rifles(),c=sel(),selR=c.rifle?c.rifle.id:null,selL=c.load?c.load.id:null;
+    if(viewOnly()){f.header('From Skyward Ballistics (view only)');f.note(G().MANAGED_MSG);f.button('Edit gear here instead',takeOverGear);}
     var bw=el('div','sk-bwrap');var ab=el('button','sk-btn');add(ab,icon('add'),doc.createTextNode('Add Firearm'));on(ab,'click',function(){push(RifleEditScreen(null));});bw.appendChild(ab);f.add(bw);
     f.header('Firearms');
     if(!rs.length)f.note('You have no firearms yet. Tap "Add Firearm" to set up your first one, then add the ammo you shoot in it.');
@@ -1610,7 +1629,8 @@ function GearScreen(){
     });
     f.note('A tick marks what the Calculator is using. Tap a firearm or ammo to change it; ⋮ for more.');
   };
-  function syncNow(){busy(true);Promise.resolve(G().sync()).then(function(){busy(false);var m=G().meta()||{};snack(m.err?('Not synced: '+m.err):'Synced with the base station');rerender();});}
+  function syncNow(){busy(true);Promise.resolve(G().sync()).then(function(){busy(false);var m=G().meta()||{};
+    snack(m.err?('Not synced: '+m.err):(viewOnly()?'Read the gear Skyward Ballistics sent':'Synced with the base station'));rerender();});}
   function firearmCard(f,r,loads,selected,selL){
     var card=el('div','sk-card');f.add(card);
     var shots=(G().lib().shots||[]).filter(function(x){return x.rifleId===r.id;});
@@ -2414,7 +2434,8 @@ function openSky(where){
   if(!gearHooked){gearHooked=true;
     // Edits made here are this phone's own: Wind Lab must not call them "updated on another device".
     ['saveRecord','removeRecord','importText'].forEach(function(k){var f=G()[k];if(typeof f!=='function')return;
-      G()[k]=function(){var q=root.__skyQuiet;root.__skyQuiet=true;try{return f.apply(this,arguments);}finally{root.__skyQuiet=q;}};});
+      G()[k]=function(){if(viewOnly()){viewOnlyAlert();return undefined;}
+        var q=root.__skyQuiet;root.__skyQuiet=true;try{return f.apply(this,arguments);}finally{root.__skyQuiet=q;}};});
 G().onChange(function(){if(!openFlag)return;var sc=current();if(sc&&sc.onGear&&!doc.querySelector('#sky input:focus,#sky textarea:focus'))rerender();});}
   var t=where||ls('skyTab','calc');if(['calc','gear','analysis','more'].indexOf(t)<0)t='calc';tab=t;
   stack=[screenFor(t)];openFlag=true;skipPop=0;
