@@ -16,14 +16,18 @@
  * LED feedback at boot: 2 blinks = SparkFun, 3 blinks = Inspeed. Check this
  * after flashing -- it confirms which calibration is actually running.
  *
- * What gets reported (refreshed every 1 s, over a rolling 10 s window):
- *   speed_avg : pulses in the window / window length. Calm time counts as calm.
+ * What gets reported (refreshed every 1 s). speed_avg and dir_avg cover the
+ * last 3 s so the phone follows a change within a few seconds; the spread
+ * figures (speed_sd, dir_sd) and gust keep the rolling 10 s window:
+ *   speed_avg : mean speed over the newest 3 s, from revolution times (the same
+ *               3 s mean the gust search uses). Calm time counts as calm.
  *   speed_sd  : time-weighted SD of per-revolution speeds. Reads 0 in a
  *               perfectly steady wind; a lull counts as slow air, not as a gap.
  *   gust      : highest 3 s mean speed within the window, from revolution
  *               times, so it equals the speed in a steady wind
- *   dir_avg   : unit-vector mean of 100 ms vane samples taken while moving
- *   dir_sd    : Yamartino SD of the same samples. Reads 103.9 (the maximum)
+ *   dir_avg   : unit-vector mean of the 100 ms vane samples taken while moving
+ *               in the newest 3 s (the 10 s mean if those 3 s have none)
+ *   dir_sd    : Yamartino SD of the vane samples over the 10 s window. Reads 103.9 (the maximum)
  *               when the cups are turning but the vane signal is out of range
  *               (broken wire, unplugged vane): direction unknown, not "steady".
  *   rawADC    : bits 0-9 = last vane ADC (debug), bits 10-15 = publish
@@ -56,6 +60,7 @@
 #define TICKS_PER_BUCKET   10      // 10 x 100 ms = 1 s bucket
 #define WINDOW_BUCKETS     10      // stats window = 10 s, republished every 1 s
 #define GUST_BUCKETS       3       // gust = highest 3 s mean in the window
+#define LIVE_BUCKETS       3       // speed_avg/dir_avg = the last 3 s (SD and gust keep 10 s)
 #define CALM_US            2000000UL   // no pulse for 2 s -> cups stopped; skip vane
 #define STOPPED_US         60000000UL  // a gap this long is not a revolution period
 #define PERIOD_RING        8       // ISR -> loop queue (100 Hz max = 10 per tick)
@@ -375,10 +380,12 @@ void publishWindow() {
     // ---- totals over the window ----
     uint16_t N = 0, NP = 0; float SI = 0.0f; uint32_t CT = 0;
     int32_t  sS = 0, cS = 0; uint16_t nD = 0;
+    int32_t  lS = 0, lC = 0; uint16_t lD = 0;      // the last LIVE_BUCKETS only
     for (uint8_t a = 0; a < filledB; a++) {
         const Bucket& b = bk[bucketAgo(a)];
         N += b.pulses; NP += b.nPer; SI += b.sumInvT; CT += b.sumT;
         sS += b.sinS; cS += b.cosS; nD += b.nDir;
+        if (a < LIVE_BUCKETS) { lS += b.sinS; lC += b.cosS; lD += b.nDir; }
     }
     float Wsec = (float)filledB * (TICK_MS * TICKS_PER_BUCKET) / 1000.0f;
     float Wus  = Wsec * 1000000.0f;
@@ -395,7 +402,7 @@ void publishWindow() {
     }
 
     // ---- gust: highest GUST_BUCKETS-second mean inside the window ----
-    float gust = 0.0f;
+    float gust = 0.0f, live = 0.0f;
     uint8_t span = (filledB < GUST_BUCKETS) ? filledB : GUST_BUCKETS;
     float spanSec = (float)span * (TICK_MS * TICKS_PER_BUCKET) / 1000.0f;
     float spanUs  = spanSec * 1000000.0f;
@@ -414,6 +421,7 @@ void publishWindow() {
         } else {
             g = K_MPH_US * (float)gP / spanDivisor((float)gT, gP, spanUs);
         }
+        if (start == 0) live = g;                  // newest 3 s: the live speed
         if (g > gust) gust = g;
     }
     if (gust < spdAvg) gust = spdAvg;
@@ -422,7 +430,9 @@ void publishWindow() {
     WindData out = windData;
     if (nD > 0) {
         float meanSin = (float)sS / (1000.0f * nD), meanCos = (float)cS / (1000.0f * nD);
-        float dirAvg = atan2(meanSin, meanCos) * (float)RAD_TO_DEG;
+        // Live direction from the newest LIVE_BUCKETS; the SD below keeps the whole window.
+        float dirAvg = (lD > 0) ? atan2((float)lS, (float)lC) * (float)RAD_TO_DEG
+                                : atan2(meanSin, meanCos) * (float)RAD_TO_DEG;
         if (dirAvg < 0) dirAvg += 360.0f;
         float R = sqrt(meanSin * meanSin + meanCos * meanCos);
         if (R > 1.0f) R = 1.0f;
@@ -437,7 +447,7 @@ void publishWindow() {
         // unknown rather than leaving a small SD that reads as steady.
         out.dir_sd = DIR_SD_UNKNOWN;
     }
-    out.speed_avg = toU16(spdAvg, 100.0f);
+    out.speed_avg = toU16(live, 100.0f);
     out.speed_sd  = toU16(spdSd,  100.0f);
     out.gust      = toU16(gust,   100.0f);
     publishSeq = (publishSeq >= 63) ? 1 : (uint8_t)(publishSeq + 1);
