@@ -299,7 +299,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
       letter-spacing:.06em">ZERO</button>
   </div>
   <div id="stabBadge" class="stabBadge bg-warn"><div class="word">--</div><div class="sub"></div></div>
-  <div class="grid" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:10px" id="stabWindows"></div>
+  <div id="stabWindows" style="margin-top:2px"></div>
   <div id="stabThPanel" class="wheelWrap" style="margin-top:14px"></div>
   <div id="sentPanel" class="wheelWrap" style="margin-top:14px"></div>
 </div>
@@ -316,6 +316,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
     <div class="row">
       <div class="card"><div class="k">Speed SD</div><div class="v" id="spdSd">--</div></div>
       <div class="card"><div class="k">Dir SD</div><div class="v" id="dirSd">--</div></div>
+      <div class="card"><div class="k">Crosswind</div><div class="v" id="xwSd">--</div></div>
     </div>
   </div>
   <h2>Telemetry</h2><div class="grid" id="tele"></div>
@@ -561,7 +562,7 @@ function weightedAvgWind(){
   var sumSpd=0,sumSpdSd=0,sumDirSd=0,sx=0,sy=0;
   ns.forEach(function(n){
     var f=weights.pct[n.id]/100, v=n.speed*getMult(n.id);
-    sumSpd+=f*v;sumSpdSd+=f*n.speedSd*getMult(n.id);sumDirSd+=f*n.dirSd;
+    var sds=n.speedSd*getMult(n.id);sumSpd+=f*v;sumSpdSd+=f*sds*sds;sumDirSd+=f*n.dirSd*n.dirSd;
     var r=n.dir*Math.PI/180;sx+=f*v*Math.cos(r);sy+=f*v*Math.sin(r);
   });
   var speed=Math.sqrt(sx*sx+sy*sy);
@@ -570,7 +571,9 @@ function weightedAvgWind(){
   // agreement means the meters see different winds and the net call is small
   // because they disagree, not because it's calm.
   var agree=sumSpd>0?speed/sumSpd:1;
-  return{speed:speed,dir:dir,speedSd:sumSpdSd,dirSd:sumDirSd,count:ns.length,bad:nBad,
+  // Pool the meters' SDs as variances (root of the weighted mean square):
+  // averaging SDs directly understates a field where one meter is much gustier.
+  return{speed:speed,dir:dir,speedSd:Math.sqrt(sumSpdSd),dirSd:Math.sqrt(sumDirSd),count:ns.length,bad:nBad,
          scalarSpeed:sumSpd,agree:agree};
 }
 function setNodeWeight(id,v){var w=nodeWeights();w[id]=Math.max(0,parseFloat(v)||0);storeWeights(w);updateWeightTotal();render();}
@@ -719,39 +722,150 @@ function renderMetersPanel(force){
   panel.innerHTML=h;
 }
 
-// ---- stability index (Forecast) ----
-// Both speed SD and direction SD must clear a band for that tier; worse governs.
-// stabTh is the AGGREGATE badge threshold (GO/CAUTION/WAIT) for the big Forecast
-// badge. (The former per-node "meter quality" thresholds have been removed.)
-var STAB_TH_DEFAULT={gDir:10,gSpd:3,yDir:20,ySpd:6};
-function stabTh(){try{var t=JSON.parse(localStorage.getItem('stabTh'));return t||{};}catch(e){return {};}}
-function storeStabTh(t){localStorage.setItem('stabTh',JSON.stringify(t));}
-function TH(k){var t=stabTh();return (t[k]!==undefined)?parseFloat(t[k]):STAB_TH_DEFAULT[k];}
-function setStabTh(k,v){var t=stabTh();t[k]=parseFloat(v)||0;storeStabTh(t);renderStabThPanel(true);render();}
-function resetStabTh(){localStorage.removeItem('stabTh');renderStabThPanel(true);render();}
-function tier(spdSd,dirSd){
-  if(dirSd<=TH('gDir') && spdSd<=TH('gSpd')) return {c:'good', lbl:'STABLE',   go:'GO'};
-  if(dirSd<=TH('yDir') && spdSd<=TH('ySpd')) return {c:'warnY',lbl:'CAUTION',  go:'CAUTION'};
-  return {c:'warn', lbl:'UNSTABLE', go:'WAIT'};
+// ============================================================================
+// WIND VARIABILITY  (Forecast tab + hero cards)
+// ============================================================================
+// What a shooter needs from "how erratic is the wind" is how much the
+// CROSSWIND on the line of fire moves, so that is the headline everywhere:
+//
+//   Per meter  crosswind wobble = SD of speed*sin(rel) over the meter's 10 s
+//              window, from its speed SD and direction SD (crossSd below).
+//   Field      three parts that add as variances, so the bars always explain
+//              the total:
+//                gusting = pooled wobble of the voting meters (sum w*sd^2)
+//                spread  = how far the meters' 10 s mean crosswinds sit from
+//                          the weighted call (sum w*(x_i - x)^2)
+//                drift   = how much each meter's 10 s mean moved over the last
+//                          60 s (base history, projected onto this shot)
+//
+// Weights are the same node weights the wind call uses. Hold uncertainty in
+// mil comes from the last wind-hold solve: drift is linear in crosswind, so
+// mil per mph = wind drift / crosswind at the current range.
+//
+// Sensor limits are applied here, not hidden:
+//   SparkFun vane reads in 22.5 deg steps. Under about 10 deg of real wobble
+//   its direction SD is luck (0 if the wind sits mid-step, ~10 if it sits on a
+//   boundary), so it is shown as "<10" and counted as the step's own noise
+//   (22.5/sqrt(12) = 6.5 deg). Above 10 deg the step noise is removed
+//   (Sheppard: sd^2 - 22.5^2/12), which simulation shows lands within 0.5 deg.
+//   A direction SD of 103.9 means the vane signal is missing: that meter's
+//   wobble is unknown and it is left out of the field figures (and listed).
+var SF_STEP_DEG=22.5, SF_FLOOR_DEG=10, SF_STEP_NOISE=SF_STEP_DEG/Math.sqrt(12);
+var DIR_SD_UNKNOWN=103.9, LIGHT_MPH=3;
+
+// Direction SD the math should use for node n, and how to show it.
+function effDirSd(n){
+  var raw=+n.dirSd||0, mt=getNodeMeterType(n.id);
+  if(raw>=DIR_SD_UNKNOWN-0.05)return {sd:null,txt:'no vane',fault:true};
+  if(mt===0){
+    if(raw<SF_FLOOR_DEG)return {sd:SF_STEP_NOISE,txt:'&lt;10&deg;',floor:true};
+    return {sd:Math.sqrt(raw*raw-SF_STEP_DEG*SF_STEP_DEG/12),txt:'±'+Math.round(raw)+'&deg;'};
+  }
+  return {sd:raw,txt:'±'+Math.round(raw)+'&deg;'};
+}
+// Exact SD of s*sin(theta) when speed ~ (s, sdS) and theta ~ N(rel, sdDir)
+// vary independently. Matches a 200k-sample simulation to 0.01 mph up to
+// 40 deg of direction SD; reads up to ~17% low if gusts also veer.
+function crossSd(s,sdS,relDeg,sdDirDeg){
+  var th=relDeg*Math.PI/180,q=sdDirDeg*Math.PI/180;
+  var eSin=Math.sin(th)*Math.exp(-q*q/2);
+  var eSin2=(1-Math.cos(2*th)*Math.exp(-2*q*q))/2;
+  return Math.sqrt(Math.max(0,(s*s+sdS*sdS)*eSin2-s*s*eSin*eSin));
+}
+// Base vectors: x = spd*cos(from), y = spd*sin(from). Crosswind (+ = from the
+// right) for the current firing azimuth, and the variance of it for a 2x2
+// covariance [xx, yy, xy].
+function crossOfVec(x,y){var a=fireAz*Math.PI/180;return y*Math.cos(a)-x*Math.sin(a);}
+function crossVarOfCov(xx,yy,xy){var a=fireAz*Math.PI/180,c=Math.cos(a),s=Math.sin(a);
+  return Math.max(0,c*c*yy+s*s*xx-2*s*c*xy);}
+
+// Everything the UI shows about one node's variability.
+function nodeVar(n){
+  var m=getMult(n.id),s=n.speed*m,sdS=n.speedSd*m,rel=relAngle(n.dir),d=effDirSd(n);
+  var v={id:n.id,speed:s,rel:rel,dir:d,light:s<LIGHT_MPH,wob:null,
+    gf:(s>=1&&n.gust!=null)?(n.gust*m)/s:null,
+    meanCross:s*Math.sin(rel*Math.PI/180),drift60:null,drift300:null};
+  if(d.sd!=null)v.wob=crossSd(s,sdS,rel,d.sd);
+  // 10 s base average when this receiver sends it (older receivers do not).
+  if(n.sm&&n.sm[2]>0)v.meanCross=crossOfVec(n.sm[0]*m,n.sm[1]*m);
+  if(n.dr60&&n.dr60[3]>=3)v.drift60=Math.sqrt(crossVarOfCov(n.dr60[0],n.dr60[1],n.dr60[2]))*m;
+  if(n.dr300&&n.dr300[3]>=3)v.drift300=Math.sqrt(crossVarOfCov(n.dr300[0],n.dr300[1],n.dr300[2]))*m;
+  return v;
+}
+// Field figures over the voting meters. Drift parts are null while the base
+// has under 3 averages for every meter (just started, or an older receiver).
+function fieldVar(){
+  var W=effectiveNodeWeights(),used=[],excluded=[],floored=[];
+  W.nodes.forEach(function(n){var v=nodeVar(n);
+    if(v.wob==null){excluded.push(n.id);return;}
+    if(v.dir.floor)floored.push(n.id);
+    used.push({v:v,w:W.pct[n.id]||0});});
+  var out={ok:false,n:used.length,excluded:excluded,floored:floored,
+    gust:null,spread:null,drift:null,drift300:null,total:null,meanCross:null};
+  var ws=used.reduce(function(a,u){return a+u.w;},0);
+  if(!used.length||ws<=0)return out;
+  var g2=0,mx=0,sp2=0;
+  used.forEach(function(u){var f=u.w/ws;g2+=f*u.v.wob*u.v.wob;mx+=f*u.v.meanCross;});
+  used.forEach(function(u){var f=u.w/ws,d=u.v.meanCross-mx;sp2+=f*d*d;});
+  function pooled(key){var a=0,b=0;used.forEach(function(u){var x=u.v[key];if(x!=null){a+=u.w*x*x;b+=u.w;}});
+    return b>0?Math.sqrt(a/b):null;}
+  out.ok=true;out.gust=Math.sqrt(g2);out.spread=Math.sqrt(sp2);out.meanCross=mx;
+  out.drift=pooled('drift60');out.drift300=pooled('drift300');
+  out.total=Math.sqrt(g2+sp2+(out.drift!=null?out.drift*out.drift:0));
+  return out;
+}
+
+// ---- mil per mph at the current range (learned from the wind-hold solve) ----
+// Stored with the profile + range it belongs to, so a calm spell keeps the
+// last good figure and a range or rifle change drops it.
+function milKey(p){return [activeName(),p.range,p.mv,p.bc,p.model,p.wgt].join('|');}
+function noteMilPerMph(p,s){
+  var cross=Math.abs((parseFloat(p.windmph)||0)*Math.sin((parseFloat(p.windrel)||0)*Math.PI/180));
+  var rng=parseFloat(p.range)||0, drift=Math.abs(parseFloat(s.windDriftIn));
+  // windDriftIn comes rounded to 0.1 in: need enough of it for a clean ratio.
+  if(cross<2||rng<=0||!isFinite(drift)||drift<2)return;
+  try{localStorage.setItem('milPerMph',JSON.stringify({k:milKey(p),v:drift*1000/(rng*36)/cross,range:rng}));}catch(e){}
+}
+function curMilPerMph(){
+  if(!data||!activeName())return null;
+  try{var m=JSON.parse(localStorage.getItem('milPerMph')||'null');
+    if(m&&m.k===milKey(solverParams())&&isFinite(m.v))return m;}catch(e){}
+  return null;
+}
+function fmtMil(mph,mpm){return (mpm&&mph!=null)?(' / ±'+(mph*mpm.v).toFixed(2)+' mil'):'';}
+
+// ---- GO / CAUTION / WAIT on the field total ----
+// In mil when the hold scale is known (it is what you compare to the target),
+// otherwise in mph of crosswind.
+var VAR_TH_DEFAULT={gMil:0.2,yMil:0.4,gMph:1.5,yMph:3};
+function varTh(){try{var t=JSON.parse(localStorage.getItem('varTh'));return t||{};}catch(e){return {};}}
+function VTH(k){var t=varTh();return (t[k]!==undefined&&isFinite(parseFloat(t[k])))?parseFloat(t[k]):VAR_TH_DEFAULT[k];}
+function setVarTh(k,v){var t=varTh();t[k]=parseFloat(v)||0;localStorage.setItem('varTh',JSON.stringify(t));renderStabThPanel(true);render();}
+function resetVarTh(){localStorage.removeItem('varTh');renderStabThPanel(true);render();}
+function varTier(fv,mpm){
+  if(!fv.ok&&fv.excluded.length)return {c:'warn',lbl:'NO VANE SIGNAL',go:'UNKNOWN'};
+  if(!fv.ok)return {c:'warn',lbl:'NO VALID METERS',go:'NO WIND'};
+  var x=mpm?fv.total*mpm.v:fv.total, g=mpm?VTH('gMil'):VTH('gMph'), y=mpm?VTH('yMil'):VTH('yMph');
+  if(x<=g)return {c:'good',lbl:'STEADY',go:'GO'};
+  if(x<=y)return {c:'warnY',lbl:'VARIABLE',go:'CAUTION'};
+  return {c:'warn',lbl:'UNPREDICTABLE',go:'WAIT'};
 }
 var stabThBuilt=false;
 function renderStabThPanel(force){
   var el=document.getElementById('stabThPanel');if(!el)return;
   if(!force&&stabThBuilt)return;      // don't rebuild on every poll -- kills mobile keyboard focus
   stabThBuilt=true;
-  var t=stabTh(), isCustom=Object.keys(t).length>0;
+  var isCustom=Object.keys(varTh()).length>0;
   var is="width:100%;margin-top:4px;padding:8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:.9rem";
+  function f(k,l){return '<label style="color:var(--dim);font-size:.75rem">'+l+'<input type="number" step="any" style="'+is+'" value="'+VTH(k)+'" onchange="setVarTh(\''+k+'\',this.value)"></label>';}
   el.innerHTML='<h2 style="margin:0 0 8px">GO / CAUTION / WAIT thresholds</h2>'+
     '<div style="color:var(--dim);font-size:.78rem;margin-bottom:10px">'+
-    'Applies to the big badge only. Both speed SD and dir SD must be under the green values '+
-    'to show GO; both under yellow for CAUTION; anything worse = WAIT.</div>'+
+    'Compared with the field total (gusting + spread + drift). Mil is used once the wind hold has '+
+    'seen a crosswind of 2 mph or more for this rifle and range; until then mph of crosswind.</div>'+
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
-    '<label style="color:var(--dim);font-size:.75rem">GO: dir SD max (&deg;)<input type="number" step="any" style="'+is+'" value="'+TH('gDir')+'" onchange="setStabTh(\'gDir\',this.value)"></label>'+
-    '<label style="color:var(--dim);font-size:.75rem">GO: spd SD max (mph)<input type="number" step="any" style="'+is+'" value="'+TH('gSpd')+'" onchange="setStabTh(\'gSpd\',this.value)"></label>'+
-    '<label style="color:var(--dim);font-size:.75rem">CAUTION: dir SD max (&deg;)<input type="number" step="any" style="'+is+'" value="'+TH('yDir')+'" onchange="setStabTh(\'yDir\',this.value)"></label>'+
-    '<label style="color:var(--dim);font-size:.75rem">CAUTION: spd SD max (mph)<input type="number" step="any" style="'+is+'" value="'+TH('ySpd')+'" onchange="setStabTh(\'ySpd\',this.value)"></label>'+
+    f('gMil','GO: max (mil)')+f('yMil','CAUTION: max (mil)')+f('gMph','GO: max (mph)')+f('yMph','CAUTION: max (mph)')+
     '</div>'+
-    (isCustom?'<div style="margin-top:10px"><button class="step" onclick="resetStabTh()">Reset to defaults</button></div>':'')+
+    (isCustom?'<div style="margin-top:10px"><button class="step" onclick="resetVarTh()">Reset to defaults</button></div>':'')+
     '</div>';
 }
 // ---- per-node wind meter type (client-side; the node no longer reports this --
@@ -852,6 +966,7 @@ async function updateWindHold(force){
     // The aimbot may only dial the hold that is on screen. A solver error or a
     // failed request shows no hold, so the previous one must not stay armed.
     if(!s.ok){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">solver error</div>';return;}
+    noteMilPerMph(p,s);   // learn mil per mph of crosswind for the variability card
     var wmag=parseFloat(getv('zeroWindMag',0))||0, wdir=getv('zeroWindDir','right');
     var zw=(wdir==='right')?-wmag:wmag;
     var wMOA=s.windMOA+zw, wMil=s.windMil+zw/3.4377;
@@ -865,19 +980,39 @@ async function updateWindHold(force){
   }finally{solveBusy=false;windHoldLast=Date.now();}
 }
 function renderStability(){
-  if(!data||!data.stability)return;
-  var s=data.stability, cur=tier(s.cur.spdSd,s.cur.dirSd);
-  // Zero valid meters means zero SDs, which used to read as a green GO.
+  if(!data)return;
+  var fv=fieldVar(), mpm=curMilPerMph(), cur=varTier(fv,mpm);
+  // Zero valid meters means zero spread, which must never read as a green GO.
   if(!data.avg||!data.avg.count) cur={c:'warn',lbl:'NO VALID METERS',go:'NO WIND'};
   var badge=document.getElementById('stabBadge');
   badge.className='stabBadge bg-'+cur.c;
   badge.querySelector('.word').textContent=cur.go;
-  badge.querySelector('.sub').innerHTML='wind '+cur.lbl+' &middot; spd SD '+s.cur.spdSd.toFixed(1)+
-    ' mph &middot; dir SD '+Math.round(s.cur.dirSd)+'&deg;';
-  var wins=[['Now',s.cur],['10 s',s.w10],['30 s',s.w30],['60 s',s.w60]], h='';
-  wins.forEach(function(p){var t=tier(p[1].spdSd,p[1].dirSd);
-    h+='<div class="win bg-'+t.c+'"><div class="wt">'+p[0]+'</div>'+
-       '<div class="wv">'+p[1].spdSd.toFixed(1)+' / '+Math.round(p[1].dirSd)+'&deg;</div></div>';});
+  badge.querySelector('.sub').innerHTML=fv.ok?('wind '+cur.lbl+' &middot; crosswind \u00B1'+fv.total.toFixed(1)+' mph'+fmtMil(fv.total,mpm)):cur.lbl;
+  // Three parts + total. Bar length = that part's share of the total VARIANCE,
+  // so the three bars always add up to the whole.
+  var h='';
+  if(fv.ok){
+    var T2=fv.total*fv.total||1;
+    var parts=[['Gusting','wind changing second to second at each meter',fv.gust],
+               ['Spread','meters disagreeing with each other right now',fv.spread],
+               ['Drift','10 s average shifting over the last minute',fv.drift]];
+    parts.forEach(function(p){
+      var v=p[2], pct=(v==null)?0:Math.round(v*v/T2*100);
+      h+='<div class="card" style="margin-top:8px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">'+
+         '<div class="k">'+p[0]+'</div>'+
+         '<div style="font-family:var(--mono);font-weight:700;white-space:nowrap">'+(v==null?'--':('\u00B1'+v.toFixed(1)+' mph'+fmtMil(v,mpm)))+'</div></div>'+
+         '<div style="color:var(--dim);font-size:.72rem;margin-top:2px">'+p[1]+'</div>'+
+         '<div style="height:6px;background:var(--line);border-radius:3px;margin-top:8px">'+
+         '<div style="height:6px;width:'+pct+'%;background:var(--wind);border-radius:3px"></div></div></div>';
+    });
+    var notes=[];
+    if(fv.drift==null)notes.push('drift needs about a minute of history from the base');
+    if(fv.drift300!=null)notes.push('drift over 5 min \u00B1'+fv.drift300.toFixed(1)+' mph'+fmtMil(fv.drift300,mpm));
+    if(fv.floored.length)notes.push('SparkFun vane on node '+fv.floored.join(', ')+' reads in 22.5&deg; steps, so its direction wobble under 10&deg; is counted as 6.5&deg;');
+    if(fv.excluded.length)notes.push('node '+fv.excluded.join(', ')+' left out: no vane signal');
+    notes.push(mpm?('mil at '+mpm.range+' yd from the wind hold'):'mil appears once the wind hold has seen 2+ mph of crosswind');
+    h+='<div style="color:var(--dim);font-size:.75rem;margin-top:8px;line-height:1.5">'+notes.join(' &middot; ')+'</div>';
+  }
   document.getElementById('stabWindows').innerHTML=h;
   renderStabThPanel();
   renderSentBadge();
@@ -1191,10 +1326,16 @@ function logSample(hold){
     wtd:w,
     da:daFt(base.tempF,base.presInHg),
     base:{tempF:base.tempF,presInHg:base.presInHg,battPct:base.battPct},
-    stab: st?{tier:tier(st.cur.spdSd,st.cur.dirSd).go,curSpdSd:st.cur.spdSd,curDirSd:st.cur.dirSd,
-              w60SpdSd:st.w60.spdSd,w60DirSd:st.w60.dirSd}:null,
+    // stab: the field variability figures (crosswind mph; mil when known).
+    // The legacy cur/w60 SDs from the receiver ride along for older analyses.
+    stab: (function(){var fv=fieldVar(),mpm=curMilPerMph();
+      return {tier:varTier(fv,mpm).go,gustMph:fv.gust,spreadMph:fv.spread,driftMph:fv.drift,
+        drift300Mph:fv.drift300,totalMph:fv.total,totalMil:(mpm&&fv.total!=null)?fv.total*mpm.v:null,
+        curSpdSd:st?st.cur.spdSd:null,curDirSd:st?st.cur.dirSd:null,
+        w60SpdSd:st?st.w60.spdSd:null,w60DirSd:st?st.w60.dirSd:null};})(),
     sent:sent, hold:hold,
-    nodes: ns.map(function(n){return {id:n.id,spd:n.speed,dir:n.dir,gust:n.gust,spdSd:n.speedSd,dirSd:n.dirSd,
+    nodes: ns.map(function(n){var nv=nodeVar(n);return {id:n.id,spd:n.speed,dir:n.dir,gust:n.gust,spdSd:n.speedSd,dirSd:n.dirSd,
+      xwMph:nv.wob,gf:nv.gf,drift60Mph:nv.drift60,
       tempF:n.tempF,presInHg:n.presInHg,battV:n.battV,rssi:n.rssi,age:n.age,lat:n.lat,lon:n.lon};})
   };
 }
@@ -1525,8 +1666,9 @@ function buildSessionJson(){
 function buildSummaryCsv(){
   var head=['iso','t_rel_s','event','shot','n_nodes','wtd_spd_mph','wtd_dir_deg','wtd_reldir_deg',
     'cross_mph_R','head_mph','gust_mph','hold_wind_mil','hold_wind_moa','hold_elev_mil','hold_elev_moa',
-    'dialed_wind_mil','dialed_elev_mil','tof_s','vrem_fps','sg','da_ft','stab_tier','cur_spdSd','cur_dirSd',
-    'w60_spdSd','w60_dirSd','sent_agree_frac','base_tempF','base_presInHg','conv','missH_in','missV_in','note'];
+    'dialed_wind_mil','dialed_elev_mil','tof_s','vrem_fps','sg','da_ft','stab_tier',
+    'field_xw_mph','field_xw_mil','field_gust_mph','field_spread_mph','field_drift60_mph','field_drift5m_mph',
+    'cur_spdSd','cur_dirSd','w60_spdSd','w60_dirSd','sent_agree_frac','base_tempF','base_presInHg','conv','missH_in','missV_in','note'];
   var rows=[head];
   var evs=[];
   logState.samples.forEach(function(s){evs.push({t:s.t,kind:'sample',o:s});});
@@ -1538,7 +1680,9 @@ function buildSummaryCsv(){
       s.nCount, num(w.spd,2), num(w.dir,0), num(w.relDir,0), num(w.cross,2), num(w.head,2), num(w.gust,2),
       num(hold.windMil,2), num(hold.windMOA,2), num(hold.elevMil,2), num(hold.elevMOA,2),
       num(hold.dialedWindMil,2), num(hold.dialedElevMil,2), num(hold.tof,2), num(hold.vRemain,0), num(hold.sg,2),
-      num(s.da,0), (stab.tier||''), num(stab.curSpdSd,2), num(stab.curDirSd,0), num(stab.w60SpdSd,2), num(stab.w60DirSd,0),
+      num(s.da,0), (stab.tier||''),
+      num(stab.totalMph,2), num(stab.totalMil,3), num(stab.gustMph,2), num(stab.spreadMph,2), num(stab.driftMph,2), num(stab.drift300Mph,2),
+      num(stab.curSpdSd,2), num(stab.curDirSd,0), num(stab.w60SpdSd,2), num(stab.w60DirSd,0),
       (sent&&sent.frac!=null?num(sent.frac,2):''), num(base.tempF,1), num(base.presInHg,2),
       (e.kind==='mark'?s.conv:''), (e.kind==='mark'?num(s.missH_in,2):''), (e.kind==='mark'?num(s.missV_in,2):''),
       (e.kind==='mark'?(s.note||''):'')]);
@@ -1546,11 +1690,11 @@ function buildSummaryCsv(){
   return rows.map(csvRow).join('\n');
 }
 function buildNodesCsv(){
-  var head=['iso','t_rel_s','node_id','spd_mph','dir_deg','gust_mph','spd_sd','dir_sd','tempF','presInHg','battV','rssi','age_s','lat','lon'];
+  var head=['iso','t_rel_s','node_id','spd_mph','dir_deg','gust_mph','spd_sd','dir_sd','xw_wobble_mph','gust_factor','drift60_mph','tempF','presInHg','battV','rssi','age_s','lat','lon'];
   var rows=[head];
   logState.samples.forEach(function(s){(s.nodes||[]).forEach(function(n){
     rows.push([isoT(s.t),(s.tRel!=null?s.tRel.toFixed(2):''),n.id,num(n.spd,2),num(n.dir,0),num(n.gust,2),
-      num(n.spdSd,2),num(n.dirSd,1),num(n.tempF,1),num(n.presInHg,2),num(n.battV,2),num(n.rssi,0),n.age,
+      num(n.spdSd,2),num(n.dirSd,1),num(n.xwMph,2),num(n.gf,2),num(n.drift60Mph,2),num(n.tempF,1),num(n.presInHg,2),num(n.battV,2),num(n.rssi,0),n.age,
       num(n.lat,6),num(n.lon,6)]);
   });});
   return rows.map(csvRow).join('\n');
@@ -1799,7 +1943,14 @@ function tele(){
     // the meter is fine but the reading is too old (a sleeping node between
     // check-ins), which is a different thing from a dead meter.
     var wokcard=(n.windOk===false)?'<div class="card"><div class="k">Wind sensor</div><div class="v" style="color:var(--warn)">'+(n.windStale?'OLD READING':'NO DATA')+'</div></div>':'';
-    g.innerHTML=wokcard+c('True dir',Math.round(n.dir)+'&deg; '+card(n.dir))+c('Temp',n.tempF.toFixed(0)+'&deg;F')+
+    // Variability details for this meter (see WIND VARIABILITY).
+    var nv=nodeVar(n);
+    var res=(mt===0)?'22.5&deg; steps':(mt>0?'continuous':'set meter type');
+    var vcards=c('Gust factor',nv.gf==null?'&mdash;':nv.gf.toFixed(2))+
+      c('Drift 1 min',nv.drift60==null?'&mdash;':('\u00B1'+nv.drift60.toFixed(1)+' mph'))+
+      c('Vane',nv.dir.fault?'<span style="color:var(--warn)">NO SIGNAL</span>':res)+
+      (nv.light?c('Wind','<span style="color:var(--warnY)">LIGHT</span>'):'');
+    g.innerHTML=wokcard+vcards+c('True dir',Math.round(n.dir)+'&deg; '+card(n.dir))+c('Temp',n.tempF.toFixed(0)+'&deg;F')+
       c('Baro',n.presInHg.toFixed(2)+' inHg')+c('Light',lux)+
       c('Wind meter',vaneLbl)+
       c('Battery',n.battV.toFixed(2)+'V &middot; '+n.battPct+'%')+c('Distance',dist)+
@@ -1823,7 +1974,15 @@ function render(){
   var dirLbl=(view==='avg'||view==='pred')?'weighted':'true';
   document.getElementById('relSub').innerHTML=w.ok?(hr+" o'clock &middot; "+dirLbl+" "+Math.round(w.dir)+'&deg; '+card(w.dir)):'';
   document.getElementById('spdSd').textContent=w.ok?('\u00B1'+w.speedSd.toFixed(1)):'--';
-  document.getElementById('dirSd').innerHTML=w.ok?('\u00B1'+Math.round(w.dirSd)+'&deg;'):'--';
+  // Crosswind wobble: the field total on the average views, this meter's own
+  // wobble on a node view. A SparkFun vane's direction SD under 10 deg is
+  // below what it can resolve, so it shows as "<10" (see WIND VARIABILITY).
+  var xw=null,nv=null;
+  if(w.node){nv=nodeVar(w.node);xw=nv.wob;}
+  else if(w.ok){var fv=fieldVar();xw=fv.ok?fv.total:null;}
+  document.getElementById('dirSd').innerHTML=!w.ok?'--':(nv?nv.dir.txt:('\u00B1'+Math.round(w.dirSd)+'&deg;'));
+  var mpm=curMilPerMph();
+  document.getElementById('xwSd').innerHTML=(xw==null)?'--':('\u00B1'+xw.toFixed(1)+(mpm?'<div style="font-size:.7em;color:var(--dim)">'+(xw*mpm.v).toFixed(2)+' mil</div>':''));
   document.getElementById('gustLbl').innerHTML=(w.gust!=null)?('Gust '+w.gust.toFixed(1)+' mph'):'';
   tele();drawWheel();renderWeightsPanel();renderMetersPanel();
   if(view==='pred'){renderStability();updateWindHold();renderLogBar();}
