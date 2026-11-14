@@ -484,6 +484,7 @@ function gzipBlob(text){
     return new Response(cs).blob().then(function(b){return {blob:b,gz:true};},function(){return {blob:new Blob([text],{type:'application/json'}),gz:false};});
   }catch(e){return Promise.resolve({blob:new Blob([text],{type:'application/json'}),gz:false});}
 }
+var pageFw=null,reloading=false;   // base firmware this page first talked to
 function schedulePush(){if(pushTimer)clearTimeout(pushTimer);pushTimer=setTimeout(function(){pushTimer=null;sync();},800);}
 // Pull the base station copy, merge, push the result back if it differs.
 function sync(){
@@ -492,6 +493,16 @@ function sync(){
   var remoteHash=null;
   return fetchT('/gear/info').then(function(r){return r.json();}).then(function(info){
     if(!info.ok)throw new Error('base station flash unavailable');
+    // The base was reflashed while this page stayed open (or Chrome brought the page back
+    // from its cache): this code may be older than the base's. Load the new page before
+    // touching the gear, so old code never merges into or writes over the base's file.
+    if(info.fw){
+      if(pageFw===null)pageFw=info.fw;
+      else if(info.fw!==pageFw){
+        if(!reloading&&root.location&&root.location.reload){reloading=true;root.location.reload();}
+        throw new Error('base station updated: reloading the page');
+      }
+    }
     var pull=(info.ver!==meta.serverVer&&info.bytes>0)?fetchT('/gear',{},20000).then(function(r){
       if(r.status===204)return null;
       if(!r.ok)throw new Error('read failed ('+r.status+')');
