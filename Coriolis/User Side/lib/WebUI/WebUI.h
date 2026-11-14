@@ -16,7 +16,8 @@
  * (gear.js / GearJs.h) and stored on THIS box's flash, so every phone that joins
  * sees the same gear and it survives a phone clearing its browser data:
  *   GET  /gear        the stored library file (gzip or plain JSON); 204 if none
- *   GET  /gear/info   {"ok","ver","bytes","gz","max","fs"}
+ *   GET  /gear/info   {"ok","ver","bytes","gz","max","fsTotal","fsUsed",
+ *                      "fw","api","formats","engine"}
  *   POST /gear?base=<ver>&gz=0|1   multipart upload replacing the file; refused
  *                     with 409 if someone else saved since <ver> (phone re-merges)
  * The file lives in the 896 KB data partition of huge_app.csv (LittleFS), which
@@ -48,6 +49,18 @@
 #ifndef GEAR_MAX_BYTES
 #define GEAR_MAX_BYTES (384UL * 1024UL)
 #endif
+// Reported in /gear/info so the Skyward app (and anything else that syncs gear
+// with this box) can tell what it is talking to before it writes:
+//   fw       firmware version; CI release builds pass -DCORIOLIS_FW_VERSION="x.y.z"
+//   api      this /gear HTTP API (GET /gear, GET /gear/info, POST /gear?base=&gz=)
+//   formats  "skyward-library" versions the page served by this box can read
+//   engine   the Skyward engine commit /engine.js was ported from
+#ifndef CORIOLIS_FW_VERSION
+#define CORIOLIS_FW_VERSION "dev"
+#endif
+#define GEAR_API_VERSION    1
+#define GEAR_FORMATS_JSON   "[1]"
+#define GEAR_ENGINE_BASIS   "skyward-72b788e"
 
 static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
 <!DOCTYPE html><html lang="en"><head>
@@ -2766,6 +2779,8 @@ private:
         String j = "{\"ok\":" + String(fsOk ? "true" : "false");
         j += ",\"ver\":" + String(gearVer) + ",\"bytes\":" + String(gearSize());
         j += ",\"gz\":" + String(gearGz ? "true" : "false") + ",\"max\":" + String((unsigned long)GEAR_MAX_BYTES);
+        j += ",\"fw\":\"" CORIOLIS_FW_VERSION "\",\"api\":" + String(GEAR_API_VERSION) +
+             ",\"formats\":" GEAR_FORMATS_JSON ",\"engine\":\"" GEAR_ENGINE_BASIS "\"";
         if (fsOk) j += ",\"fsTotal\":" + String((unsigned long)LittleFS.totalBytes()) +
                        ",\"fsUsed\":" + String((unsigned long)LittleFS.usedBytes());
         return j + "}";
