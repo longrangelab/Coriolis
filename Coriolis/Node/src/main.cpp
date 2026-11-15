@@ -249,6 +249,24 @@ uint8_t    maxSlot = MIN_SLOTS;
 uint16_t   nodeMask = 0;      // v4: slot map from the last beacon (bit i => id i scheduled)
 uint8_t    mySlot = 0;        // v4: our compact slot this cycle (0 = not scheduled yet)
 bool       txThisCycle = false;
+uint32_t   txCycleStart = 0;  // local start time of the cycle our last slot TX belonged to
+
+// Missed-beacon flywheel. A node used to transmit only in a cycle whose beacon
+// it heard, so one missed beacon cost one reading even though the cycle timing
+// was already known. Bench logs (2026-11-15) put about half of all packet loss
+// there: the base sent the beacon (the other node answered it) but this node
+// didn't hear it. Now, for up to FLYWHEEL_CYCLES cycles after the last beacon
+// heard, the node still transmits in its slot at the predicted time, using the
+// last beacon's cycle length and slot. It only starts such a transmit within
+// FLYWHEEL_START_MS of the slot's start, so a late loop pass never runs into the
+// next node's slot. After that the old rule applies (3 cycles with no beacon ->
+// unsynced -> autonomous). The slot can only be stale if the base re-planned the
+// cycle in the very beacon that was missed, and then for at most these cycles.
+#define FLYWHEEL_CYCLES    2
+#define FLYWHEEL_START_MS  60
+uint32_t   flywheelTx = 0;    // transmits sent on a predicted (unheard) beacon, since boot
+uint32_t   lastFlywheelCycle = 0;  // predicted start of the cycle we last flywheel-transmitted in
+bool       flywheelEver = false;
 // Timed wind readings (WindExt.h): when the last beacon finished arriving, by
 // the radio interrupt, and the low byte of its seq, which goes back to the base
 // so it knows which of its beacons the times are counted from.
@@ -1078,6 +1096,15 @@ void loop() {
         nodeMask = b.node_mask;                    // v4 compact slot map
         mySlot   = beaconSlotOf(nodeMask, nodeId); // our rank-based slot (0 = not scheduled)
         synced = true; txThisCycle = false;
+        // The base re-anchors its cycle on each beacon it actually sends, so a
+        // base that was busy can send a beacon late. If we already sent this
+        // cycle's reading on the predicted time (flywheel) and the late beacon
+        // turns up afterwards, don't send a second one into the shifted cycle.
+        // "This cycle" = the beacon came less than half a cycle after the start
+        // we predicted for the cycle we flywheel-transmitted in.
+        if (flywheelEver && (uint32_t)(beaconLocalMs - lastFlywheelCycle) < cycleMs / 2) {
+            txThisCycle = true; txCycleStart = beaconLocalMs;
+        }
         rtcCycleMs = b.cycle_ms;               // keep the wake listen window sized
 
         // Sleep command from the base. We don't sleep HERE -- we set a flag so
@@ -1105,9 +1132,27 @@ void loop() {
         uint32_t myOffset = (uint32_t)mySlot * slotMs;
         bool fits = (mySlot >= 1) && (myOffset + slotMs <= cycleMs);
         if (fits) {
-            if (!txThisCycle && (millis() - beaconLocalMs) >= myOffset) {
+            // Which cycle are we in, counted from the last beacon we heard?
+            // k = 0: that beacon's own cycle (the old behaviour). k >= 1: a cycle
+            // whose beacon we missed; transmit at the predicted slot time
+            // (see FLYWHEEL_CYCLES above).
+            uint32_t since     = millis() - beaconLocalMs;
+            uint32_t k         = cycleMs ? since / cycleMs : 0;
+            uint32_t intoCycle = since - k * cycleMs;
+            uint32_t cycStart  = beaconLocalMs + k * cycleMs;
+            bool due = (k == 0) ? (intoCycle >= myOffset)
+                                : (k <= FLYWHEEL_CYCLES && intoCycle >= myOffset &&
+                                   intoCycle < myOffset + FLYWHEEL_START_MS);
+            bool sentThisCycle = txThisCycle && txCycleStart == cycStart;
+            if (due && !sentThisCycle) {
                 NodeReading r = sendReading(pendingSleepAck);
                 txThisCycle = true;
+                txCycleStart = cycStart;
+                if (k > 0) {
+                    flywheelTx++; lastFlywheelCycle = cycStart; flywheelEver = true;
+                    Serial.printf("[TDMA] beacon missed: sent in the predicted slot (%lu cycle(s) since the last beacon, %lu so far)\n",
+                                  (unsigned long)k, (unsigned long)flywheelTx);
+                }
                 printReading(r);
                 if (pendingSleepAck) {          // ack sent -> commit to sleep
                     rtcSleepMode = true;
