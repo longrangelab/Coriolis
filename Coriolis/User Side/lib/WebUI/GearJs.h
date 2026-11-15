@@ -25,6 +25,14 @@
  * Old Coriolis profiles ('profiles' in localStorage, rifle_profiles.json) are
  * converted on first run and can still be imported; the old key is left in
  * place as a backup.
+ *
+ * Gear from Skyward Ballistics is view only. When the base's file was written
+ * by the Skyward app (app "Skyward Ballistics"), Skyward owns it: it writes its
+ * gear over the base whenever it sends, and never reads the base back. So this
+ * page shows that file exactly as it is, never merges into it or pushes to it,
+ * and refuses to save gear (Gear.managed(), MANAGED_MSG). The solver's working
+ * fields (the sol_* values in WebUI.h) stay editable: they are this phone's own
+ * and never saved as gear. Gear.takeOver() hands the gear back to this page.
  */
 
 static const char GEAR_JS[] PROGMEM = R"GEARJS(
@@ -67,7 +75,13 @@ function canon(lib){   // order-independent content key, for "did anything chang
     (lib.deleted||[]).map(function(t){return t.kind+'|'+t.id+'|'+t.deletedAt;}).sort()]);
 }
 
-var lib=emptyLib(),meta={serverVer:-1,lastSync:0,status:'',err:''};
+var lib=emptyLib(),meta={serverVer:-1,lastSync:0,status:'',err:'',managed:false};
+// The base's gear came from the Skyward app: view only here (see the header).
+var SKYWARD_APP='Skyward Ballistics';
+var MANAGED_MSG='This gear comes from the Skyward Ballistics app, which replaces it on the base station each time it sends. Make changes in Skyward. '+
+  'You can still change values for the current shot: they stay on this phone and are not saved as gear.';
+function managed(){return !!meta.managed;}
+function guard(){if(meta.managed){var e=new Error(MANAGED_MSG);e.managed=true;throw e;}}
 var listeners=[];
 function changed(){listeners.forEach(function(f){try{f();}catch(e){}});}
 function persist(){
@@ -85,6 +99,12 @@ var KINDS=[['rifles','rifle'],['loads','load'],['bullets','bullet'],['cards','ca
 function tombKind(listKey,rec){return listKey==='bullets'&&rec&&rec.source==='library'?'library':(KINDS.filter(function(k){return k[0]===listKey;})[0][1]);}
 // Merge `inc` into `base` in place. manual=true for a file the user picked:
 // records without a timestamp count as "now", so the import wins.
+// Later edit wins; two different copies saved in the same millisecond are settled
+// the same way on every phone (by content), so they can't flip-flop forever.
+function newer(x,y){
+  var a=+x.updatedAt||0,b=+y.updatedAt||0;if(a!==b)return a>b;
+  var sx=JSON.stringify(x),sy=JSON.stringify(y);return sx!==sy&&sx>sy;
+}
 function mergeInto(base,inc,manual){
   var t=now(),tombs={},changedN=0;
   (base.deleted||[]).concat(inc.deleted||[]).forEach(function(d){
@@ -103,7 +123,7 @@ function mergeInto(base,inc,manual){
       if(i===undefined){
         if(tb&&tb.deletedAt>=x.updatedAt)return;      // deleted after that copy was saved
         have[x.id]=base[key].length;base[key].push(x);changedN++;
-      }else if(x.updatedAt>(base[key][i].updatedAt||0)&&JSON.stringify(x)!==JSON.stringify(base[key][i])){
+      }else if(newer(x,base[key][i])){
         base[key][i]=x;changedN++;
       }
     });
@@ -119,7 +139,11 @@ function mergeInto(base,inc,manual){
 // ---------- file formats ----------
 function normalize(o){
   var l=emptyLib();
-  ['rifles','loads','bullets','deleted','cards','shots'].forEach(function(k){if(Array.isArray(o[k]))l[k]=o[k];});
+  // keep only real records: a bad file must not reach the base station and break every phone
+  function okId(x){return x&&typeof x==='object'&&!Array.isArray(x)&&(typeof x.id==='string'&&x.id!==''||typeof x.id==='number');}
+  ['rifles','loads','bullets','cards','shots'].forEach(function(k){if(Array.isArray(o[k]))l[k]=o[k].filter(okId);});
+  ['rifles','loads','bullets'].forEach(function(k){l[k].forEach(function(x){if(typeof x.name!=='string')x.name=x.name==null||x.name===''?'Unnamed':String(x.name);});});
+  if(Array.isArray(o.deleted))l.deleted=o.deleted.filter(function(t){return okId(t)&&typeof t.kind==='string';});
   return l;
 }
 // Old Coriolis profile -> rifle + load + bullet (stable ids from the name)
@@ -143,7 +167,9 @@ function fromLegacy(name,p){
 // Parse any supported file: Skyward library (any kind, incl. the older
 // dragcurve/arcledger names) or an old Coriolis rifle_profiles.json.
 function parseFile(text){
-  var o=JSON.parse(text);
+  var o;
+  try{o=JSON.parse(String(text==null?'':text).replace(/^\uFEFF/,''));}
+  catch(e){var err=new Error(String(text||'').trim()?'This file is not valid JSON. It may be cut off, or not a gear file.':'The file is empty.');err.unreadable=true;throw err;}
   if(o&&typeof o==='object'&&typeof o.format==='string'){
     if([FORMAT,'dragcurve-library','arcledger-library'].indexOf(o.format)<0)
       throw new Error(o.format==='epv5-user-data'?'This is an Empirical Precision backup. Import it into Skyward Ballistics first, then export from there.':
@@ -178,6 +204,7 @@ function exportText(kind){
   return JSON.stringify(o,null,1);
 }
 function importText(text){
+  guard();
   var res=parseFile(text);
   var before=canon(lib);
   var c=mergeInto(lib,res.lib,true);
@@ -190,7 +217,7 @@ function byId(list,id){for(var i=0;i<list.length;i++)if(list[i].id===id)return l
 function rifle(id){return byId(lib.rifles,id);}
 function loadRec(id){return byId(lib.loads,id);}
 function bullet(id){return byId(lib.bullets,id);}
-function label(l){var rf=rifle(l.rifleId);return (!rf||!rf.name||rf.name===l.name)?l.name:(rf.name+' · '+l.name);}
+function label(l){var rf=rifle(l.rifleId),nm=String(l.name==null?'':l.name);return (!rf||!rf.name||rf.name===nm)?nm:(String(rf.name)+' · '+nm);}
 function loadsSorted(){return lib.loads.slice().sort(function(a,b){var x=label(a).toLowerCase(),y=label(b).toLowerCase();return x<y?-1:x>y?1:0;});}
 
 // ---------- flat profile <-> records ----------
@@ -293,6 +320,7 @@ function rifleShare(p,loadId,asNew){
   return others?{name:rf0.name,others:others}:null;
 }
 function saveFlat(name,p,loadId,asNew,rifleAll){
+  guard();
   name=(''+name).trim();if(!name)throw new Error('name required');
   var src=loadId?loadRec(loadId):null,l0=asNew?null:src;
   var l=l0?clone(l0):(src?Object.assign(clone(src),{id:uuid()}):{id:uuid(),rifleId:'',bulletId:''});
@@ -349,6 +377,7 @@ function tomb(kind,id){
   lib.deleted.push({kind:kind,id:id,deletedAt:Math.max(now(),t+1)});
 }
 function removeLoad(loadId){
+  guard();
   var l=loadRec(loadId);if(!l)return;
   tomb('load',loadId);lib.loads=lib.loads.filter(function(x){return x.id!==loadId;});
   // the rifle goes too when this was its only load and it was made here for it
@@ -359,12 +388,37 @@ function removeLoad(loadId){
   persist();changed();schedulePush();
 }
 function removeBullets(ids){
+  guard();
   var used={};lib.loads.forEach(function(l){used[l.bulletId]=1;});
   var gone=0;
   lib.bullets.slice().forEach(function(b){if(ids.indexOf(b.id)>=0&&!used[b.id]){tomb(b.source==='library'?'library':'bullet',b.id);gone++;}});
   lib.bullets=lib.bullets.filter(function(b){return !(ids.indexOf(b.id)>=0&&!used[b.id]);});
   persist();changed();schedulePush();return gone;
 }
+// ---------- whole records (the Skyward-style screens edit these directly) ----------
+var LISTS={rifle:'rifles',load:'loads',bullet:'bullets',card:'cards',shot:'shots'};
+// Save one record as it is (new or edited). Returns its id.
+function saveRecord(kind,rec){
+  guard();
+  var key=LISTS[kind];if(!key)throw new Error('unknown kind '+kind);
+  var rc=clone(rec);if(!rc.id)rc.id=uuid();
+  var old=byId(lib[key],rc.id);
+  if(stamp(lib[key],rc,old)){persist();changed();schedulePush();}
+  return rc.id;
+}
+// Delete one record (tombstone, so other devices drop it too). A firearm takes
+// its ammo with it, like in Skyward.
+function removeRecord(kind,id){
+  guard();
+  var key=LISTS[kind];if(!key)return;
+  var rec=byId(lib[key],id);if(!rec)return;
+  if(kind==='rifle')lib.loads.filter(function(l){return l.rifleId===id;}).forEach(function(l){tomb('load',l.id);});
+  if(kind==='rifle')lib.loads=lib.loads.filter(function(l){return l.rifleId!==id;});
+  tomb(kind==='bullet'&&rec.source==='library'?'library':kind,id);
+  lib[key]=lib[key].filter(function(x){return x.id!==id;});
+  persist();changed();schedulePush();
+}
+
 // Engine inputs for a flat profile (p.loadId = the saved load it came from, if any). Group offsets are NOT passed here: the page
 // adds them to the holds in MOA exactly as before this change.
 function engineGear(p){
@@ -373,7 +427,8 @@ function engineGear(p){
   if(modelName(p.model)==='CUSTOM'&&bl.dragCurve.length<2)throw new Error('Enter a drag curve (Mach:Cd pairs) or pick G1/G7.');
   var l0=p.loadId?loadRec(p.loadId):null;   // Skyward extras the flat view doesn't show
   return {
-    rifle:{twistIn:n(p.twist,10),twistDirection:(''+p.twistDir)==='-1'?'LEFT':'RIGHT',sightHeightIn:n(p.sh,1.75)},
+    rifle:{twistIn:n(p.twist,10),twistDirection:(''+p.twistDir)==='-1'?'LEFT':'RIGHT',sightHeightIn:n(p.sh,1.75),
+           sightOffsetIn:n(((l0&&rifle(l0.rifleId))||{}).sightOffsetIn,0)},
     load:{muzzleVelocityFps:n(p.mv,2700),zeroRangeYd:n(p.zero,100),powderTempF:n(p.powderTempF,59),
           velocityPerDegFps:n(p.mvPerF,0),dragScaleFactor:n(p.dragScale,1),zeroHeightIn:0,zeroOffsetIn:0,
           zeroAtmosphere:l0&&l0.zeroAtmosphere?l0.zeroAtmosphere:null,
@@ -389,13 +444,20 @@ function solve(p){
     distanceYd:n(p.range,0),windSpeed1Mph:n(p.windmph,0),windAngleDeg:n(p.windrel,90),
     spinDrift:(''+p.spin)!=='0',aeroJump:(''+p.jump)!=='0',spinDriftModel:p.spinModel||'LITZ_CLASSIC',
     coriolis:(''+p.earth)==='1',latitudeDeg:n(p.lat,0),azimuthDeg:n(p.az,0),
-    atmosphere:{temperatureF:n(p.tempF,59),pressureInHg:n(p.pres,29.92),pressureIsAbsolute:true,humidityPct:0}});
+    lookAngleDeg:n(p.look,0),cantDeg:n(p.cant,0),targetSpeedMph:n(p.tgtMph,0),windSpeed2Mph:n(p.wind2,0),
+    localGravity:(''+p.localG)==='1',
+    atmosphere:atmoOf(p)});
+}
+// Atmosphere for a flat profile. Live base-station pressure is station
+// (absolute) pressure; a typed one can be a sea-level forecast (presAbs=0).
+function atmoOf(p){
+  return {temperatureF:n(p.tempF,59),pressureInHg:n(p.pres,29.92),pressureIsAbsolute:(''+p.presAbs)!=='0',
+          altitudeFt:n(p.alt,0),humidityPct:n(p.hum,0)};
 }
 function sensitivity(p,rangeYd){
   if(!root.SkyEngine)return {ok:false,err:'engine'};
   var g;try{g=engineGear(p);}catch(e){return {ok:false,err:e.message};}
-  return root.SkyEngine.windSensitivity(g.rifle,g.load,g.bullet,
-    {temperatureF:n(p.tempF,59),pressureInHg:n(p.pres,29.92),pressureIsAbsolute:true,humidityPct:0},n(rangeYd,n(p.range,0)));
+  return root.SkyEngine.windSensitivity(g.rifle,g.load,g.bullet,atmoOf(p),n(rangeYd,n(p.range,0)));
 }
 
 // ---------- base station sync ----------
@@ -407,6 +469,14 @@ function fetchT(url,opt,ms){
   opt=Object.assign({cache:'no-store'},opt||{});if(ctl)opt.signal=ctl.signal;
   return fetch(url,opt).then(function(r){clearTimeout(t);return r;},function(e){clearTimeout(t);throw e;});
 }
+// gzip bytes served without a gzip header (e.g. after a power cut while saving)
+function gunzipIfNeeded(buf){
+  var u=new Uint8Array(buf);
+  if(u.length>2&&u[0]===0x1f&&u[1]===0x8b&&root.DecompressionStream&&root.Response){
+    return new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).text().catch(function(){return '';});
+  }
+  return new TextDecoder().decode(u);
+}
 function gzipBlob(text){
   if(!root.CompressionStream||!root.Response)return Promise.resolve({blob:new Blob([text],{type:'application/json'}),gz:false});
   try{
@@ -414,6 +484,7 @@ function gzipBlob(text){
     return new Response(cs).blob().then(function(b){return {blob:b,gz:true};},function(){return {blob:new Blob([text],{type:'application/json'}),gz:false};});
   }catch(e){return Promise.resolve({blob:new Blob([text],{type:'application/json'}),gz:false});}
 }
+var pageFw=null,reloading=false;   // base firmware this page first talked to
 function schedulePush(){if(pushTimer)clearTimeout(pushTimer);pushTimer=setTimeout(function(){pushTimer=null;sync();},800);}
 // Pull the base station copy, merge, push the result back if it differs.
 function sync(){
@@ -422,40 +493,85 @@ function sync(){
   var remoteHash=null;
   return fetchT('/gear/info').then(function(r){return r.json();}).then(function(info){
     if(!info.ok)throw new Error('base station flash unavailable');
+    // The base was reflashed while this page stayed open (or Chrome brought the page back
+    // from its cache): this code may be older than the base's. Load the new page before
+    // touching the gear, so old code never merges into or writes over the base's file.
+    if(info.fw){
+      if(pageFw===null)pageFw=info.fw;
+      else if(info.fw!==pageFw){
+        if(!reloading&&root.location&&root.location.reload){reloading=true;root.location.reload();}
+        throw new Error('base station updated: reloading the page');
+      }
+    }
     var pull=(info.ver!==meta.serverVer&&info.bytes>0)?fetchT('/gear',{},20000).then(function(r){
       if(r.status===204)return null;
       if(!r.ok)throw new Error('read failed ('+r.status+')');
       var v=parseInt(r.headers.get('X-Gear-Ver'),10);
-      return r.text().then(function(t){return {text:t,ver:isFinite(v)?v:info.ver};});
+      return r.arrayBuffer().then(gunzipIfNeeded).then(function(t){return {text:t,ver:isFinite(v)?v:info.ver};});
     }):Promise.resolve(null);
     return pull.then(function(got){
       var base=info.ver;
-      if(got){
-        var res=parseFile(got.text);remoteHash=hash(canon(res.lib));
+      var res=null;
+      if(got){try{res=parseFile(got.text);}catch(e){
+        // The base's copy is unreadable (not a format or version we don't know: those are
+        // kept). Nobody can read it, so this phone's gear replaces it.
+        if(!e.unreadable)throw e;base=got.ver;meta.repairedBase=true;}}
+      if(res&&res.app===SKYWARD_APP&&!meta.takeOver){
+        // Skyward's gear: show exactly what it sent (records it left out or deleted go too),
+        // and never write back: Skyward would replace it at its next send anyway.
+        var was=canon(lib);lib=res.lib;meta.managed=true;meta.serverVer=got.ver;meta.serverHash=hash(canon(lib));persist();
+        if(canon(lib)!==was)changed();
+        return 'skyward';
+      }
+      if(res){
+        remoteHash=hash(canon(res.lib));
         var before=canon(lib);mergeInto(lib,res.lib,false);base=got.ver;
         if(canon(lib)!==before)changed();
-      }else if(info.bytes===0){remoteHash=hash(canon(emptyLib()));}
+        meta.managed=false;
+      }else if(info.bytes===0){remoteHash=hash(canon(emptyLib()));meta.managed=false;}
       else if(info.ver===meta.serverVer){remoteHash=meta.serverHash||null;}
       meta.serverVer=base;persist();
-      if(remoteHash!==null&&remoteHash===hash(canon(lib))){meta.serverHash=remoteHash;return 'same';}
+      if(meta.managed)return 'skyward';   // unchanged since it was read: nothing to send
+      // "Edit gear here instead": write this page's copy even when it matches, so the
+      // base's file is marked as this page's (app "Coriolis") and stops being view only.
+      if(!meta.takeOver&&remoteHash!==null&&remoteHash===hash(canon(lib))){meta.serverHash=remoteHash;return 'same';}
       if(!lib.loads.length&&!lib.bullets.length&&!lib.rifles.length&&!(lib.deleted||[]).length)return 'same';
+      // A file the base already refused is not sent again until the gear changes:
+      // each try ties up the base's web server (and live wind) for several seconds.
+      var sent=hash(canon(lib)),mine=sent+'@'+(info.max||0);   // retried if the gear or the base's limit changes
+      if(meta.tooBig===mine)throw new Error(meta.tooBigMsg||'gear file too big for the base station');
       var text=exportText('master');
       return gzipBlob(text).then(function(z){
+        function refuse(){meta.tooBig=mine;meta.tooBigMsg='gear file too big for the base station ('+Math.ceil(z.blob.size/1024)+' KB, limit '+Math.floor((info.max||0)/1024)+' KB)';persist();throw new Error(meta.tooBigMsg);}
+        if(info.max&&z.blob.size>info.max)refuse();
         var fd=new FormData();fd.append('file',z.blob,'gear.json');
         return fetchT('/gear?base='+base+'&gz='+(z.gz?1:0),{method:'POST',body:fd},30000).then(function(r){
           return r.json().then(function(j){
             if(r.status===409){again=true;meta.serverVer=-1;return 'conflict';}
-            if(!j.ok)throw new Error(j.err==='too_big'?'gear file too big for the base station':j.err==='flash_full'?'base station flash full':'save failed ('+(j.err||r.status)+')');
-            meta.serverVer=j.ver;meta.serverHash=hash(canon(lib));return 'pushed';
+            if(!j.ok&&j.err==='too_big')refuse();
+            if(!j.ok)throw new Error(j.err==='flash_full'?'base station flash full':'save failed ('+(j.err||r.status)+')');
+            // record what was SENT: an edit made during the upload still needs pushing
+            meta.serverVer=j.ver;meta.serverHash=sent;delete meta.tooBig;delete meta.tooBigMsg;delete meta.takeOver;
+            if(hash(canon(lib))!==sent)again=true;
+            return 'pushed';
           });
         });
       });
     });
   }).then(function(){
-    meta.lastSync=now();setStatus('synced with base station');
+    meta.lastSync=now();setStatus(meta.managed?'from Skyward Ballistics (view only)':'synced with base station');
   },function(e){
     setStatus('saved on this phone only',(e&&e.name==='AbortError')?'base station not answering':(e&&e.message)||'base station unreachable');
   }).then(function(){syncing=false;if(again){again=false;return sync();}});
+}
+
+// "Edit gear here instead": this page's copy of Skyward's gear becomes editable and is
+// written to the base as this page's. If the Skyward app still sends to this base, its
+// next change replaces the base's gear again (and makes it view only again).
+function takeOver(){
+  if(!meta.managed)return Promise.resolve();
+  meta.managed=false;meta.takeOver=true;persist();changed();
+  return sync();
 }
 
 // ---------- first run: convert old Coriolis profiles ----------
@@ -488,10 +604,12 @@ root.Gear={
   lib:function(){return lib;},meta:function(){return meta;},
   loads:loadsSorted,label:label,rifle:rifle,load:loadRec,bullet:bullet,bullets:function(){return lib.bullets;},
   flat:flat,saveFlat:saveFlat,removeLoad:removeLoad,removeBullets:removeBullets,
+  rifles:function(){return lib.rifles;},saveRecord:saveRecord,removeRecord:removeRecord,atmoOf:atmoOf,uuid:uuid,
   importText:importText,exportText:exportText,parseFile:parseFile,mergeInto:mergeInto,
   engineGear:engineGear,rifleShare:rifleShare,solve:solve,sensitivity:sensitivity,parseBands:parseBands,parseCurve:parseCurve,curveToText:curveToText,
   sync:sync,onChange:function(f){listeners.push(f);},migrated:migrated,stableId:stableId,
-  _reset:function(){lib=emptyLib();meta={serverVer:-1,lastSync:0,status:'',err:''};persist();}
+  managed:managed,takeOver:takeOver,MANAGED_MSG:MANAGED_MSG,
+  _reset:function(){lib=emptyLib();meta={serverVer:-1,lastSync:0,status:'',err:'',managed:false};persist();}
 };
 })(typeof window!=='undefined'?window:this);
 )GEARJS";

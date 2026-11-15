@@ -85,6 +85,10 @@ jobs:
             l="$(dirname "$f")/$(basename "$f" | tr 'A-Z' 'a-z')"
             [ -e "$l" ] || ln -s "$(basename "$f")" "$l"
           done
+          # Firmware version, reported by the receiver in /gear/info ("fw").
+          VER="${{ github.event.inputs.version }}"
+          [ -n "$VER" ] || VER="dev-${GITHUB_SHA::7}"
+          export PLATFORMIO_BUILD_FLAGS="-DCORIOLIS_FW_VERSION=\\\"${VER}\\\""
           pio run -e tbeam
 
       - name: Merge into one image
@@ -95,6 +99,8 @@ jobs:
           B=.pio/build/tbeam
           BOOT_APP0=$(find ~/.platformio/packages/framework-arduinoespressif32* -name boot_app0.bin | head -1)
           test -f "$BOOT_APP0"
+          # the receiver must report this version in /gear/info
+          if [ "${{ matrix.name }}" = receiver ]; then grep -aq "\"fw\":\"${VER}\"" $B/firmware.bin; fi
           OUT="$GITHUB_WORKSPACE/out/windlab_${{ matrix.name }}_${VER}_merged.bin"
           mkdir -p "$GITHUB_WORKSPACE/out"
           python -m esptool --chip esp32 merge_bin -o "$OUT" \
