@@ -30,6 +30,7 @@
 #include "Environment.h"          // BMP085Sensor (baro) + GPSModule (GPS)
 #include "telemetry.h"
 #include "AttinyFlasher.h"        // ATtiny85 firmware update over I2C
+#include "SoftI2CRead.h"          // ATtiny reads that can't stall the loop for 1 s
 
 //#define USE_TSL2591            // uncomment when the TSL2591 is installed
 #ifdef USE_TSL2591
@@ -292,11 +293,25 @@ const char* dirName(int deg) {
 }
 
 // Raw single-shot read of the ATtiny wind sensor. Returns false on any I2C
-// short-read (NACK / stuck bus). No recovery here -- that's readAttiny()'s job.
+// failure (NACK / stuck clock / busy bus). No escalation here -- that's
+// readAttiny()'s job.
+//
+// Bit-banged, not Wire: on this core (2.0.x, ESP-IDF 4.4 legacy driver) an
+// I2C transaction that never completes is only abandoned after a fixed
+// 1000 ms, whatever Wire.setTimeOut() says. Bench 2026-11-15: every failed
+// ATtiny read froze the loop for 1006-1007 ms and pushed transmits up to 1 s
+// past the TDMA slot (main 2 per 11 min; 10 Hz polling 21). SoftI2CRead gives
+// up within ~3 ms instead. Wire is released for the read and set up again
+// after, the same way i2cBusClear() does it.
+static SoftI2CRead attinyBus(I2C_SDA, I2C_SCL);
+static uint32_t attinySoftFail[4] = {0, 0, 0, 0};    // indexed by SoftI2CResult
 static bool readAttinyRaw(AttinyWind& w) {
-    if (Wire.requestFrom(ATTINY_ADDR, (uint8_t)ATTINY_BYTES) != ATTINY_BYTES) return false;
     uint8_t b[ATTINY_BYTES];
-    for (uint8_t i = 0; i < ATTINY_BYTES; i++) b[i] = Wire.read();
+    Wire.end();
+    si2cTakePins(I2C_SDA, I2C_SCL);
+    SoftI2CResult res = attinyBus.read(ATTINY_ADDR, b, ATTINY_BYTES);
+    Wire.begin(I2C_SDA, I2C_SCL);
+    if (res != SI2C_OK) { attinySoftFail[res & 3]++; return false; }
     w.speed_avg = b[0]|(b[1]<<8); w.speed_sd = b[2]|(b[3]<<8);
     w.dir_avg   = b[4]|(b[5]<<8); w.dir_sd   = b[6]|(b[7]<<8);
     w.gust      = b[8]|(b[9]<<8); w.rawADC   = b[10]|(b[11]<<8);
@@ -315,18 +330,15 @@ static bool readAttinyRaw(AttinyWind& w) {
 // readSensors() / readAttiny(), which run unchanged at each transmit (its read
 // also feeds the history, so the transmit path adds no I2C traffic).
 //
-// Bench 2026-11-15: an ATtiny read that times out can stall the loop long
-// enough to push our transmit past its slot, and polling 10x a second makes
-// that 6-10x more likely. So the poll (1) uses a short I2C timeout, (2) clears
-// the bus straight away when a read fails, so the display / PMU / baro reads
-// that follow don't each wait out their own timeout on a held bus, and (3)
-// stays off the bus in the SEC_SLOT_GUARD_MS before our slot.
+// Bench 2026-11-15: a failed ATtiny read through Wire froze the loop for a
+// fixed ~1 s and pushed our transmit past its slot; polling 10x a second made
+// that 10x more frequent. readAttinyRaw() is now bit-banged and gives up in a
+// few ms. As a second line of defence the poll also stays off the bus in the
+// SEC_SLOT_GUARD_MS before our slot (the transmit's own read covers it).
 #define SEC_POLL_MS        100
 #define SEC_MAX_GAP_MS     600   // a publish seen after a longer gap has no usable time
 #define SEC_RING           4
-#define SEC_I2C_TIMEOUT_MS 15    // poll reads only; a good 12-byte read takes ~1.3 ms
 #define SEC_SLOT_GUARD_MS  250
-#define WIRE_TIMEOUT_MS    50    // the core's default, restored after each poll read
 struct SecReading { uint32_t ms; uint16_t spd; uint16_t dir; uint8_t seq; };
 static SecReading secRing[SEC_RING];
 static uint8_t    secHead = 0, secCount = 0;
@@ -334,8 +346,6 @@ static uint8_t    secLastSeq = 0;
 static uint32_t   secLastPollMs = 0, secNextPollMs = 0;
 static bool       secHavePoll = false;
 static uint8_t    secFailRun = 0;
-
-static void i2cBusClear();
 
 // True in the last SEC_SLOT_GUARD_MS before our TDMA slot starts.
 static bool nearMySlot(uint32_t now) {
@@ -367,14 +377,9 @@ static void pollWindSeconds() {
     // few misses, try only every 2 s; readSensors() owns the recovery.
     secNextPollMs = now + (secFailRun >= 3 ? 2000 : SEC_POLL_MS);
     AttinyWind w;
-    Wire.setTimeOut(SEC_I2C_TIMEOUT_MS);
-    bool ok = readAttinyRaw(w);
-    Wire.setTimeOut(WIRE_TIMEOUT_MS);
-    if (!ok) {
+    if (!readAttinyRaw(w)) {               // a failed soft read already freed the bus
         if (secFailRun < 255) secFailRun++;
         secHavePoll = false;
-        i2cBusClear();                     // free a held bus before anything else uses it
-        Wire.setTimeOut(WIRE_TIMEOUT_MS);
         return;
     }
     secFailRun = 0;
@@ -1123,6 +1128,20 @@ void loop() {
 
     // ---- 0d) note each new ATtiny publish and when it appeared ----
     pollWindSeconds();
+
+    // At most one line a minute, and only when ATtiny reads failed (serial
+    // output costs packets on this hardware, so no per-failure lines).
+    static uint32_t lastI2cNote = 0, lastI2cFails = 0;
+    if ((uint32_t)(millis() - lastI2cNote) >= 60000UL) {
+        lastI2cNote = millis();
+        uint32_t tot = attinySoftFail[SI2C_BUS_BUSY] + attinySoftFail[SI2C_NACK] + attinySoftFail[SI2C_STRETCH];
+        if (tot != lastI2cFails) {
+            Serial.printf("[i2c] ATtiny read failures so far: %lu busy, %lu nack, %lu stuck clock\n",
+                          (unsigned long)attinySoftFail[SI2C_BUS_BUSY], (unsigned long)attinySoftFail[SI2C_NACK],
+                          (unsigned long)attinySoftFail[SI2C_STRETCH]);
+            lastI2cFails = tot;
+        }
+    }
 
     // ---- 1) beacon sync ----
     BeaconPacket b;

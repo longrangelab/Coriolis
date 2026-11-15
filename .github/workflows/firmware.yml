@@ -29,7 +29,8 @@ permissions:
 
 jobs:
   # Timed 1 s wind readings: the node and the base must share one WindExt.h,
-  # and the packing / timing maths is tested on the host.
+  # and the packing / timing maths is tested on the host. So is the node's
+  # bit-banged ATtiny read, against a simulated ATtiny.
   wind-timestamps:
     runs-on: ubuntu-latest
     steps:
@@ -41,6 +42,8 @@ jobs:
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -I../../lib/Telemetry test_windext.cpp -o test_windext
           ./test_windext
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -DSI2C_HOST_TEST -I../../../Node/lib/SoftI2CRead test_softi2c.cpp -o test_softi2c
+          ./test_softi2c
 
   build:
     runs-on: ubuntu-latest
