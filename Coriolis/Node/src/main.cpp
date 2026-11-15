@@ -327,6 +327,18 @@ static bool readAttinyRaw(AttinyWind& w) {
 #define SEC_I2C_TIMEOUT_MS 15    // poll reads only; a good 12-byte read takes ~1.3 ms
 #define SEC_SLOT_GUARD_MS  250
 #define WIRE_TIMEOUT_MS    50    // the core's default, restored after each poll read
+// DIAG (diag/i2c-stall only): where does a slow loop pass spend its time?
+// One line is printed only for a pass slower than DIAG_SLOW_MS, so normal
+// passes add no serial output.
+#define DIAG_SLOW_MS 150
+static uint32_t dgT[10];          // section start times in loop()
+static uint16_t dgRs[5];          // readSensors: attiny, baro, light, battery, cold-charge
+static uint16_t dgPoll = 0;       // last poll read duration
+static int8_t   dgPollOk = -1;    // -1 no poll this pass, 0 fail, 1 ok
+static uint16_t dgClear = 0;      // bus clear duration this pass
+static uint8_t  dgRsCalled = 0;
+static uint16_t dgTx = 0;         // radio.sendData time this pass (expected ~400 ms, not a stall)
+static int32_t  dgLate = 0;       // ms past our slot start when the TX began
 struct SecReading { uint32_t ms; uint16_t spd; uint16_t dir; uint8_t seq; };
 static SecReading secRing[SEC_RING];
 static uint8_t    secHead = 0, secCount = 0;
@@ -368,12 +380,16 @@ static void pollWindSeconds() {
     secNextPollMs = now + (secFailRun >= 3 ? 2000 : SEC_POLL_MS);
     AttinyWind w;
     Wire.setTimeOut(SEC_I2C_TIMEOUT_MS);
+    uint32_t d0 = millis();
     bool ok = readAttinyRaw(w);
+    dgPoll = (uint16_t)(millis() - d0); dgPollOk = ok ? 1 : 0;
     Wire.setTimeOut(WIRE_TIMEOUT_MS);
     if (!ok) {
         if (secFailRun < 255) secFailRun++;
         secHavePoll = false;
+        uint32_t c0 = millis();
         i2cBusClear();                     // free a held bus before anything else uses it
+        dgClear = (uint16_t)(millis() - c0);
         Wire.setTimeOut(WIRE_TIMEOUT_MS);
         return;
     }
@@ -427,7 +443,9 @@ static NodeReading sendReading(bool ackSleep) {
     NodeReading r; readSensors(r);         // its ATtiny read also feeds the history
     WindExt e;
     bool hasExt = buildWindExt(e, r.windValid);
+    uint32_t t0 = millis();
     radio.sendData(r, nodeId, ackSleep, hasExt ? &e : nullptr);
+    dgTx = (uint16_t)(millis() - t0);
     return r;
 }
 
@@ -543,7 +561,9 @@ void noteAttinyWakeSeq() {
 void readSensors(NodeReading& r) {
     AttinyWind w;
     uint32_t readAt = millis();
+    dgRsCalled = 1;
     attinyOk = readAttiny(w);
+    dgRs[0] = (uint16_t)(millis() - readAt);
     if (attinyOk) {
         secObserve(w, readAt);             // timed 1 s history (see pollWindSeconds)
         // Only count the read as FRESH if the ATtiny's publish sequence moved.
@@ -595,11 +615,13 @@ void readSensors(NodeReading& r) {
     r.windValid = haveWind && ((uint32_t)(millis() - lastWindMs) < WIND_STALE_MS);
     if (!r.windValid && haveWind)
         Serial.println(F("[ATtiny] wind STALE -- transmitting as invalid"));
+    uint32_t dgB = millis();
     if (baroOk) {
         r.temperatureC = baro.readTemperatureC();
         r.pressurePa   = baro.readPressurePa();
         r.baroValid    = (r.pressurePa > 30000.0f && r.pressurePa < 120000.0f);
     }
+    dgRs[1] = (uint16_t)(millis() - dgB); dgB = millis();
 #ifdef USE_TSL2591
     r.lightValid = light.readLux(r.lightLux);
 #else
@@ -608,7 +630,9 @@ void readSensors(NodeReading& r) {
     r.gpsValid  = gpsFixCached;
     r.latitude  = cachedLat;
     r.longitude = cachedLon;
+    dgRs[2] = (uint16_t)(millis() - dgB); dgB = millis();
     r.batteryVolts = power.getBatteryVoltage();
+    dgRs[3] = (uint16_t)(millis() - dgB); dgB = millis();
     // Every readSensors() feeds exactly one transmit, so count the flag down here.
     r.nodeReset = (rtcResetFlagTx > 0);
     if (rtcResetFlagTx > 0) rtcResetFlagTx--;
@@ -619,6 +643,7 @@ void readSensors(NodeReading& r) {
     // The PMU holds the setting through deep sleep, so a deployed cell that drops
     // below freezing stays uncharged until it warms.
     applyColdChargePolicy(r);
+    dgRs[4] = (uint16_t)(millis() - dgB);
 }
 
 void printReading(const NodeReading& r) {
@@ -1093,6 +1118,7 @@ static void serviceSerial() {
 // LOOP
 // ============================================================================
 void loop() {
+    dgT[0] = millis(); dgPollOk = -1; dgClear = 0; dgRsCalled = 0; dgTx = 0; dgLate = -1;
     feedWatchdog();
 
     // ---- 0) radio health: keep retrying a radio that failed to start ----
@@ -1118,12 +1144,15 @@ void loop() {
         }
     }
 
+    dgT[1] = millis();
     // ---- 0c) serial commands (attiny-flash) ----
     serviceSerial();
 
+    dgT[2] = millis();
     // ---- 0d) note each new ATtiny publish and when it appeared ----
     pollWindSeconds();
 
+    dgT[3] = millis();
     // ---- 1) beacon sync ----
     BeaconPacket b;
     uint32_t bRx = 0;
@@ -1162,6 +1191,7 @@ void loop() {
         }
     }
 
+    dgT[4] = millis();
     // ---- 2) transmit scheduling ----
     if (synced) {
         // v4: our slot is our RANK in the beacon's node_mask, not our raw id.
@@ -1183,6 +1213,7 @@ void loop() {
                                    intoCycle < myOffset + FLYWHEEL_START_MS);
             bool sentThisCycle = txThisCycle && txCycleStart == cycStart;
             if (due && !sentThisCycle) {
+                dgLate = (int32_t)(intoCycle - myOffset);
                 NodeReading r = sendReading(pendingSleepAck);
                 txThisCycle = true;
                 txCycleStart = cycStart;
@@ -1221,6 +1252,7 @@ void loop() {
         }
     }
 
+    dgT[5] = millis();
     // ---- 3) GPS: acquire once, cache, power down ----
     if (!gpsFixCached) {
         double la = 0, lo = 0;
@@ -1236,9 +1268,20 @@ void loop() {
         }
     }
 
+    dgT[6] = millis();
     // ---- 4) button + display ----
     pollButton();
+    dgT[7] = millis();
     if (editMode && millis() - editLastMs > EDIT_TIMEOUT_MS) { saveNodeId(); editMode = false; drawMain(); }
     if (displayOn && !editMode && millis() - lastActivity > DISPLAY_TIMEOUT_MS) sleepDisplay();
     if (displayOn && !editMode && millis() - lastDraw > 500) { lastDraw = millis(); drawMain(); }
+    uint32_t dgEnd = millis();
+    if (dgEnd - dgT[0] - dgTx > DIAG_SLOW_MS || dgLate > 60) {
+        Serial.printf("[DIAG] late %ld ms, sendData %u ms, slow %lu ms: pre %lu serial %lu poll %lu(%d,%ums,clr%u) beacon %lu tx %lu gps %lu btn %lu disp %lu (on=%d) rs=%u[att %u baro %u light %u bat %u chg %u]\n",
+            (long)dgLate, dgTx, (unsigned long)(dgEnd - dgT[0]), (unsigned long)(dgT[1] - dgT[0]), (unsigned long)(dgT[2] - dgT[1]),
+            (unsigned long)(dgT[3] - dgT[2]), dgPollOk, dgPoll, dgClear,
+            (unsigned long)(dgT[4] - dgT[3]), (unsigned long)(dgT[5] - dgT[4]), (unsigned long)(dgT[6] - dgT[5]),
+            (unsigned long)(dgT[7] - dgT[6]), (unsigned long)(dgEnd - dgT[7]), displayOn ? 1 : 0,
+            dgRsCalled, dgRs[0], dgRs[1], dgRs[2], dgRs[3], dgRs[4]);
+    }
 }
