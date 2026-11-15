@@ -28,6 +28,20 @@ permissions:
   contents: read
 
 jobs:
+  # Timed 1 s wind readings: the node and the base must share one WindExt.h,
+  # and the packing / timing maths is tested on the host.
+  wind-timestamps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: WindExt.h is the same on node and base
+        run: cmp "Coriolis/Node/lib/Telemetry/WindExt.h" "Coriolis/User Side/lib/Telemetry/WindExt.h"
+      - name: Host test
+        working-directory: Coriolis/User Side/tests/firmware
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I../../lib/Telemetry test_windext.cpp -o test_windext
+          ./test_windext
+
   build:
     runs-on: ubuntu-latest
     strategy:

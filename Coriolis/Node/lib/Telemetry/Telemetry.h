@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <RadioLib.h>
+#include "WindExt.h"     // timed 1 s wind readings appended after NodePacket
 
 // ---- board pins (T-Beam v1.1/v1.2, SX1276) ----
 #define RADIO_NSS   18
@@ -140,8 +141,9 @@ static inline uint16_t nodeCrc16(const uint8_t* d, size_t len) {
     return crc;
 }
 
+// ext: optional timed 1 s readings appended after the packet (WindExt.h).
 static inline size_t packReading(const NodeReading& r, uint8_t node_id, uint8_t* out,
-                                 bool ackSleep = false) {
+                                 bool ackSleep = false, const WindExt* ext = nullptr) {
     NodePacket p;
     p.magic = NODE_PACKET_MAGIC; p.version = PACKET_VERSION; p.node_id = node_id;
     p.flags = (r.baroValid?FLAG_BARO_VALID:0)|(r.lightValid?FLAG_LIGHT_VALID:0)|(r.gpsValid?FLAG_GPS_VALID:0)
@@ -159,6 +161,10 @@ static inline size_t packReading(const NodeReading& r, uint8_t node_id, uint8_t*
     p.longitude     = (int32_t)llround(r.longitude * 1e7);
     p.crc = nodeCrc16((uint8_t*)&p, sizeof(NodePacket) - sizeof(uint16_t));
     memcpy(out, &p, sizeof(NodePacket));
+    if (ext && windExtCount(*ext) >= 1) {
+        memcpy(out + sizeof(NodePacket), ext, sizeof(WindExt));
+        return sizeof(NodePacket) + sizeof(WindExt);
+    }
     return sizeof(NodePacket);
 }
 
@@ -190,7 +196,12 @@ static inline uint8_t beaconSlotOf(uint16_t mask, uint8_t nodeId) {
 // NODE RADIO  (RX for beacons + TX for data)
 // ===========================================================================
 static volatile bool nodeRxFlag = false;
-static void IRAM_ATTR nodeOnRxISR() { nodeRxFlag = true; }
+// millis() when the radio raised its packet interrupt, i.e. the moment the last
+// packet finished arriving. For a beacon that is the shared time reference the
+// timed wind readings are stamped against (the base logs when it finished
+// sending the same beacon). millis() is ISR-safe on the ESP32 core.
+static volatile uint32_t nodeRxIsrMs = 0;
+static void IRAM_ATTR nodeOnRxISR() { nodeRxIsrMs = millis(); nodeRxFlag = true; }
 
 class NodeRadio {
 private:
@@ -223,8 +234,10 @@ public:
     void sleepRadio() { if (started) radio.sleep(); }
 
     // If a beacon arrived, decode it. Ignores data packets from other nodes.
-    bool pollBeacon(BeaconPacket& b) {
+    // rxMs (optional) gets the millis() at which the beacon finished arriving.
+    bool pollBeacon(BeaconPacket& b, uint32_t* rxMs = nullptr) {
         if (!initialized || !nodeRxFlag) return false;
+        uint32_t isrMs = nodeRxIsrMs;
         nodeRxFlag = false;
         uint8_t buf[64];
         size_t len = radio.getPacketLength();
@@ -232,15 +245,18 @@ public:
         if (len && len <= sizeof(buf) && radio.readData(buf, len) == RADIOLIB_ERR_NONE)
             ok = unpackBeacon(buf, len, b);
         radio.startReceive();
+        if (ok && rxMs) *rxMs = isrMs;
         return ok;
     }
 
     // Transmit our data, then return to listening for the next beacon.
     // ackSleep=true sets FLAG_SLEEP_ACK so the base can count sleep confirmations.
-    bool sendData(const NodeReading& r, uint8_t nodeId, bool ackSleep = false) {
+    // ext (optional) appends the timed 1 s readings (WindExt.h).
+    bool sendData(const NodeReading& r, uint8_t nodeId, bool ackSleep = false,
+                  const WindExt* ext = nullptr) {
         if (!initialized) return false;
         uint8_t buf[64];
-        size_t len = packReading(r, nodeId, buf, ackSleep);
+        size_t len = packReading(r, nodeId, buf, ackSleep, ext);
         int st = radio.transmit(buf, len);
         radio.startReceive();
         if (st == RADIOLIB_ERR_NONE) { txFailRun = 0; Serial.printf("[LoRa] TX node %d (%u B)%s\n", nodeId, (unsigned)len, ackSleep?" [SLEEP-ACK]":""); return true; }
