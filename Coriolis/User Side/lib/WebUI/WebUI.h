@@ -601,8 +601,17 @@ function followActiveLoad(){
   if(!fresh&&!window.__skyQuiet)flash('"'+activeName()+'" was updated on another device');
   return true;
 }
+// Gear from the Skyward Ballistics app is view only (gear.js): the fields above still
+// change this phone's working copy, but nothing is saved as gear.
+function viewOnly(){if(window.Gear&&Gear.managed&&Gear.managed()){alert(Gear.MANAGED_MSG);return true;}return false;}
+function editGearHere(){
+  if(!window.Gear||!Gear.managed())return;
+  if(!confirm('Edit gear here instead?\n\nThe gear on the base station becomes editable on this page. If the Skyward app still sends to this base station, '+
+    'its next change replaces this gear again. To keep editing here, stop sending in Skyward first.'))return;
+  Promise.resolve(Gear.takeOver()).then(renderSolver);
+}
 function saveProfile(name,asNew){
-  if(!haveGear())return false;
+  if(!haveGear()||viewOnly())return false;
   var snap=snapshot(),from=activeLoadId()||null,rifleAll=false;
   var sh=Gear.rifleShare(snap,from,!!asNew);
   if(sh)rifleAll=confirm('You changed twist or sight height. '+sh.others+' other load(s) use the rifle "'+sh.name+'".\n\n'+
@@ -611,14 +620,14 @@ function saveProfile(name,asNew){
     setActiveId(id);setv('bulletId',Gear.load(id).bulletId);stampLoad(id);renderSolver();return true;
   }catch(e){alert('Not saved: '+e.message);return false;}
 }
-function saveActive(){var l=activeLoadId()&&Gear.load(activeLoadId());if(!l){saveAsProfile();return;}
+function saveActive(){if(viewOnly())return;var l=activeLoadId()&&Gear.load(activeLoadId());if(!l){saveAsProfile();return;}
   if(saveProfile(l.name,false))flash('Saved "'+activeName()+'"');}
-function saveAsProfile(){if(!haveGear())return;var l=activeLoadId()&&Gear.load(activeLoadId());
+function saveAsProfile(){if(!haveGear()||viewOnly())return;var l=activeLoadId()&&Gear.load(activeLoadId());
   var n=prompt('Profile name:',l?l.name:'My rifle');if(n&&n.trim()&&saveProfile(n.trim(),true))flash('Saved "'+activeName()+'"');}
-function renameProfile(){var id=activeLoadId();if(!id)return;var l=Gear.load(id);
+function renameProfile(){var id=activeLoadId();if(!id||viewOnly())return;var l=Gear.load(id);
   var nn=prompt('Rename profile:',l.name);if(!nn||!nn.trim()||nn.trim()===l.name)return;
   try{Gear.saveFlat(nn.trim(),Gear.flat(id),id,false);stampLoad(id);}catch(e){alert('Not renamed: '+e.message);}renderSolver();}
-function deleteProfile(){var id=activeLoadId();if(!id)return;if(!confirm('Delete profile "'+activeName()+'"?'))return;
+function deleteProfile(){var id=activeLoadId();if(!id||viewOnly())return;if(!confirm('Delete profile "'+activeName()+'"?'))return;
   Gear.removeLoad(id);setActiveId('');renderSolver();}
 function loadProfile(id){if(!id||!window.Gear)return;var f=Gear.flat(id);if(!f)return;
   f.loadId=id;applyProfile(f);setActiveId(id);renderSolver();doSolve();}
@@ -648,7 +657,8 @@ function exportProfiles(){
   downloadFile('coriolis_gear_'+gearDate()+'.json','application/json',Gear.exportText('master'));
 }
 function importProfiles(input){
-  var f=input.files[0];if(!f||!haveGear())return;var r=new FileReader();
+  var f=input.files[0];if(!f||!haveGear())return;
+  if(viewOnly()){input.value='';return;}var r=new FileReader();
   r.onload=function(){
     try{var res=Gear.importText(r.result);renderSolver();
       flash('Imported '+res.loads+' load(s), '+res.bullets+' bullet(s), '+res.rifles+' rifle(s)');
@@ -661,7 +671,8 @@ function renderGearStatus(){
   var m=Gear.meta(),L=Gear.lib();
   var txt=L.loads.length+' load(s), '+L.bullets.length+' bullet(s)';
   var st=m.status||'checking base station\u2026';
-  el.innerHTML=txt+' &middot; <span style="color:'+(m.err?'var(--warnY)':'var(--good)')+'">'+st+'</span>'+(m.err?' ('+m.err+')':'');
+  el.innerHTML=txt+' &middot; <span style="color:'+(m.err?'var(--warnY)':'var(--good)')+'">'+st+'</span>'+(m.err?' ('+m.err+')':'')+
+    (Gear.managed&&Gear.managed()?'<br>Changes here are for this phone only and are not saved. <a href="#" onclick="editGearHere();return false">Edit gear here instead</a>':'');
 }
 function flash(msg){var s=document.getElementById('status');var old=s.textContent;
   s.textContent=msg;setTimeout(function(){s.textContent=old;},1500);}
@@ -2911,17 +2922,24 @@ public:
         WiFi.mode(WIFI_AP);
         WiFi.softAP(ssid, pass);
         IPAddress ip = WiFi.softAPIP();
-        server.on("/", [this]() { server.send_P(200, "text/html", WEBUI_PAGE); });
+        // no-store, not no-cache: Chrome restores a tab (and serves back/forward) from
+        // a cached copy under no-cache without asking the base. A tab left open across a
+        // firmware update then keeps running the old page code; with gear sync that
+        // old code merged into Skyward's view-only gear and wrote it back as its own.
+        server.on("/", [this]() {
+            server.sendHeader("Cache-Control", "no-store");
+            server.send_P(200, "text/html", WEBUI_PAGE);
+        });
         server.on("/engine.js", [this]() {
-            server.sendHeader("Cache-Control", "no-cache");
+            server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", ENGINE_JS);
         });
         server.on("/gear.js", [this]() {
-            server.sendHeader("Cache-Control", "no-cache");
+            server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", GEAR_JS);
         });
         server.on("/sky.js", [this]() {
-            server.sendHeader("Cache-Control", "no-cache");
+            server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", SKY_JS);
         });
         server.on("/gear", HTTP_GET, [this]() { sendGear(); });
