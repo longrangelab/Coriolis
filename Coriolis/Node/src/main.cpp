@@ -312,10 +312,21 @@ static bool readAttinyRaw(AttinyWind& w) {
 // when it appeared, a bit worse when a 400 ms transmit sat between two polls).
 // The newest 1..3 consecutive publishes ride along in every data packet.
 // This is a plain extra read: the stall detection and bus recovery stay in
-// readSensors() / readAttiny(), which run unchanged at each transmit.
-#define SEC_POLL_MS      100
-#define SEC_MAX_GAP_MS   600     // a publish seen after a longer gap has no usable time
-#define SEC_RING         4
+// readSensors() / readAttiny(), which run unchanged at each transmit (its read
+// also feeds the history, so the transmit path adds no I2C traffic).
+//
+// Bench 2026-11-15: an ATtiny read that times out can stall the loop long
+// enough to push our transmit past its slot, and polling 10x a second makes
+// that 6-10x more likely. So the poll (1) uses a short I2C timeout, (2) clears
+// the bus straight away when a read fails, so the display / PMU / baro reads
+// that follow don't each wait out their own timeout on a held bus, and (3)
+// stays off the bus in the SEC_SLOT_GUARD_MS before our slot.
+#define SEC_POLL_MS        100
+#define SEC_MAX_GAP_MS     600   // a publish seen after a longer gap has no usable time
+#define SEC_RING           4
+#define SEC_I2C_TIMEOUT_MS 15    // poll reads only; a good 12-byte read takes ~1.3 ms
+#define SEC_SLOT_GUARD_MS  250
+#define WIRE_TIMEOUT_MS    50    // the core's default, restored after each poll read
 struct SecReading { uint32_t ms; uint16_t spd; uint16_t dir; uint8_t seq; };
 static SecReading secRing[SEC_RING];
 static uint8_t    secHead = 0, secCount = 0;
@@ -324,15 +335,19 @@ static uint32_t   secLastPollMs = 0, secNextPollMs = 0;
 static bool       secHavePoll = false;
 static uint8_t    secFailRun = 0;
 
-static void pollWindSeconds(bool force = false) {
-    uint32_t now = millis();
-    if (!force && (int32_t)(now - secNextPollMs) < 0) return;
-    // A dead or stuck ATtiny makes every read wait on the I2C timeout. After a
-    // few misses, try only every 2 s; readSensors() owns the recovery.
-    secNextPollMs = now + (secFailRun >= 3 ? 2000 : SEC_POLL_MS);
-    AttinyWind w;
-    if (!readAttinyRaw(w)) { if (secFailRun < 255) secFailRun++; secHavePoll = false; return; }
-    secFailRun = 0;
+static void i2cBusClear();
+
+// True in the last SEC_SLOT_GUARD_MS before our TDMA slot starts.
+static bool nearMySlot(uint32_t now) {
+    if (!synced || mySlot < 1 || cycleMs == 0) return false;
+    uint32_t myOffset = (uint32_t)mySlot * slotMs;
+    uint32_t into  = (uint32_t)(now - beaconLocalMs) % cycleMs;
+    uint32_t until = (myOffset >= into) ? myOffset - into : myOffset + cycleMs - into;
+    return until < SEC_SLOT_GUARD_MS;
+}
+
+// Note a frame read at `now` (millis() just before the read started).
+static void secObserve(const AttinyWind& w, uint32_t now) {
     uint8_t seq = (uint8_t)(w.rawADC >> 10);
     if (seq != 0 && secHavePoll && seq != secLastSeq && (uint32_t)(now - secLastPollMs) <= SEC_MAX_GAP_MS) {
         SecReading& r = secRing[secHead];
@@ -342,6 +357,28 @@ static void pollWindSeconds(bool force = false) {
         if (secCount < SEC_RING) secCount++;
     }
     secLastSeq = seq; secLastPollMs = now; secHavePoll = (seq != 0);
+}
+
+static void pollWindSeconds() {
+    uint32_t now = millis();
+    if ((int32_t)(now - secNextPollMs) < 0) return;
+    if (nearMySlot(now)) return;           // our transmit's read covers this stretch
+    // A dead or stuck ATtiny makes every read wait on the I2C timeout. After a
+    // few misses, try only every 2 s; readSensors() owns the recovery.
+    secNextPollMs = now + (secFailRun >= 3 ? 2000 : SEC_POLL_MS);
+    AttinyWind w;
+    Wire.setTimeOut(SEC_I2C_TIMEOUT_MS);
+    bool ok = readAttinyRaw(w);
+    Wire.setTimeOut(WIRE_TIMEOUT_MS);
+    if (!ok) {
+        if (secFailRun < 255) secFailRun++;
+        secHavePoll = false;
+        i2cBusClear();                     // free a held bus before anything else uses it
+        Wire.setTimeOut(WIRE_TIMEOUT_MS);
+        return;
+    }
+    secFailRun = 0;
+    secObserve(w, now);
 }
 
 // Build the block for this transmit: the newest publish and up to two before
@@ -387,8 +424,7 @@ void readSensors(NodeReading& r);
 // Read the sensors and send one data packet, with the timed readings when we
 // have them. Every regular transmit goes through here.
 static NodeReading sendReading(bool ackSleep) {
-    pollWindSeconds(true);                 // catch a publish from the last 100 ms
-    NodeReading r; readSensors(r);
+    NodeReading r; readSensors(r);         // its ATtiny read also feeds the history
     WindExt e;
     bool hasExt = buildWindExt(e, r.windValid);
     radio.sendData(r, nodeId, ackSleep, hasExt ? &e : nullptr);
@@ -506,8 +542,10 @@ void noteAttinyWakeSeq() {
 // Read every sensor into r (called once per transmit cycle).
 void readSensors(NodeReading& r) {
     AttinyWind w;
+    uint32_t readAt = millis();
     attinyOk = readAttiny(w);
     if (attinyOk) {
+        secObserve(w, readAt);             // timed 1 s history (see pollWindSeconds)
         // Only count the read as FRESH if the ATtiny's publish sequence moved.
         // It publishes every 1 s, so two reads >= 1.5 s apart (or across a
         // deep sleep) with the same sequence mean its sampling loop is stuck.

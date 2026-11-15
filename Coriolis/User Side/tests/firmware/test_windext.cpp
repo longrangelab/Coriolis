@@ -22,20 +22,21 @@ int main() {
     CHECK(fabsf(windExtDir(windExtDirByte(271.0f)) - 271.0f) < 0.71f, "dir round trip");
 
     // ---- airtime, SF9 BW125 CR4/7 preamble 8 (numbers in the design notes)
-    CHECK(loraAirtimeMs(38, 9, 125.0f, 7, 8) == 341, "38 B %u", loraAirtimeMs(38, 9, 125.0f, 7, 8));
+    CHECK(loraAirtimeMs(36, 9, 125.0f, 7, 8) == 341, "36 B %u", loraAirtimeMs(36, 9, 125.0f, 7, 8));
+    CHECK(loraAirtimeMs(46, 9, 125.0f, 7, 8) == 398, "46 B %u", loraAirtimeMs(46, 9, 125.0f, 7, 8));
     CHECK(loraAirtimeMs(48, 9, 125.0f, 7, 8) == 398, "48 B %u", loraAirtimeMs(48, 9, 125.0f, 7, 8));
     CHECK(loraAirtimeMs(49, 9, 125.0f, 7, 8) == 427, "49 B %u", loraAirtimeMs(49, 9, 125.0f, 7, 8));
-    CHECK(loraAirtimeMs(48, 9, 125.0f, 7, 8) + 50 <= 450, "48 B fits the 450 ms slot with a guard");
+    CHECK(loraAirtimeMs(46, 9, 125.0f, 7, 8) + 50 <= 450, "46 B fits the 450 ms slot with a guard");
 
-    // ---- parse after a 38-byte packet
+    // ---- parse after a 36-byte packet (sizeof(NodePacket))
     uint8_t buf[64] = {0};
     WindExt e{}; e.tag = WIND_EXT_TAG | WIND_EXT_SYNCED | 3; e.beacon = 7; e.t_ms = 1234;
-    memcpy(buf + 38, &e, sizeof e);
+    memcpy(buf + 36, &e, sizeof e);
     WindExt got;
-    CHECK(!windExtParse(buf, 38, 38, got), "plain packet has no block");
-    CHECK(windExtParse(buf, 48, 38, got) && got.t_ms == 1234 && got.beacon == 7 && windExtCount(got) == 3, "block parses");
-    buf[38] = 0x13; CHECK(!windExtParse(buf, 48, 38, got), "wrong tag rejected");
-    buf[38] = WIND_EXT_TAG; CHECK(!windExtParse(buf, 48, 38, got), "count 0 rejected");
+    CHECK(!windExtParse(buf, 36, 36, got), "plain packet has no block");
+    CHECK(windExtParse(buf, 46, 36, got) && got.t_ms == 1234 && got.beacon == 7 && windExtCount(got) == 3, "block parses");
+    buf[36] = 0x13; CHECK(!windExtParse(buf, 46, 36, got), "wrong tag rejected");
+    buf[36] = WIND_EXT_TAG; CHECK(!windExtParse(buf, 46, 36, got), "count 0 rejected");
 
     // ---- resolve: beacon-synced and arrival-timed
     BeaconLog log;
