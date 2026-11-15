@@ -44,6 +44,8 @@ jobs:
           ./test_windext
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -DSI2C_HOST_TEST -I../../../Node/lib/SoftI2CRead test_softi2c.cpp -o test_softi2c
           ./test_softi2c
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I../../../Node/lib/WindStamp -I../../../Node/lib/Telemetry test_windstamp.cpp -o test_windstamp
+          ./test_windstamp
 
   build:
     runs-on: ubuntu-latest
