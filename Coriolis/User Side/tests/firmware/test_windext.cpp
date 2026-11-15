@@ -56,18 +56,24 @@ int main() {
     // every 2.7 s with the newest 3 publishes, stamped with +/-50 ms poll noise.
     WindSecStore<16> st;
     const double P = 1020.0, t0 = 5000.0;
-    int published = 0, lastSent = -1;
+    int published = 0, dupAdded = 0;
     double worst = 0;
     for (int cyc = 0; cyc < 80; cyc++) {
         double tx = 7000.0 + cyc * 2700.0;
         int newest = (int)floor((tx - t0) / P);               // publishes 0..newest exist
         WindExt pk{};
-        int n = newest - lastSent; if (n > 3) n = 3; if (n < 1) n = 1;
+        // like the node: always the newest 3 (so most readings arrive in two
+        // packets), and every 7th packet heard twice with fresh stamp noise
+        int n = newest + 1; if (n > 3) n = 3;
         pk.tag = WIND_EXT_TAG | WIND_EXT_SYNCED | n; pk.beacon = 0;
         double stamp = t0 + newest * P + (urand() - 0.5) * 100.0;
         for (int k = 0; k < n; k++) { pk.r[k][0] = (uint8_t)((newest - k) & 0xFF); pk.r[k][1] = 0; }
         st.ingest(3, pk, (uint32_t)lround(stamp), WT_BEACON);
-        lastSent = newest; published = newest + 1;
+        if (cyc % 7 == 3) {
+            int again = st.ingest(3, pk, (uint32_t)lround(stamp + (urand() - 0.5) * 100.0), WT_BEACON);
+            if (again) dupAdded += again;
+        }
+        published = newest + 1;
     }
     // every publish from the first packet on should be there once, in order
     int n = st.size(3);
@@ -82,6 +88,7 @@ int main() {
     }
     CHECK(n == WSEC_CAP || n >= published - 3, "kept %d of %d publishes", n, published);
     CHECK(ordered && unique, "every publish once, in time order");
+    CHECK(dupAdded == 0, "a packet heard twice adds nothing (%d added)", dupAdded);
     CHECK(fabs(st.publishPeriod(3) - P) < 8, "learned ATtiny period %.1f (true %.0f)", st.publishPeriod(3), P);
     CHECK(worst < 110, "worst time error %.0f ms", worst);
     printf("store: %d readings, period %.1f ms, worst time error %.0f ms\n", n, st.publishPeriod(3), worst);
