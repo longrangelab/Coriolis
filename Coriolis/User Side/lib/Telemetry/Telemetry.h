@@ -12,6 +12,8 @@
 
 #include <Arduino.h>
 #include <RadioLib.h>
+#include "WindExt.h"     // timed 1 s wind readings appended after NodePacket
+#include "WindSec.h"     // beacon log + per-node store of those readings
 
 #define RADIO_NSS   18
 #define RADIO_IRQ   26
@@ -101,7 +103,18 @@ static inline uint8_t beaconSlotOf(uint16_t mask, uint8_t nodeId) {
 // RECEIVER RADIO
 // ===========================================================================
 static volatile bool loraRxFlag = false;
-static void IRAM_ATTR loraOnRxISR() { loraRxFlag = true; }
+// millis() when the last packet finished arriving (radio interrupt). Timed wind
+// readings from a node that isn't beacon-synced are placed from this.
+static volatile uint32_t loraRxIsrMs = 0;
+static void IRAM_ATTR loraOnRxISR() { loraRxIsrMs = millis(); loraRxFlag = true; }
+
+// Extra facts about a received data packet (all optional for callers).
+struct RxMeta {
+    uint32_t arrivalMs = 0;   // when it finished arriving
+    uint8_t  len = 0;         // bytes on air
+    bool     hasExt = false;  // carries timed 1 s readings
+    WindExt  ext;
+};
 
 class LoRaReceiver {
 private:
@@ -109,6 +122,7 @@ private:
     bool initialized = false;
     uint32_t beaconSeq = 0;
 public:
+    BeaconLog beacons;        // when each recent beacon finished going out
     bool begin() {
         Serial.print(F("[LoRa] receiver init ... "));
         int st = radio.begin(LORA_FREQ_MHZ, LORA_BW_KHZ, LORA_SF, LORA_CR,
@@ -142,13 +156,18 @@ public:
         b.sleep_mask = sleepMask;
         b.crc = nodeCrc16((uint8_t*)&b, sizeof(BeaconPacket) - sizeof(uint16_t));
         int st = radio.transmit((uint8_t*)&b, sizeof(b));
+        // transmit() returns right after TX-done: this is the moment the nodes'
+        // receive interrupts fire, the shared reference for their timestamps.
+        if (st == RADIOLIB_ERR_NONE) beacons.record(b.seq, millis());
         radio.startReceive();
         return st == RADIOLIB_ERR_NONE;
     }
 
     // Non-blocking node-data receive.
-    bool poll(NodePacket& pkt, float& rssi, float& snr) {
+    // meta (optional) gets the arrival time and any timed 1 s readings.
+    bool poll(NodePacket& pkt, float& rssi, float& snr, RxMeta* meta = nullptr) {
         if (!initialized || !loraRxFlag) return false;
+        uint32_t isrMs = loraRxIsrMs;
         loraRxFlag = false;
         uint8_t buf[64];
         size_t len = radio.getPacketLength();
@@ -157,7 +176,13 @@ public:
         rssi = radio.getRSSI(); snr = radio.getSNR();
         radio.startReceive();
         if (st != RADIOLIB_ERR_NONE) return false;
-        return unpackReading(buf, len, pkt);   // ignores beacons (wrong magic)
+        if (!unpackReading(buf, len, pkt)) return false;   // ignores beacons (wrong magic)
+        if (meta) {
+            meta->arrivalMs = isrMs;
+            meta->len = (uint8_t)len;
+            meta->hasExt = windExtParse(buf, len, sizeof(NodePacket), meta->ext);
+        }
+        return true;
     }
 };
 
