@@ -1,5 +1,5 @@
 // Headless browser test of the phone page against a mock base station.
-// Serves the page, /engine.js and /gear.js straight out of the C++ headers,
+// Serves the page, /engine.js, /gear.js and /sky.js straight out of the C++ headers,
 // fakes /data.json and implements /gear the way WebUI.h does (version check,
 // 409 on conflict, gzip passthrough). Needs Playwright + Chromium.
 // Run: node test_page.js
@@ -10,6 +10,7 @@ const { extract } = require('./load_page_js.js');
 const PAGE = extract('WebUI.h', 'HTMLPAGE');
 const ENGINE = extract('EngineJs.h', 'ENGINEJS');
 const GEAR = extract('GearJs.h', 'GEARJS');
+const SKY = extract('SkyUiJs.h', 'SKYJS');
 
 let fails = 0;
 function check(name, cond, extra) { if (!cond) { fails++; console.log('FAIL', name, extra === undefined ? '' : extra); } else console.log('ok  ', name); }
@@ -47,8 +48,9 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/') return send(200, 'text/html', PAGE);
   if (u.pathname === '/engine.js') return send(200, 'application/javascript', ENGINE);
   if (u.pathname === '/gear.js') return send(200, 'application/javascript', GEAR);
-  if (u.pathname === '/data.json') return send(200, 'application/json', dataJson());
-  if (u.pathname === '/gear/info') return send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver, bytes: gear.body.length, gz: gear.gz, max: 393216 }));
+  if (u.pathname === '/sky.js') return send(200, 'application/javascript', SKY);
+  if (u.pathname === '/data.json') { if (gear.offline) { req.socket.destroy(); return; } return send(200, 'application/json', dataJson()); }
+  if (u.pathname === '/gear/info') return send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver, bytes: gear.body.length, gz: gear.gz, max: gear.hideMax ? undefined : (gear.max || 393216) }));
   if (u.pathname === '/gear' && req.method === 'GET') {
     if (!gear.body.length) return send(204, 'application/json', '');
     return send(200, 'application/json', gear.body, Object.assign({ 'X-Gear-Ver': String(gear.ver) }, gear.gz ? { 'Content-Encoding': 'gzip' } : {}));
@@ -57,7 +59,12 @@ const server = http.createServer((req, res) => {
     const chunks = []; req.on('data', c => chunks.push(c));
     req.on('end', () => {
       if (+u.searchParams.get('base') !== gear.ver) { gear.conflicts++; return send(409, 'application/json', JSON.stringify({ ok: false, err: 'conflict', ver: gear.ver })); }
-      gear.body = Buffer.from(multipartFile(Buffer.concat(chunks), req.headers['content-type']));
+      const file = Buffer.from(multipartFile(Buffer.concat(chunks), req.headers['content-type']));
+      gear.tries = (gear.tries || 0) + 1;
+      if (gear.slow) { const f2 = file, d = gear.slow; gear.slow = 0; return setTimeout(() => { gear.body = f2; gear.gz = u.searchParams.get('gz') === '1'; gear.ver++; gear.posts++;
+        send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver })); }, d); }
+      if (gear.max && file.length > gear.max) return send(413, 'application/json', JSON.stringify({ ok: false, err: 'too_big' }));
+      gear.body = file;
       gear.gz = u.searchParams.get('gz') === '1'; gear.ver++; gear.posts++;
       send(200, 'application/json', JSON.stringify({ ok: true, ver: gear.ver }));
     });
@@ -112,7 +119,7 @@ const skyFile = JSON.stringify({
   check('A: gear pushed to base station', gear.ver >= 1 && gear.body.length > 0, gear);
 
   // ---- solver ----
-  await A.evaluate(() => { setView('solver'); setv('range', 600); });
+  await A.evaluate(() => { openClassicSolver(); setv('range', 600); });
   await A.evaluate(() => doSolve());
   const res = await A.textContent('#results');
   check('A: solve shows elevation and windage', /Elevation/.test(res) && /Windage/.test(res) && /MOA/.test(res), res);
@@ -137,7 +144,7 @@ const skyFile = JSON.stringify({
   check('A: positions from GPS', w.s[1] && w.s[1].src === 'gps' && Math.abs(w.s[2].downYd - 400) < 2, w.s);
 
   // ---- Skyward import + bullet picker ----
-  await A.evaluate(() => setView('solver'));
+  await A.evaluate(() => openClassicSolver());
   await A.setInputFiles('#importFile', { name: 'skyward_master.json', mimeType: 'application/json', buffer: Buffer.from(skyFile) });
   await A.waitForFunction(() => Gear.loads().length === 3);
   check('A: Skyward load imported', await A.evaluate(() => Gear.loads().some(l => l.name === 'ELD-M 140')));
@@ -190,10 +197,202 @@ const skyFile = JSON.stringify({
   const mvA = await A.evaluate(() => Gear.flat(Gear.loads().find(l => l.name === '308 G1').id).mv);
   check('A: sees B\'s edit after sync', +mvA === 2600, mvA);
 
+  // ---- Skyward-style solver (sky.js) on the Solver tab ----
+  await A.evaluate(() => {
+    const id = Gear.loads().find(l => l.name === '6.5 CM').id; loadProfile(id); setv('range', 600);
+    window.__statusLog = [];
+    new MutationObserver(() => window.__statusLog.push(document.getElementById('status').textContent))
+      .observe(document.getElementById('status'), { childList: true, characterData: true, subtree: true });
+    localStorage.setItem('skyTab', 'calc'); setView('avg'); setView('solver');
+  });
+  check('Sky: Solver tab opens the Skyward UI', await A.evaluate(() => SkyUI.isOpen() && !document.getElementById('sky').classList.contains('hide') && view !== 'solver'));
+  await new Promise(r => setTimeout(r, 1300));   // launch splash
+  await A.waitForFunction(() => /\d/.test(document.querySelector('#sky .sk-cell .v').textContent));
+  const cmp = await A.evaluate(() => {
+    const sol = SkyUI._solveNow(), r = sol.at(+getv('range', 0)), g = Gear.solve(solverParams());
+    return { sky: r.comeUpMil * SkyEngine.MOA_PER_MIL, gear: g.elevMOA, skyW: r.windageMil * SkyEngine.MOA_PER_MIL, gearW: g.windMOA,
+      mil: r.comeUpMil, shown: document.querySelector('#sky .sk-cell .v').textContent };
+  });
+  check('Sky: elevation matches the Wind Lab solver', Math.abs(cmp.sky - cmp.gear) < 0.01, cmp);
+  check('Sky: windage matches the Wind Lab solver', Math.abs(cmp.skyW - cmp.gearW) < 0.01, cmp);
+  check('Sky: result bar shows the elevation', Math.abs(parseFloat(cmp.shown.replace(/^[^0-9.-]+/, '')) - cmp.mil) < 0.051, cmp);
+  // the live wind follows the meters
+  const lw = await A.evaluate(() => ({ live: liveOn('live_wind'), speed: document.querySelectorAll('#sky .sk-steprow input')[1].value, avg: avgWind().speed }));
+  check('Sky: live wind speed comes from the meters', lw.live && Math.abs(parseFloat(lw.speed) - lw.avg) < 0.06, lw);
+  // phone compass: a heading from the device sets the direction of fire
+  const az0 = await A.evaluate(() => fireAz);
+  await A.click('#sky .sk-pill:has-text("Use phone compass")');
+  await A.waitForSelector('#sky button:has-text("Waiting for the compass")');
+  await A.evaluate(() => { for (let i = 0; i < 3; i++) window.dispatchEvent(Object.assign(new Event('deviceorientationabsolute'), { alpha: 90, absolute: true })); });
+  await A.click('#sky button:has-text("Use 270°")');
+  await new Promise(r => setTimeout(r, 150));
+  const cz = await A.evaluate(() => ({ az: fireAz, stored: localStorage.getItem('fireAz'), field: document.getElementById('az').value }));
+  check('Sky: phone compass sets the direction of fire', cz.az === 270 && cz.stored === '270' && cz.field === '270', cz);
+  await A.click('#sky .sk-pill:has-text("Use phone compass")');
+  await A.waitForSelector('#sky button:has-text("Compass not available")', { timeout: 4000 });
+  check('Sky: no compass readings says so', true);
+  await A.evaluate(() => document.querySelector('#sky .sk-sheet').parentNode.click());
+  check('Sky: compass sheet closes', await A.evaluate(() => !document.querySelector('#sky .sk-sheet')));
+  // on plain http Chrome removes DeviceOrientationEvent: the button still shows and explains the fix
+  await A.evaluate(() => {
+    window.__DOE = window.DeviceOrientationEvent; delete window.DeviceOrientationEvent;
+    Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true });
+    SkyUI._goTab('gear'); SkyUI._goTab('calc');
+  });
+  await A.waitForSelector('#sky .sk-pill:has-text("Use phone compass")');
+  await A.click('#sky .sk-pill:has-text("Use phone compass")');
+  await A.waitForSelector('#sky button:has-text("Compass not available")', { timeout: 4000 });
+  check('Sky: on http the compass sheet explains the Chrome flag', await A.evaluate(() => /chrome:\/\/flags/.test(document.querySelector('#sky .sk-sheet').textContent)));
+  await A.evaluate(() => {
+    document.querySelector('#sky .sk-sheet').parentNode.click();
+    window.DeviceOrientationEvent = window.__DOE; delete window.isSecureContext;
+  });
+  await A.evaluate(v => { fireAz = v; localStorage.setItem('fireAz', v); document.getElementById('az').value = v; }, az0);
+
+  // full solution: WIND HOLD is the same number as Wind Lab's
+  await A.click('#sky .sk-res .sk-btn');
+  await A.waitForSelector('#sky .sk-big');
+  await A.evaluate(() => updateWindHold(true));
+  const holds = await A.evaluate(() => {
+    const row = Array.from(document.querySelectorAll('#sky .sk-row')).find(r => /WIND HOLD/.test(r.textContent));
+    return { sky: row && row.querySelector('.sk-val').textContent, lab: document.getElementById('windHold').textContent };
+  });
+  const moa = t => { const m = /([\d.]+) ([RL]) MOA/.exec(t || ''); return m ? m[1] + m[2] : null; };
+  check('Sky: WIND HOLD matches Wind Lab', moa(holds.sky) && moa(holds.sky) === moa(holds.lab), holds);
+  const tabClick = async label => { await A.click(`#sky .sk-nav button:has-text("${label}")`); await new Promise(r => setTimeout(r, 80)); };
+  await tabClick('Table');
+  check('Sky: trajectory table', await A.evaluate(() => document.querySelectorAll('#sky table.sk-tbl tr').length) > 10);
+  await tabClick('Target Card');
+  check('Sky: target card screen', await A.evaluate(() => /card/i.test(document.querySelector('#sky .sk-main').textContent)));
+  await tabClick('Calibrate');
+  check('Sky: calibrate screen', await A.evaluate(() => /muzzle velocity/i.test(document.querySelector('#sky .sk-main').textContent)));
+  await A.goBack(); await new Promise(r => setTimeout(r, 150));
+  check('Sky: phone back returns to the calculator', await A.evaluate(() => SkyUI.isOpen() && SkyUI.screen() === 'calc'));
+
+  // My gear: add a firearm and ammo through the screens
+  await tabClick('My gear');
+  check('Sky: a card per firearm', await A.evaluate(() => document.querySelectorAll('#sky .sk-card').length === Gear.rifles().length));
+  await A.click('#sky .sk-bwrap .sk-btn');
+  await A.fill('#sky input[placeholder="Firearm name"]', 'Test Rifle');
+  await A.click('#sky .sk-bar button[aria-label="Save"]');
+  await new Promise(r => setTimeout(r, 150));
+  check('Sky: firearm saved', await A.evaluate(() => Gear.rifles().some(r => r.name === 'Test Rifle' && r.twistIn === 8)));
+  await A.click('#sky .sk-act[aria-label="Add ammo for Test Rifle"]');
+  await A.fill('#sky input[placeholder="Ammo Name"]', 'Test Ammo');
+  await A.fill('#sky input[placeholder="BC"]', '0.3');
+  await A.click('#sky .sk-bar button[aria-label="Save"]');
+  await new Promise(r => setTimeout(r, 150));
+  const ta = await A.evaluate(() => { const l = Gear.loads().find(x => x.name === 'Test Ammo'); const b = l && Gear.bullet(l.bulletId); return { l, b }; });
+  check('Sky: ammo saved with its own bullet', ta.l && ta.b && ta.b.bcPoints.length === 1 && ta.b.bcPoints[0].bc === 0.3 && ta.l.muzzleVelocityFps === 2800, ta);
+  await A.evaluate(() => {
+    const row = Array.from(document.querySelectorAll('#sky .sk-item')).find(r => r.querySelector('.t').textContent === 'Test Ammo');
+    row.querySelector('.mo').click();
+  });
+  await A.click('#sky .sk-menu div:has-text("Use on the Calculator")');
+  await new Promise(r => setTimeout(r, 200));
+  const used = await A.evaluate(() => ({ name: activeName(), mv: +getv('mv', 0), bc: +getv('bc', 0), tab: SkyUI.screen(), log: window.__statusLog.slice() }));
+  check('Sky: "Use on the Calculator" sets the Wind Lab profile', /Test Ammo/.test(used.name) && used.mv === 2800 && used.bc === 0.3 && used.tab === 'calc', used);
+  check('Sky: own edits are not called "updated on another device"', !used.log.some(t => /another device/.test(t)), used.log);
+  await A.waitForFunction(() => /\d/.test(document.querySelector('#sky .sk-cell .v').textContent));
+
+  // Analysis: hit probability
+  await tabClick('Analysis');
+  await A.click('#sky .sk-row:has-text("Hit probability")');
+  await A.waitForFunction(() => Array.from(document.querySelectorAll('#sky div')).some(d => /^\d+%$/.test(d.textContent) && d.style.fontSize === '44px'), null, { timeout: 8000 });
+  const hp = await A.evaluate(() => Array.from(document.querySelectorAll('#sky div')).find(d => /^\d+%$/.test(d.textContent) && d.style.fontSize === '44px').textContent);
+  check('Sky: hit probability works', parseInt(hp) >= 0 && parseInt(hp) <= 100, hp);
+  await A.goBack(); await new Promise(r => setTimeout(r, 150));
+
+  // More -> classic solver, and the toolbar back arrow
+  await tabClick('More');
+  await A.click('#sky .sk-row:has-text("Classic Coriolis solver")');
+  await new Promise(r => setTimeout(r, 150));
+  check('Sky: More opens the classic solver', await A.evaluate(() => !SkyUI.isOpen() && view === 'solver' && document.getElementById('solveView').className !== 'hide'));
+  await A.evaluate(() => { setView('avg'); localStorage.setItem('skyTab', 'calc'); setView('solver'); });
+  await A.click('#sky .sk-bar button[aria-label="Back to Wind Lab"]');
+  await new Promise(r => setTimeout(r, 150));
+  check('Sky: back arrow returns to Wind Lab', await A.evaluate(() => !SkyUI.isOpen() && document.getElementById('sky').classList.contains('hide')));
+  if (process.env.SHOT_DIR) {
+    const shot = async (name) => { await new Promise(r => setTimeout(r, 250)); await A.screenshot({ path: path.join(process.env.SHOT_DIR, name) }); };
+    await A.evaluate(() => setView('solver')); await shot('sky_calc.png');
+    await A.click('#sky .sk-res .sk-btn'); await shot('sky_solution.png');
+    await A.goBack(); await tabClick('My gear'); await shot('sky_gear.png');
+    await A.evaluate(() => SkyUI.close());
+  }
+
+  // a library bigger than the base's limit is refused once and not resent every sync
+  gear.max = 300; gear.tries = 0;
+  await A.evaluate(() => Gear.importText(JSON.stringify({ format: 'skyward-library', version: 1, kind: 'bullets',
+    bullets: [{ id: 'big1', maker: 'Test', name: 'Too big', diameterIn: 0.308, weightGr: 175, dragModel: 'G7', bcPoints: [{ bc: 0.25, minVelFps: 0 }], source: 'library', updatedAt: Date.now() }] })));
+  await A.evaluate(() => Gear.sync()); await A.evaluate(() => Gear.sync());
+  const big1 = await A.evaluate(() => Gear.meta().err);
+  check('Gear: file over the base limit is not uploaded', gear.tries === 0 && /too big/.test(big1), { tries: gear.tries, err: big1 });
+  gear.hideMax = true; gear.tries = 0;      // older base: no "max" in /gear/info, refuses with 413
+  await A.evaluate(() => Gear.sync()); await A.evaluate(() => Gear.sync()); await A.evaluate(() => Gear.sync());
+  check('Gear: a refused upload is sent once, not on every sync', gear.tries === 1, gear.tries);
+  for (let i = errors.length - 1; i >= 0; i--) if (/status of 413/.test(errors[i])) errors.splice(i, 1);   // the browser logs the refused POST
+  gear.hideMax = false; gear.max = 0; gear.tries = 0;   // limit raised: it goes through
+  const v0 = gear.ver; await A.evaluate(() => Gear.sync());
+  check('Gear: retried once the base limit changes', gear.tries === 1 && gear.ver === v0 + 1 && !(await A.evaluate(() => Gear.meta().tooBig)), { tries: gear.tries });
+  // bad files: BOM is fine, junk records are dropped, broken JSON gets a plain message
+  const bad = await A.evaluate(() => {
+    const o = {};
+    o.bom = Gear.importText('﻿' + JSON.stringify({ format: 'skyward-library', version: 1, kind: 'bullets',
+      bullets: [null, 7, { name: 'no id' }, { id: 'bomb', maker: 'T', name: 'BOM ok', diameterIn: 0.308, weightGr: 175, dragModel: 'G7', bcPoints: [{ bc: 0.25, minVelFps: 0 }], source: 'user', updatedAt: Date.now() }] })).bullets;
+    try { Gear.importText('{"format":"skyward-library","bul'); } catch (e) { o.cut = e.message; }
+    o.junkLeft = Gear.bullets().some(b => !b || typeof b !== 'object' || !b.id);
+    return o; });
+  check('Gear: BOM file imports, junk records dropped', bad.bom === 1 && !bad.junkLeft, bad);
+  check('Gear: cut-off file gets a plain message', /not valid JSON/.test(bad.cut || ''), bad.cut);
+  // the base's copy is unreadable: the phone repairs it instead of being stuck
+  gear.body = Buffer.from('\x00garbage{{'); gear.gz = false; gear.ver++;
+  await A.evaluate(() => Gear.sync());
+  let fixed; try { fixed = JSON.parse((gear.gz ? zlib.gunzipSync(gear.body) : gear.body).toString()).format === 'skyward-library'; } catch (e) { fixed = false; }
+  check('Gear: an unreadable base file is replaced by the phone\'s gear', fixed && /synced/.test(await A.evaluate(() => Gear.meta().status)));
+  // gzip bytes without the gzip header (power cut before gear.meta was saved): still read
+  const plainNow = gear.gz ? zlib.gunzipSync(gear.body) : gear.body;
+  gear.body = zlib.gzipSync(plainNow); gear.gz = false; gear.ver++;
+  await A.evaluate(() => Gear.saveRecord('bullet', Object.assign({}, Gear.bullet('bomb'), { name: 'BOM ok 2' })));
+  await A.evaluate(() => Gear.sync());
+  check('Gear: gzip file with a stale flag is still read', await A.evaluate(() => Gear.meta().status) === 'synced with base station');
+  // an edit saved while an upload is still going reaches the base afterwards
+  gear.slow = 1200;
+  const pend = A.evaluate(() => { Gear.saveRecord('bullet', Object.assign({}, Gear.bullet('bomb'), { name: 'During 1' })); return Gear.sync(); });
+  await new Promise(r => setTimeout(r, 300));
+  await A.evaluate(() => Gear.saveRecord('bullet', Object.assign({}, Gear.bullet('bomb'), { name: 'During 2' })));
+  await pend; await new Promise(r => setTimeout(r, 2500));
+  const baseHas = (gear.gz ? zlib.gunzipSync(gear.body) : gear.body).toString();
+  check('Gear: an edit made during an upload still reaches the base', /During 2/.test(baseHas), baseHas.length);
+  // a record with an id but no name can't break the load list
+  const nn = await A.evaluate(() => { Gear.importText(JSON.stringify({ format: 'skyward-library', version: 1, kind: 'master', loads: [{ id: 'nameless' }] }));
+    try { return Gear.loads().some(l => l.id === 'nameless' && l.name === 'Unnamed'); } catch (e) { return 'throws: ' + e.message; } });
+  check('Gear: nameless record gets a name instead of breaking the list', nn === true, nn);
+  await A.evaluate(() => Gear.removeRecord && Gear.removeRecord('load', 'nameless'));
+  // two copies saved in the same millisecond settle the same way in either order
+  const tie = await A.evaluate(() => { const a = { id: 't', name: 'A', updatedAt: 5 }, b = { id: 't', name: 'B', updatedAt: 5 };
+    const L1 = { rifles: [], loads: [], bullets: [Object.assign({}, a)], cards: [], shots: [], deleted: [] }, L2 = { rifles: [], loads: [], bullets: [Object.assign({}, b)], cards: [], shots: [], deleted: [] };
+    Gear.mergeInto(L1, { bullets: [b] }); Gear.mergeInto(L2, { bullets: [a] }); return [L1.bullets[0].name, L2.bullets[0].name]; });
+  check('Gear: same-millisecond edits settle the same way everywhere', tie[0] === tie[1], tie);
+  // the phone loses the base station: the last reading is not live wind any more
+  await A.evaluate(() => { setView('avg'); localStorage.setItem('skyTab', 'calc'); setView('solver'); });
+  await new Promise(r => setTimeout(r, 1500));
+  gear.offline = true;
+  await A.evaluate(() => { dataAt = Date.now() - 13000; });
+  await new Promise(r => setTimeout(r, 1200));
+  const off = await A.evaluate(() => ({ ok: avgWind().ok, hint: (document.querySelector('#sky .sk-res') || {}).textContent || '', hold: document.getElementById('windHold').textContent }));
+  check('Lost base: no live wind, and the Solver says so', !off.ok && /Lost the base station/.test(off.hint) && !/\d MOA/.test(off.hold), off);
+  await A.click('#sky .sk-res .sk-btn'); await A.waitForSelector('#sky .sk-big');
+  check('Lost base: full solution says it uses the typed wind', await A.evaluate(() => /Lost the base station.*typed wind/.test((document.querySelector('#sky .sk-nowind') || {}).textContent || '')));
+  await A.goBack(); await new Promise(r => setTimeout(r, 150));
+  gear.offline = false;
+  await A.waitForFunction(() => avgWind().ok, null, { timeout: 5000 });
+  check('Lost base: live wind comes back on its own', true);
+  for (let i = errors.length - 1; i >= 0; i--) if (/ERR_|Failed to (load|fetch)|EMPTY_RESPONSE/.test(errors[i])) errors.splice(i, 1);   // the dropped polls
+  await A.evaluate(() => SkyUI.close());
   check('no request fell back to the ESP32 solver', legacyCalls.length === 0, legacyCalls);
   check('no JS errors or dialogs', errors.length === 0, errors);
   if (process.env.SHOT_DIR) {
-    await A.evaluate(() => { setView('solver'); doSolve(); });
+    await A.evaluate(() => { openClassicSolver(); doSolve(); });
     await new Promise(r => setTimeout(r, 300));
     await A.screenshot({ path: path.join(process.env.SHOT_DIR, 'page_solver.png'), fullPage: true });
   }
