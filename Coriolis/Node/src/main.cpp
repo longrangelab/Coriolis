@@ -31,6 +31,7 @@
 #include "telemetry.h"
 #include "AttinyFlasher.h"        // ATtiny85 firmware update over I2C
 #include "SoftI2CRead.h"          // ATtiny reads that can't stall the loop for 1 s
+#include "WindStamp.h"            // when each 1 s ATtiny publish appeared
 
 //#define USE_TSL2591            // uncomment when the TSL2591 is installed
 #ifdef USE_TSL2591
@@ -322,13 +323,14 @@ static bool readAttinyRaw(AttinyWind& w) {
 // TIMED 1 s WIND READINGS
 // ============================================================================
 // The ATtiny publishes a fresh 2 s average every second. We poll it every
-// 100 ms, and when its publish sequence moves we note the time halfway between
-// this poll and the previous one (so each publish is placed within +/-50 ms of
-// when it appeared, a bit worse when a 400 ms transmit sat between two polls).
-// The newest 1..3 consecutive publishes ride along in every data packet.
-// This is a plain extra read: the stall detection and bus recovery stay in
+// 100 ms and WindStamper (lib/WindStamp) notes when each publish appeared:
+// halfway between two polls 100 ms apart, or, when the publish fell in a longer
+// gap (the guard before our slot plus our own ~400 ms transmit), where the
+// ATtiny's measured rhythm puts it. A failed poll is skipped, so it no longer
+// costs the next publish its time. The newest 1..3 consecutive publishes ride
+// along in every data packet. The stall detection and bus recovery stay in
 // readSensors() / readAttiny(), which run unchanged at each transmit (its read
-// also feeds the history, so the transmit path adds no I2C traffic).
+// also feeds the stamper, so the transmit path adds no I2C traffic).
 //
 // Bench 2026-11-15: a failed ATtiny read through Wire froze the loop for a
 // fixed ~1 s and pushed our transmit past its slot; polling 10x a second made
@@ -336,16 +338,10 @@ static bool readAttinyRaw(AttinyWind& w) {
 // few ms. As a second line of defence the poll also stays off the bus in the
 // SEC_SLOT_GUARD_MS before our slot (the transmit's own read covers it).
 #define SEC_POLL_MS        100
-#define SEC_MAX_GAP_MS     600   // a publish seen after a longer gap has no usable time
-#define SEC_RING           4
 #define SEC_SLOT_GUARD_MS  250
-struct SecReading { uint32_t ms; uint16_t spd; uint16_t dir; uint8_t seq; };
-static SecReading secRing[SEC_RING];
-static uint8_t    secHead = 0, secCount = 0;
-static uint8_t    secLastSeq = 0;
-static uint32_t   secLastPollMs = 0, secNextPollMs = 0;
-static bool       secHavePoll = false;
-static uint8_t    secFailRun = 0;
+static WindStamper stamper;
+static uint32_t    secNextPollMs = 0;
+static uint8_t     secFailRun = 0;
 
 // True in the last SEC_SLOT_GUARD_MS before our TDMA slot starts.
 static bool nearMySlot(uint32_t now) {
@@ -358,70 +354,24 @@ static bool nearMySlot(uint32_t now) {
 
 // Note a frame read at `now` (millis() just before the read started).
 static void secObserve(const AttinyWind& w, uint32_t now) {
-    uint8_t seq = (uint8_t)(w.rawADC >> 10);
-    if (seq != 0 && secHavePoll && seq != secLastSeq && (uint32_t)(now - secLastPollMs) <= SEC_MAX_GAP_MS) {
-        SecReading& r = secRing[secHead];
-        r.ms  = secLastPollMs + (now - secLastPollMs) / 2;
-        r.spd = w.speed_avg; r.dir = w.dir_avg; r.seq = seq;
-        secHead = (uint8_t)((secHead + 1) % SEC_RING);
-        if (secCount < SEC_RING) secCount++;
-    }
-    secLastSeq = seq; secLastPollMs = now; secHavePoll = (seq != 0);
+    stamper.observe((uint8_t)(w.rawADC >> 10), w.speed_avg, w.dir_avg, now);
 }
 
 static void pollWindSeconds() {
     uint32_t now = millis();
     if ((int32_t)(now - secNextPollMs) < 0) return;
     if (nearMySlot(now)) return;           // our transmit's read covers this stretch
-    // A dead or stuck ATtiny makes every read wait on the I2C timeout. After a
-    // few misses, try only every 2 s; readSensors() owns the recovery.
+    // A dead or stuck ATtiny fails every read. After a few misses, try only
+    // every 2 s; readSensors() owns the recovery.
     secNextPollMs = now + (secFailRun >= 3 ? 2000 : SEC_POLL_MS);
     AttinyWind w;
     if (!readAttinyRaw(w)) {               // a failed soft read already freed the bus
         if (secFailRun < 255) secFailRun++;
-        secHavePoll = false;
+        stamper.failedPoll();
         return;
     }
     secFailRun = 0;
     secObserve(w, now);
-}
-
-// Build the block for this transmit: the newest publish and up to two before
-// it, as long as their sequence numbers follow on (1..63, wrapping 63 -> 1).
-// Returns false (send the plain packet) when there is nothing recent to send.
-static bool buildWindExt(WindExt& e, bool windValid) {
-    if (!windValid || secCount == 0) return false;
-    uint32_t now = millis();
-    const SecReading& newest = secRing[(secHead + SEC_RING - 1) % SEC_RING];
-    if ((uint32_t)(now - newest.ms) > 5000) return false;           // ATtiny went quiet
-    uint8_t n = 1;
-    uint8_t seq = newest.seq;
-    while (n < WIND_EXT_MAX && n < secCount) {
-        const SecReading& r = secRing[(secHead + SEC_RING - 1 - n) % SEC_RING];
-        uint8_t want = (seq == 1) ? 63 : (uint8_t)(seq - 1);
-        if (r.seq != want) break;
-        if ((uint32_t)(newest.ms - r.ms) > (uint32_t)n * 1500) break;  // not one publish apart
-        seq = r.seq; n++;
-    }
-    memset(&e, 0, sizeof(e));
-    // Synced: ms after the last beacon heard, if that fits and is recent.
-    int32_t tb = (int32_t)(newest.ms - beaconRxMs);
-    bool useBeacon = synced && beaconRef && (uint32_t)(now - beaconRxMs) < 30000UL && tb > -30000 && tb < 30000;
-    if (useBeacon) {
-        e.tag = WIND_EXT_TAG | WIND_EXT_SYNCED | n;
-        e.beacon = beaconSeqLow;
-        e.t_ms = (int16_t)tb;
-    } else {
-        // Unsynced: ms before now (TX starts within a couple of ms of this).
-        e.tag = WIND_EXT_TAG | n;
-        e.t_ms = (int16_t)-(int32_t)(now - newest.ms);
-    }
-    for (uint8_t k = 0; k < n; k++) {
-        const SecReading& r = secRing[(secHead + SEC_RING - 1 - k) % SEC_RING];
-        e.r[k][0] = windExtSpeedByte(r.spd / 100.0f);
-        e.r[k][1] = windExtDirByte(r.dir / 10.0f);
-    }
-    return true;
 }
 
 void readSensors(NodeReading& r);
@@ -431,7 +381,7 @@ void readSensors(NodeReading& r);
 static NodeReading sendReading(bool ackSleep) {
     NodeReading r; readSensors(r);         // its ATtiny read also feeds the history
     WindExt e;
-    bool hasExt = buildWindExt(e, r.windValid);
+    bool hasExt = stamper.build(e, millis(), r.windValid, synced && beaconRef, beaconRxMs, beaconSeqLow);
     radio.sendData(r, nodeId, ackSleep, hasExt ? &e : nullptr);
     return r;
 }
