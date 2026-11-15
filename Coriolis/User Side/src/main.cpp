@@ -178,6 +178,8 @@ LoRaReceiver     radio;
 WebUI            webui;                  // phone dashboard
 Ballistics       solver;                 // ballistic solver (standalone)
 WindStats        windStats;              // rolling wind history + stability
+NodeWindHistory  windHist;               // per-node wind vectors: 10 s average + drift
+static_assert(MAX_NODES <= NWH_NODES, "NodeWindHistory must cover every node id");
 Sensitivity      sens;                   // Phase 2: sensitivity-zone weighting
 
 // --- async sensitivity worker (P0 fix) --------------------------------------
@@ -458,6 +460,9 @@ void ingestPacket(const NodePacket& p, float rssi, float snr) {
     nv.resetReported = resetNow;
     nv.lastSeen    = millis();
     lastRxMs       = millis();          // feed the RX watchdog
+    // Per-packet wind history for the phone's spread and drift figures. Only a
+    // working meter's reading: a dead anemometer's zeros are not wind.
+    if (nv.windValid) windHist.add(p.node_id, nv.windSpeed, nv.windDir);
 
     emitNodeData(p.node_id);
 }
@@ -618,6 +623,18 @@ String buildDataJson() {
         j += ",\"speed\":" + String(nv.windSpeed,2) + ",\"speedSd\":" + String(nv.windSpeedSd,2);
         j += ",\"dir\":" + String((int)(nv.windDir+0.5f)) + ",\"dirSd\":" + String(nv.windDirSd,1);
         j += ",\"gust\":" + String(nv.windGust,2);
+        // Variability inputs (see NodeWindHistory in WindStats.h). sm = 10 s
+        // average wind vector [x, y, packets]; dr60 / dr300 = covariance of
+        // that average over 60 s / 5 min [xx, yy, xy, averages used].
+        {
+            float sx, sy, xx, yy, xy;
+            int ns = windHist.smooth(active[i], sx, sy);
+            j += ",\"sm\":[" + String(sx,2) + "," + String(sy,2) + "," + String(ns) + "]";
+            int nd = windHist.drift(active[i], 60000UL, xx, yy, xy);
+            j += ",\"dr60\":[" + String(xx,3) + "," + String(yy,3) + "," + String(xy,3) + "," + String(nd) + "]";
+            nd = windHist.drift(active[i], 300000UL, xx, yy, xy);
+            j += ",\"dr300\":[" + String(xx,3) + "," + String(yy,3) + "," + String(xy,3) + "," + String(nd) + "]";
+        }
         j += ",\"tempF\":" + String(nv.temperatureC*9.0f/5.0f+32.0f,1);
         j += ",\"presInHg\":" + String(nv.pressurePa/3386.389f,2);
         j += ",\"lux\":" + String(nv.lightValid ? nv.lightLux : -1.0f, 1);
@@ -648,7 +665,7 @@ String buildDataJson() {
         if (i < n-1) j += ",";
     }
     j += "],";
-    // ---- stability: current (node 2s SDs) + 10/30/60 s windows ----
+    // ---- stability (legacy, for older phones): node SDs + 10/30/60 s windows ----
     float s10=0,d10=0,s30=0,d30=0,s60=0,d60=0;
     windStats.window(10,s10,d10); windStats.window(30,s30,d30); windStats.window(60,s60,d60);
     j += "\"stability\":{\"cur\":{\"spdSd\":"+String(avgSpdSd,2)+",\"dirSd\":"+String(avgDirSd,1)+"}";
