@@ -25,6 +25,14 @@
  * Old Coriolis profiles ('profiles' in localStorage, rifle_profiles.json) are
  * converted on first run and can still be imported; the old key is left in
  * place as a backup.
+ *
+ * Gear from Skyward Ballistics is view only. When the base's file was written
+ * by the Skyward app (app "Skyward Ballistics"), Skyward owns it: it writes its
+ * gear over the base whenever it sends, and never reads the base back. So this
+ * page shows that file exactly as it is, never merges into it or pushes to it,
+ * and refuses to save gear (Gear.managed(), MANAGED_MSG). The solver's working
+ * fields (the sol_* values in WebUI.h) stay editable: they are this phone's own
+ * and never saved as gear. Gear.takeOver() hands the gear back to this page.
  */
 
 static const char GEAR_JS[] PROGMEM = R"GEARJS(
@@ -67,7 +75,13 @@ function canon(lib){   // order-independent content key, for "did anything chang
     (lib.deleted||[]).map(function(t){return t.kind+'|'+t.id+'|'+t.deletedAt;}).sort()]);
 }
 
-var lib=emptyLib(),meta={serverVer:-1,lastSync:0,status:'',err:''};
+var lib=emptyLib(),meta={serverVer:-1,lastSync:0,status:'',err:'',managed:false};
+// The base's gear came from the Skyward app: view only here (see the header).
+var SKYWARD_APP='Skyward Ballistics';
+var MANAGED_MSG='This gear comes from the Skyward Ballistics app, which replaces it on the base station each time it sends. Make changes in Skyward. '+
+  'You can still change values for the current shot: they stay on this phone and are not saved as gear.';
+function managed(){return !!meta.managed;}
+function guard(){if(meta.managed){var e=new Error(MANAGED_MSG);e.managed=true;throw e;}}
 var listeners=[];
 function changed(){listeners.forEach(function(f){try{f();}catch(e){}});}
 function persist(){
@@ -190,6 +204,7 @@ function exportText(kind){
   return JSON.stringify(o,null,1);
 }
 function importText(text){
+  guard();
   var res=parseFile(text);
   var before=canon(lib);
   var c=mergeInto(lib,res.lib,true);
@@ -305,6 +320,7 @@ function rifleShare(p,loadId,asNew){
   return others?{name:rf0.name,others:others}:null;
 }
 function saveFlat(name,p,loadId,asNew,rifleAll){
+  guard();
   name=(''+name).trim();if(!name)throw new Error('name required');
   var src=loadId?loadRec(loadId):null,l0=asNew?null:src;
   var l=l0?clone(l0):(src?Object.assign(clone(src),{id:uuid()}):{id:uuid(),rifleId:'',bulletId:''});
@@ -361,6 +377,7 @@ function tomb(kind,id){
   lib.deleted.push({kind:kind,id:id,deletedAt:Math.max(now(),t+1)});
 }
 function removeLoad(loadId){
+  guard();
   var l=loadRec(loadId);if(!l)return;
   tomb('load',loadId);lib.loads=lib.loads.filter(function(x){return x.id!==loadId;});
   // the rifle goes too when this was its only load and it was made here for it
@@ -371,6 +388,7 @@ function removeLoad(loadId){
   persist();changed();schedulePush();
 }
 function removeBullets(ids){
+  guard();
   var used={};lib.loads.forEach(function(l){used[l.bulletId]=1;});
   var gone=0;
   lib.bullets.slice().forEach(function(b){if(ids.indexOf(b.id)>=0&&!used[b.id]){tomb(b.source==='library'?'library':'bullet',b.id);gone++;}});
@@ -381,6 +399,7 @@ function removeBullets(ids){
 var LISTS={rifle:'rifles',load:'loads',bullet:'bullets',card:'cards',shot:'shots'};
 // Save one record as it is (new or edited). Returns its id.
 function saveRecord(kind,rec){
+  guard();
   var key=LISTS[kind];if(!key)throw new Error('unknown kind '+kind);
   var rc=clone(rec);if(!rc.id)rc.id=uuid();
   var old=byId(lib[key],rc.id);
@@ -390,6 +409,7 @@ function saveRecord(kind,rec){
 // Delete one record (tombstone, so other devices drop it too). A firearm takes
 // its ammo with it, like in Skyward.
 function removeRecord(kind,id){
+  guard();
   var key=LISTS[kind];if(!key)return;
   var rec=byId(lib[key],id);if(!rec)return;
   if(kind==='rifle')lib.loads.filter(function(l){return l.rifleId===id;}).forEach(function(l){tomb('load',l.id);});
@@ -464,6 +484,7 @@ function gzipBlob(text){
     return new Response(cs).blob().then(function(b){return {blob:b,gz:true};},function(){return {blob:new Blob([text],{type:'application/json'}),gz:false};});
   }catch(e){return Promise.resolve({blob:new Blob([text],{type:'application/json'}),gz:false});}
 }
+var pageFw=null,reloading=false;   // base firmware this page first talked to
 function schedulePush(){if(pushTimer)clearTimeout(pushTimer);pushTimer=setTimeout(function(){pushTimer=null;sync();},800);}
 // Pull the base station copy, merge, push the result back if it differs.
 function sync(){
@@ -472,6 +493,16 @@ function sync(){
   var remoteHash=null;
   return fetchT('/gear/info').then(function(r){return r.json();}).then(function(info){
     if(!info.ok)throw new Error('base station flash unavailable');
+    // The base was reflashed while this page stayed open (or Chrome brought the page back
+    // from its cache): this code may be older than the base's. Load the new page before
+    // touching the gear, so old code never merges into or writes over the base's file.
+    if(info.fw){
+      if(pageFw===null)pageFw=info.fw;
+      else if(info.fw!==pageFw){
+        if(!reloading&&root.location&&root.location.reload){reloading=true;root.location.reload();}
+        throw new Error('base station updated: reloading the page');
+      }
+    }
     var pull=(info.ver!==meta.serverVer&&info.bytes>0)?fetchT('/gear',{},20000).then(function(r){
       if(r.status===204)return null;
       if(!r.ok)throw new Error('read failed ('+r.status+')');
@@ -485,14 +516,25 @@ function sync(){
         // The base's copy is unreadable (not a format or version we don't know: those are
         // kept). Nobody can read it, so this phone's gear replaces it.
         if(!e.unreadable)throw e;base=got.ver;meta.repairedBase=true;}}
+      if(res&&res.app===SKYWARD_APP&&!meta.takeOver){
+        // Skyward's gear: show exactly what it sent (records it left out or deleted go too),
+        // and never write back: Skyward would replace it at its next send anyway.
+        var was=canon(lib);lib=res.lib;meta.managed=true;meta.serverVer=got.ver;meta.serverHash=hash(canon(lib));persist();
+        if(canon(lib)!==was)changed();
+        return 'skyward';
+      }
       if(res){
         remoteHash=hash(canon(res.lib));
         var before=canon(lib);mergeInto(lib,res.lib,false);base=got.ver;
         if(canon(lib)!==before)changed();
-      }else if(info.bytes===0){remoteHash=hash(canon(emptyLib()));}
+        meta.managed=false;
+      }else if(info.bytes===0){remoteHash=hash(canon(emptyLib()));meta.managed=false;}
       else if(info.ver===meta.serverVer){remoteHash=meta.serverHash||null;}
       meta.serverVer=base;persist();
-      if(remoteHash!==null&&remoteHash===hash(canon(lib))){meta.serverHash=remoteHash;return 'same';}
+      if(meta.managed)return 'skyward';   // unchanged since it was read: nothing to send
+      // "Edit gear here instead": write this page's copy even when it matches, so the
+      // base's file is marked as this page's (app "Coriolis") and stops being view only.
+      if(!meta.takeOver&&remoteHash!==null&&remoteHash===hash(canon(lib))){meta.serverHash=remoteHash;return 'same';}
       if(!lib.loads.length&&!lib.bullets.length&&!lib.rifles.length&&!(lib.deleted||[]).length)return 'same';
       // A file the base already refused is not sent again until the gear changes:
       // each try ties up the base's web server (and live wind) for several seconds.
@@ -509,7 +551,7 @@ function sync(){
             if(!j.ok&&j.err==='too_big')refuse();
             if(!j.ok)throw new Error(j.err==='flash_full'?'base station flash full':'save failed ('+(j.err||r.status)+')');
             // record what was SENT: an edit made during the upload still needs pushing
-            meta.serverVer=j.ver;meta.serverHash=sent;delete meta.tooBig;delete meta.tooBigMsg;
+            meta.serverVer=j.ver;meta.serverHash=sent;delete meta.tooBig;delete meta.tooBigMsg;delete meta.takeOver;
             if(hash(canon(lib))!==sent)again=true;
             return 'pushed';
           });
@@ -517,10 +559,19 @@ function sync(){
       });
     });
   }).then(function(){
-    meta.lastSync=now();setStatus('synced with base station');
+    meta.lastSync=now();setStatus(meta.managed?'from Skyward Ballistics (view only)':'synced with base station');
   },function(e){
     setStatus('saved on this phone only',(e&&e.name==='AbortError')?'base station not answering':(e&&e.message)||'base station unreachable');
   }).then(function(){syncing=false;if(again){again=false;return sync();}});
+}
+
+// "Edit gear here instead": this page's copy of Skyward's gear becomes editable and is
+// written to the base as this page's. If the Skyward app still sends to this base, its
+// next change replaces the base's gear again (and makes it view only again).
+function takeOver(){
+  if(!meta.managed)return Promise.resolve();
+  meta.managed=false;meta.takeOver=true;persist();changed();
+  return sync();
 }
 
 // ---------- first run: convert old Coriolis profiles ----------
@@ -557,7 +608,8 @@ root.Gear={
   importText:importText,exportText:exportText,parseFile:parseFile,mergeInto:mergeInto,
   engineGear:engineGear,rifleShare:rifleShare,solve:solve,sensitivity:sensitivity,parseBands:parseBands,parseCurve:parseCurve,curveToText:curveToText,
   sync:sync,onChange:function(f){listeners.push(f);},migrated:migrated,stableId:stableId,
-  _reset:function(){lib=emptyLib();meta={serverVer:-1,lastSync:0,status:'',err:''};persist();}
+  managed:managed,takeOver:takeOver,MANAGED_MSG:MANAGED_MSG,
+  _reset:function(){lib=emptyLib();meta={serverVer:-1,lastSync:0,status:'',err:'',managed:false};persist();}
 };
 })(typeof window!=='undefined'?window:this);
 )GEARJS";
