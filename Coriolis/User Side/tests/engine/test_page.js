@@ -114,6 +114,12 @@ const skyFile = JSON.stringify({
   // ---- phone A: old profiles migrate and get pushed to the base station ----
   const A = await phone({ profiles: JSON.stringify(oldProfiles), activeProfile: '6.5 CM', opt_spin: '1', opt_jump: '1', live_wind: '1' });
   await A.waitForFunction(() => Gear.meta().status === 'synced with base station', null, { timeout: 8000 });
+  {
+    // one 350 ms live poll, not two (a second timer doubled the base's web load)
+    let n = 0; const count = r => { if (new URL(r.url()).pathname === '/data.json') n++; };
+    A.on('request', count); await A.waitForTimeout(3500); A.off('request', count);
+    check('A: live wind polled about 3 times a second, not 6', n >= 7 && n <= 12, n);
+  }
   check('A: migrated old profiles', await A.evaluate(() => Gear.loads().length) === 2);
   check('A: active profile carried over', await A.evaluate(() => activeName()) === '6.5 CM');
   check('A: gear pushed to base station', gear.ver >= 1 && gear.body.length > 0, gear);
