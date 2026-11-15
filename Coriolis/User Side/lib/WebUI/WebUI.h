@@ -42,6 +42,7 @@
 #include "EngineJs.h"
 #include "GearJs.h"
 #include "SkyUiJs.h"
+#include "LearnJs.h"
 
 // Largest gear file we accept. The old file stays on flash until the new one is
 // complete, so two copies must fit in the 896 KB partition with room to spare.
@@ -211,7 +212,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
     border-top:1px solid var(--line);padding:10px 0 calc(12px + env(safe-area-inset-bottom))}
   .sec{display:flex;flex-direction:column;align-items:center;gap:4px;padding:0;border:0;border-radius:0;background:transparent;
     color:var(--dim);font-weight:500;letter-spacing:0;font-size:13px;cursor:pointer}
-  .sec .ind{width:60px;height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center;transition:background .18s}
+  .sec .ind{width:min(60px,14vw);height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center;transition:background .18s}
   .sec .ind svg{width:26px;height:26px;max-width:none;margin:0;fill:currentColor}
   .sec.on{background:transparent;color:var(--ink);font-weight:700;border:0}
   .sec.on .ind{background:var(--cyan);color:#01274A}
@@ -243,6 +244,7 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
   <div id="secSand" class="sec" onclick="setSection('sandbox')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.8,18.4L14,10.67V6.5l1.35,-1.69C15.61,4.48 15.38,4 14.96,4H9.04C8.62,4 8.39,4.48 8.65,4.81L10,6.5v4.17L4.2,18.4C3.71,19.06 4.18,20 5,20h14c0.82,0 1.29,-0.94 0.8,-1.6z"/></svg></span>Sandbox</div>
   <div id="secLog" class="sec" onclick="setSection('log')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,13h2v-2H3v2zm0,4h2v-2H3v2zm0,-8h2V7H3v2zm4,4h14v-2H7v2zm0,4h14v-2H7v2zM7,7v2h14V7H7z"/></svg></span>Log</div>
   <div id="secSolver" class="sec" onclick="setView('solver')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM13,19.93V17h-2v2.93C7.38,19.48 4.52,16.62 4.07,13H7v-2H4.07C4.52,7.38 7.38,4.52 11,4.07V7h2V4.07c3.62,0.45 6.48,3.31 6.93,6.93H17v2h2.93c-0.45,3.620 -3.31,6.48 -6.93,6.93zM12,10.5c-0.83,0 -1.5,0.67 -1.5,1.5s0.67,1.5 1.5,1.5 1.5,-0.67 1.5,-1.5 -0.67,-1.5 -1.5,-1.5z"/></svg></span>Solver</div>
+  <div id="secLearn" class="sec" onclick="goLearn()"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12,8c-2.21,0 -4,1.79 -4,4s1.79,4 4,4 4,-1.79 4,-4 -1.79,-4 -4,-4zM20.94,11c-0.46,-4.17 -3.77,-7.48 -7.94,-7.94V1h-2v2.06C6.83,3.52 3.52,6.83 3.06,11H1v2h2.06c0.46,4.17 3.77,7.48 7.94,7.94V23h2v-2.06c4.17,-0.46 7.48,-3.77 7.94,-7.94H23v-2h-2.06zM12,19c-3.87,0 -7,-3.13 -7,-7s3.13,-7 7,-7 7,3.13 7,7 -3.13,7 -7,7z"/></svg></span>Learn</div>
 </div>
 <div id="tabs" class="tabs"></div>
 
@@ -2118,6 +2120,12 @@ function tabs(){
 // classic one-page form is still here: More -> Classic Coriolis solver, or if
 // sky.js failed to load.
 var skyClassic=false;
+// LEARN opens the Wind Learning Range (/learn, LearnJs.h): a separate page,
+// so leaving Wind Lab stops a running session log. Ask first in that case.
+function goLearn(){
+  if(typeof logState!=='undefined'&&logState.recording&&!confirm('A session log is recording. Opening Learn stops it. Open Learn anyway?'))return;
+  location.href='/learn';
+}
 function openClassicSolver(){skyClassic=true;try{setView('solver');}finally{skyClassic=false;}}
 function setView(v){
   if(v==='solver'&&!skyClassic&&window.SkyUI&&SkyUI.open()){tabs();return;}
@@ -3100,6 +3108,14 @@ public:
         server.on("/sky.js", [this]() {
             server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", SKY_JS);
+        });
+        server.on("/learn", [this]() {
+            server.sendHeader("Cache-Control", "no-store");
+            server.send_P(200, "text/html", LEARN_HTML);
+        });
+        server.on("/wind-learner.js", [this]() {
+            server.sendHeader("Cache-Control", "no-store");
+            server.send_P(200, "application/javascript", LEARN_LIB_JS);
         });
         server.on("/gear", HTTP_GET, [this]() { sendGear(); });
         server.on("/gear", HTTP_POST, [this]() { finishGearUpload(); }, [this]() { onGearUpload(); });
