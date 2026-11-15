@@ -2885,6 +2885,7 @@ private:
     String (*sensProvider)(WebServer&) = nullptr;
     String (*cmdProvider)(WebServer&) = nullptr;
     String (*aimProvider)(WebServer&) = nullptr;
+    String (*windSecProvider)(WebServer&) = nullptr;
     void   (*tickFn)() = nullptr;          // keeps the radio serviced during long transfers
 
     // ---- gear store (LittleFS) ----
@@ -3054,6 +3055,9 @@ private:
     }
 
 public:
+    // Timed 1 s wind readings (/windsec). Set before begin().
+    void setWindSecProvider(String (*p)(WebServer&)) { windSecProvider = p; }
+
     // tick: optional, called every ~2 KB during gear transfers so the receiver
     // keeps draining the radio and sending beacons while a big file moves.
     void begin(const char* ssid, const char* pass,
@@ -3126,6 +3130,10 @@ public:
         server.on("/aim", [this]() {
             server.sendHeader("Cache-Control","no-store");
             server.send(200, "application/json", aimProvider ? aimProvider(server) : "{\"ok\":false}");
+        });
+        server.on("/windsec", [this]() {
+            server.sendHeader("Cache-Control","no-store");
+            server.send(200, "application/json", windSecProvider ? windSecProvider(server) : "{\"nodes\":{}}");
         });
         server.onNotFound([this]() { server.send_P(200, "text/html", WEBUI_PAGE); });
         server.begin();

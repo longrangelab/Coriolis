@@ -181,6 +181,7 @@ WindStats        windStats;              // rolling wind history + stability
 NodeWindHistory  windHist;               // per-node wind vectors: 10 s average + drift
 static_assert(MAX_NODES <= NWH_NODES, "NodeWindHistory must cover every node id");
 Sensitivity      sens;                   // Phase 2: sensitivity-zone weighting
+WindSecStore<MAX_NODES> windSec;         // timed 1 s readings per node (/windsec)
 
 // --- async sensitivity worker (P0 fix) --------------------------------------
 // windSensitivity() (called by sens.update) runs 40+ software-double trajectory
@@ -422,7 +423,7 @@ void emitNodeData(uint8_t id) {
                   baseTempF, basePresInHg, rxBatteryPct);
 }
 
-void ingestPacket(const NodePacket& p, float rssi, float snr) {
+void ingestPacket(const NodePacket& p, float rssi, float snr, const RxMeta* meta = nullptr) {
     if (p.node_id == 0 || p.node_id >= MAX_NODES) return;
     NodeView& nv = nodes[p.node_id];
     nv.seen        = true;
@@ -464,7 +465,62 @@ void ingestPacket(const NodePacket& p, float rssi, float snr) {
     // working meter's reading: a dead anemometer's zeros are not wind.
     if (nv.windValid) windHist.add(p.node_id, nv.windSpeed, nv.windDir);
 
+    // Timed 1 s readings (node firmware with WindExt). Placed on this base's
+    // millis() clock: from the beacon they name, or from arrival minus airtime.
+    if (meta && meta->hasExt && nv.windValid) {
+        uint32_t tNewest; WindTimeSrc src;
+        uint32_t air = loraAirtimeMs(meta->len, LORA_SF, LORA_BW_KHZ, LORA_CR, LORA_PREAMBLE);
+        if (windExtResolve(meta->ext, radio.beacons, meta->arrivalMs, air, tNewest, src))
+            windSec.ingest(p.node_id, meta->ext, tNewest, src);
+    }
+
     emitNodeData(p.node_id);
+}
+
+// GET /windsec?since=<base ms>  ->  every timed 1 s reading newer than `since`.
+//   {"now":<base ms>,"utc":<unix ms at now, or null without a GPS time>,
+//    "avg_ms":2000,                      // each reading = mean of the 2 s before t
+//    "nodes":{"3":{"src":"beacon","period":1001.8,"r":[[t,mph,deg],...]}, ...}}
+// t is on the same base clock as "now", so a phone maps it to its own clock
+// with one subtraction, and to UTC with utc - now.
+String handleWindSec(WebServer& srv) {
+    uint32_t now = millis();
+    uint32_t since = 0;
+    bool haveSince = srv.hasArg("since");
+    if (haveSince) since = (uint32_t)strtoul(srv.arg("since").c_str(), nullptr, 10);
+    double utc;
+    bool haveUtc = gps.utcUnixMs(utc);
+    String out;
+    out.reserve(512);
+    out += F("{\"now\":"); out += now;
+    out += F(",\"utc\":");
+    if (haveUtc) { char b[24]; snprintf(b, sizeof b, "%.0f", utc); out += b; } else out += F("null");
+    out += F(",\"avg_ms\":2000,\"nodes\":{");
+    bool firstNode = true;
+    for (int id = 1; id < MAX_NODES; id++) {
+        int n = windSec.size(id);
+        if (!n) continue;
+        if (!firstNode) out += ',';
+        firstNode = false;
+        WindTimeSrc ts = windSec.source(id);
+        char hdr[80];
+        snprintf(hdr, sizeof hdr, "\"%d\":{\"src\":\"%s\",\"period\":%.1f,\"r\":[", id,
+                 ts == WT_BEACON ? "beacon" : ts == WT_ARRIVAL ? "arrival" : "none", windSec.publishPeriod(id));
+        out += hdr;
+        bool first = true;
+        for (int i = 0; i < n; i++) {
+            const WindSec& w = windSec.at(id, i);
+            if (haveSince && (int32_t)(w.t - since) <= 0) continue;
+            char b[48];
+            snprintf(b, sizeof b, "%s[%lu,%.2f,%.1f]", first ? "" : ",", (unsigned long)w.t,
+                     windExtSpeed(w.spd), windExtDir(w.dir));
+            out += b;
+            first = false;
+        }
+        out += F("]}");
+    }
+    out += F("}}");
+    return out;
 }
 
 // ============================================================================
@@ -1083,6 +1139,7 @@ void setup() {
 
     aimProbe();   // detect the windage stepper controller (0x33)
 
+    webui.setWindSecProvider(handleWindSec);   // timed 1 s readings for the phone
     webui.begin(AP_SSID, AP_PASS, buildDataJson, handleSolve, handleSensitivity, handleCmd, handleAim,   // + fleet sleep + aimbot stepper
                 webTick);                                                                                 // radio stays serviced during gear transfers
 
@@ -1111,15 +1168,15 @@ static void beaconIfDue() {
 // flash, so a big upload doesn't starve the radio: drain packets, keep beacons
 // on schedule.
 static void webTick() {
-    NodePacket pkt; float rssi, snr;
-    while (radio.poll(pkt, rssi, snr)) ingestPacket(pkt, rssi, snr);
+    NodePacket pkt; float rssi, snr; RxMeta meta;
+    while (radio.poll(pkt, rssi, snr, &meta)) ingestPacket(pkt, rssi, snr, &meta);
     beaconIfDue();
 }
 
 void loop() {
     // 1) drain radio
-    NodePacket pkt; float rssi, snr;
-    while (radio.poll(pkt, rssi, snr)) ingestPacket(pkt, rssi, snr);
+    NodePacket pkt; float rssi, snr; RxMeta meta;
+    while (radio.poll(pkt, rssi, snr, &meta)) ingestPacket(pkt, rssi, snr, &meta);
 
     webui.handle();        // service phone dashboard requests
 
@@ -1170,6 +1227,7 @@ void loop() {
     // 3) receiver's own GPS (throttled -- GPS_MS was defined but never used;
     //    the fixed getCoordinates() drains the UART fully per call, so 1 Hz
     //    is plenty and keeps the loop tight)
+    gps.drain();           // decode each sentence as it lands (UTC timing for /windsec)
     static uint32_t lastGps = 0;
     if (millis() - lastGps >= GPS_MS) {
         lastGps = millis();

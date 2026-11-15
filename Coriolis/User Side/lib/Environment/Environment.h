@@ -147,6 +147,36 @@ public:
         return false;
     }
 
+    // Read whatever the GPS has sent so far. Called every loop pass so each
+    // sentence is decoded within a few ms of arriving, which is what makes
+    // the UTC time below usable (getCoordinates() alone runs once a second).
+    void drain() {
+        while (gpsSerial.available() > 0)
+            gps.encode(gpsSerial.read());
+    }
+
+    // UTC now, as ms since 1970, from the last GPS time sentence plus the
+    // time since it was decoded. Good to roughly the GPS module's NMEA output
+    // delay (typically 0.1-0.3 s; the PPS pin would be needed for better).
+    // False until the GPS has a valid date and time from the last 3 s.
+    bool utcUnixMs(double& unixMs) {
+        if (!gps.time.isValid() || !gps.date.isValid()) return false;
+        if (gps.time.age() > 3000 || gps.date.year() < 2020) return false;
+        // days from 1970-01-01 (Howard Hinnant's days_from_civil)
+        int y = gps.date.year(), m = gps.date.month(), d = gps.date.day();
+        y -= m <= 2;
+        long era = (y >= 0 ? y : y - 399) / 400;
+        long yoe = y - era * 400;
+        long doy = (153L * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+        long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        long days = era * 146097L + doe - 719468L;
+        double ms = (double)days * 86400000.0
+                  + gps.time.hour() * 3600000.0 + gps.time.minute() * 60000.0
+                  + gps.time.second() * 1000.0 + gps.time.centisecond() * 10.0;
+        unixMs = ms + gps.time.age();
+        return true;
+    }
+
     void displayInfo() override {
         Serial.print(F("Location: "));
         if (gps.location.isValid()) {
