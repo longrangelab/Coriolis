@@ -13,11 +13,11 @@
  * the ATtiny every 100 ms, notes when each new publish appears, and sends the
  * newest 1..3 publishes with the time the newest one appeared.
  *
- * Wire format: 10 bytes after the 38-byte NodePacket = 48 bytes, 398 ms at
+ * Wire format: 10 bytes after the 36-byte NodePacket = 46 bytes, 398 ms at
  * SF9/BW125/CR4-7 (the 450 ms slot keeps a 52 ms guard). The NodePacket CRC
  * still covers only its own 36 bytes and the base has always accepted
- * len >= 38, so an older base reads the packet exactly as before and ignores
- * the extra bytes. A newer base reads an older node's 38-byte packet with no
+ * len >= 36, so an older base reads the packet exactly as before and ignores
+ * the extra bytes. A newer base reads an older node's 36-byte packet with no
  * timed readings. Nothing else in the packet or beacon changes, so
  * PACKET_VERSION stays 5 and mixed fleets keep working.
  *
@@ -74,7 +74,7 @@ static inline uint8_t windExtDirByte(float deg) {
 static inline float windExtDir(uint8_t b) { return b * (360.0f / 256.0f); }
 
 // Read the block that follows a NodePacket of `pktLen` bytes. False if the
-// packet is a plain 38-byte one or the bytes don't look like a block.
+// packet is a plain 36-byte one or the bytes don't look like a block.
 static inline bool windExtParse(const uint8_t* buf, size_t len, size_t pktLen, WindExt& e) {
     if (len < pktLen + sizeof(WindExt)) return false;
     memcpy(&e, buf + pktLen, sizeof(WindExt));
