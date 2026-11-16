@@ -190,6 +190,55 @@ ok('forecaster: predict interpolates, reports doubt and round-trips', () => {
   const F2 = new WL.Forecaster(JSON.parse(JSON.stringify(F.toJSON())));
   near(F2.stats('B')[2].rmse, F.stats('B')[2].rmse, 1e-4);
 });
+// ---- the wind model's self-improving loop (no shots)
+function loopRun(evolve, seconds) {
+  const rr = rng(3), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const G = []; let x = 0; for (let t = 0; t < seconds + 100; t++) { x = 0.95 * x + 0.6 * gg(); G.push(x); }
+  const L = new WL.ForecastLoop(null, { seed: 7, evolve });          // no hints: it has to find the pair itself
+  for (let t = 50; t < seconds + 50; t++) { L.add('S', t, 10 + 3 * G[t] + 0.2 * gg(), 270); L.add('N', t, 0.9 * (10 + 3 * G[t - 22]) + 0.2 * gg(), 270 + 3 * gg()); L.add('X', t, 10 + 2 * gg(), 270); }
+  return L;
+}
+const LOOP = loopRun(true, 2700);
+ok('wind loop: finds a hidden Sentinel pair by trying, and proves it', () => {
+  const best = LOOP.pool('N', 10).find(c => c.champ);
+  assert(best.leaders.some(l => l.by === 'S' && Math.abs(l.lag - 22) <= 2), 'best model leans on S about 22 s back: ' + best.desc);
+  const pp = LOOP.provenPairs().filter(q => q.nodeId === 'N');
+  assert(pp.length && pp[0].sentId === 'S' && pp[0].gain > 0.5, JSON.stringify(pp));
+  assert(!LOOP.provenPairs().some(q => q.nodeId === 'X'), 'unrelated air proves nothing');
+  const s10 = LOOP.stats('N').find(q => q.h === 10);
+  assert(s10.skill > 0.75, 'checked 10 s skill ' + s10.skill);
+});
+ok('wind loop: skill climbs by generation; without evolving it stays on own history', () => {
+  const H = LOOP.history('N').map(q => q.skill[10]).filter(v => v != null);
+  const early = H.slice(0, 3).reduce((a, b) => a + b, 0) / 3, late = H.slice(-5).reduce((a, b) => a + b, 0) / 5;
+  assert(late > early + 0.2, 'early ' + early + ' late ' + late);
+  const F = loopRun(false, 1200);
+  assert(F.pool('N', 10).every(c => !c.leaders.length) && F.stats('N')[2].skill < 0.3, 'fixed pool');
+  assert(LOOP.log('N').some(q => /Retired/.test(q.txt)) && LOOP.log('N').some(q => /Trying/.test(q.txt)));
+});
+ok('wind loop: every prediction is checked only after its wind arrives, and the loop round-trips', () => {
+  const I = LOOP.info('N'), S = LOOP.stats('N');
+  S.forEach(q => assert(q.n <= 2700 - q.h && q.n >= 2700 - q.h - 5, 'h ' + q.h + ' n ' + q.n));
+  assert(I.checked === S.reduce((a, q) => a + q.n, 0));
+  const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(LOOP.toJSON())));
+  assert.strictEqual(L2.info('N').champ, I.champ); near(L2.stats('N')[2].rmse, S[2].rmse, 1e-4);
+  const p = LOOP.predict('N', LOOP.latest('N') + 10);
+  assert(p.ready && p.sd > 0 && p.sd < 1.5, JSON.stringify(p));
+});
+ok('wind loop: other sensors are optional inputs that must earn their place', () => {
+  const rr = rng(13), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const G = []; let x = 0; for (let t = 0; t < 3200; t++) { x = 0.97 * x + 0.4 * gg(); G.push(x); }
+  const L = new WL.ForecastLoop(null, { seed: 5 });
+  // a base pressure reading that moves 20 s before the wind does; a meter light reading that means nothing
+  for (let t = 50; t < 3050; t++) { L.addEnv(t, { pressure: 1000 + G[t + 20] }); L.add('N', t, 10 + 3 * G[t] + 0.2 * gg(), 270, { light: 500 + 50 * gg() }); }
+  assert.deepStrictEqual(L.channels(), ['light', 'pressure']);
+  const best = L.pool('N', 10).find(c => c.champ);
+  assert(best.inputs.some(q => q.k === 'pressure' && q.lag >= 10), 'best leans on pressure, read some seconds back: ' + best.desc);
+  assert(L.stats('N')[3].skill > 0.5, '20 s skill ' + L.stats('N')[3].skill);
+  assert(!L.pool('N', 10).filter(c => c.n >= 300).some(c => c.inputs.length === 1 && c.inputs[0].k === 'light' && c.skill > 0.1), 'the meaningless sensor earns nothing');
+  const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(L.toJSON())));
+  assert.strictEqual(JSON.stringify(L2.pool('N', 10).find(c => c.champ).inputs), JSON.stringify(best.inputs));
+});
 function chRun(adapt, change) {
   const rr = rng(5), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const L = new WL.Learner(null, { adapt }), errs = [];
@@ -236,12 +285,12 @@ async function pageTest() {
     const u = new URL(req.url, 'http://x'), json = o => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
     if (u.pathname === '/learn') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); }
     else if (u.pathname === '/wind-learner.js') { res.writeHead(200, { 'content-type': 'application/javascript' }); res.end(LIB); }
-    else if (u.pathname === '/data.json') json({ base: { lat: 45, lon: -93, gps: true }, nodes: [node(1, 120), node(2, 400), node(3, 650)] });
+    else if (u.pathname === '/data.json') json({ base: { lat: 45, lon: -93, gps: true, env: { pressure: 1013 + (Date.now() % 7000) / 7000 } }, nodes: [node(1, 120), node(2, 400), node(3, 650)] });
     else if (u.pathname === '/windsec') {
       const now = Date.now() - t0, since = u.searchParams.has('since') ? +u.searchParams.get('since') : -1, nodes = {};
       for (const id of [1, 2, 3]) {
         const r = [];
-        for (let t = Math.max(0, now - 120000) - (now % 1000) + id * 7; t <= now; t += 1000) if (t > since) r.push([t, +spd[id](t / 1000).toFixed(2), 270]);
+        for (let t = Math.max(0, now - 120000) - (now % 1000) + id * 7; t <= now; t += 1000) if (t > since) r.push(id === 1 ? [t, +spd[id](t / 1000).toFixed(2), 270, { temp: 60 + t / 60000 }] : [t, +spd[id](t / 1000).toFixed(2), 270]);
         nodes[id] = { src: 'beacon', period: 1000, r };
       }
       json({ now, utc: null, avg_ms: 2000, nodes });
@@ -263,6 +312,9 @@ async function pageTest() {
   assert(/hit chance/.test(await p.textContent('#callLearnS')), 'learned call shows its hit chance');
   await p.click('#tab-learn');
   assert(await p.evaluate(() => /×/.test(document.getElementById('kCal').textContent) && document.querySelectorAll('#fcTbl tbody tr').length >= 3 && !!document.querySelector('#chart polyline[stroke-dasharray]')), 'Learning tab: doubt check, forecast table, doubt line');
+  await p.click('#tab-pred'); await p.click('#pTrain');
+  await p.waitForFunction(() => !document.getElementById('pTrain').disabled && RT.fc.info('M3').generation >= 20, null, { timeout: 60000 });
+  assert(await p.evaluate(() => document.querySelectorAll('#pPool tbody tr').length >= 4 && !!document.querySelector('#pHist polyline') && !!document.querySelector('#pTrace polyline') && +document.getElementById('kPc').textContent.replace(/,/g, '') > 10000), 'Predict tab: pool, skill by generation, predicted vs actual');
   await p.click('#tab-shoot');
   assert(await p.evaluate(() => !!document.querySelector('a[href="/"]')), 'back link to Wind Lab');
   const wide = await p.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
@@ -293,6 +345,7 @@ async function pageTest() {
   const lp = await p.evaluate(() => RT.rel.pair('1', '2', 6, { minN: 80 }));
   assert(lp && lp.lead === '2' && lp.lagS === 6 && lp.r > 0.9, 'live: meter 2 warns meter 1 six seconds ahead ' + JSON.stringify(lp));
   assert(await p.evaluate(() => RT.fc.stats('1')[0].n > 60), 'live: the forecaster trains on the 1 s readings');
+  assert.strictEqual(await p.evaluate(() => RT.fc.channels().join(',')), 'pressure,temp', 'live: extra sensors from the base and a meter reach the wind model');
   // reload: it comes back in live mode with the shot
   await p.evaluate(() => autosave());
   await p.reload();

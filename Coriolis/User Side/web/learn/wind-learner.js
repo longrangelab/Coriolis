@@ -609,6 +609,389 @@
   };
 
   /*
+   * ForecastLoop: the self-improving wind prediction loop. No shots needed.
+   *
+   * Every second, for every meter and horizon (2, 5, 10, 20 s) each model
+   * in that meter's pool makes a prediction and it is written down. When
+   * that second's wind arrives the prediction is checked, the error goes on
+   * the model's score card, and then every model learns from the answer.
+   * The page uses a blend of the best few models (weighted by their recent
+   * error), and the blend's own predictions are checked the same way, so the
+   * skill it reports is earned on wind it had not seen yet.
+   *
+   * Every generation (90 s of wind per meter) the pool evolves: the worst
+   * grown-up model is retired and a new one is tried. New models come from
+   * the Relations tab's early-warning pairs, from small changes to the
+   * current best (shift a Sentinel's lag, add or drop a Sentinel, change how
+   * fast it forgets, swap the linear model for a small neural net or back)
+   * and now and then from a blind guess (any other meter, any lag), so it
+   * finds Sentinel/node pairs by trying them, keeping only what predicts.
+   *
+   * Model kinds: 'stay' (the wind stays as it is: the bar to beat), 'rls'
+   * (recursive least squares with forgetting on [1, now, 60 s mean, 5 s
+   * trend, Sentinel readings]), 'mlp' (a small tanh network on the same
+   * inputs that predicts the change from now, trained by SGD).
+   *
+   * Other sensors: add(id, t, mph, dir, {light: .., pressure: .., temp: ..})
+   * for channels a meter carries, addEnv(t, {...}) for ones at the base.
+   * Any channel name works. Each one becomes three inputs (how far from its
+   * usual value, its change over a minute, and that times the wind now) and
+   * the loop tries models with and without it, so a sensor earns its place
+   * the same way a Sentinel does. Nothing changes until a channel shows up.
+   *
+   * Same calls as Forecaster: add(id, t, mph, dir), predict(id, t),
+   * latest(id), stats(id), meters(), toJSON(); plus pool(id), history(id),
+   * log(id), trace(id), provenPairs().
+   */
+  var LOOP_H = [2, 5, 10, 20];
+  function ForecastLoop(state, cfg) {
+    cfg = cfg || {}; state = state || {};
+    this.H = state.H || LOOP_H;
+    this.maxC = cfg.maxCandidates || state.maxC || 8;
+    this.genS = cfg.generationS || state.genS || 90;
+    this.evolve = cfg.evolve !== false;
+    this.leadersFn = cfg.leadersFn || null;        // id -> [{by, lagS}] suggested pairs (may be empty)
+    this.importanceFn = cfg.importanceFn || null;  // id -> share of the shot 0..1 (null: every meter the same)
+    var seed = cfg.seed || state.seed || 12345;
+    this.rnd = (function (s) { return function () { s |= 0; s = s + 0x6D2B79F5 | 0; var t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; })(seed);
+    this.seed = seed;
+    this.rt = {};                                  // per meter ring of seconds
+    this.env = { s: {}, cs: {} };                  // base-level channels by second
+    this.chan = {};                                // channel names seen so far
+    this.P = {};                                   // per meter pool
+    var self = this;
+    (state.channels || []).forEach(function (k) { self.chan[k] = true; });
+    if (state.P) Object.keys(state.P).forEach(function (id) { self.P[id] = self._restorePool(state.P[id]); });
+  }
+  ForecastLoop.prototype._newPool = function () {
+    var p = { list: [], next: 1, g: 0, k: 0, checked: 0, B: {}, W: {}, hist: [], log: [], champ: null, pend: {}, trace: [] };
+    this.H.forEach(function (h) { p.B[h] = { e2: 0, p2: 0, n: 0 }; p.W[h] = { se: 0, sp: 0, n: 0 }; });
+    var me = this;
+    [{ kind: 'stay' }, { kind: 'rls', lam: 0.998 }, { kind: 'rls', lam: 0.99 }, { kind: 'mlp', hidden: 6, lr: 0.03 }]
+      .forEach(function (c) { me._addCand(p, c, 'start'); });
+    return p;
+  };
+  ForecastLoop.prototype._pool = function (id) { return this.P[id] || (this.P[id] = this._newPool()); };
+  function lsig(c) { return c.kind + '|' + (c.lam || '') + '|' + (c.hidden || '') + '|' + (c.leaders || []).map(function (l) { return l.by + '@' + l.lag; }).sort().join(',') + '|' + (c.inputs || []).map(function (q) { return q.k + '@' + q.lag; }).sort().join(','); }
+  // names of a model's inputs, so a child can start from its parent's weights
+  function fnames(c) {
+    var n = ['1', 'cur', 'mean', 'trend'];
+    c.leaders.forEach(function (l) { n.push('L:' + l.by); });
+    (c.inputs || []).forEach(function (q) { n.push('C:' + q.k + ':z', 'C:' + q.k + ':d', 'C:' + q.k + ':x'); });
+    return n;
+  }
+  function warmStart(c, par) {
+    if (!par || par.kind !== c.kind || c.kind === 'stay') return;
+    var nc = fnames(c), np = fnames(par), map = nc.map(function (k) { return np.indexOf(k); });
+    for (var h in c.M) for (var comp in c.M[h]) {
+      var A = c.M[h][comp], B = par.M[h] && par.M[h][comp]; if (!B) continue;
+      if (c.kind === 'rls') map.forEach(function (j, i) { if (j >= 0) A.w[i] = B.w[j]; });
+      else if (c.hidden === par.hidden) {
+        A.b1 = B.b1.slice(); A.W2 = B.W2.slice(); A.b2 = B.b2;
+        A.W1 = B.W1.map(function (row, r) { return map.slice(1).map(function (j, i) { return j >= 1 ? row[j - 1] : A.W1[r][i]; }); });
+      }
+    }
+  }
+  ForecastLoop.prototype._addCand = function (p, spec, origin) {
+    var c = { id: p.next++, kind: spec.kind, lam: spec.lam || 0.998, hidden: spec.hidden || 6, lr: spec.lr || 0.03,
+      leaders: (spec.leaders || []).map(function (l) { return { by: String(l.by), lag: Math.max(1, Math.round(l.lag)) }; })
+        .filter(function (l, i, A) { return A.findIndex(function (o) { return o.by === l.by && Math.abs(o.lag - l.lag) < 2; }) === i; }),
+      inputs: (spec.inputs || []).map(function (q) { return typeof q === 'string' ? { k: q, lag: 0 } : { k: String(q.k), lag: Math.max(0, Math.round(q.lag || 0)) }; })
+        .filter(function (q, i, A) { return A.findIndex(function (o) { return o.k === q.k; }) === i; }),
+      born: p.g, origin: origin, from: spec.from || null, M: {}, S: {} };
+    var me = this;
+    this.H.forEach(function (h) { c.S[h] = { e2: 0, n: 0 }; c.M[h] = { u: me._model(c), v: me._model(c) }; });
+    if (spec.parent) warmStart(c, spec.parent);
+    p.list.push(c);
+    return c;
+  };
+  ForecastLoop.prototype._dim = function (c) { return 4 + c.leaders.length + 3 * (c.inputs || []).length; };
+  ForecastLoop.prototype._model = function (c) {
+    var n = this._dim(c), r = this.rnd;
+    if (c.kind === 'rls') {
+      var w = new Array(n).fill(0); w[1] = 1;
+      var P = eye(new Array(n).fill(0).map(function (_, i) { return i === 0 ? 1 : i < 4 ? 0.01 : 0.2; }));
+      return { w: w, P: P };
+    }
+    if (c.kind === 'mlp') {
+      var H = c.hidden, ni = n - 1, W1 = [], b1 = [], W2 = [];
+      for (var i = 0; i < H; i++) { var row = []; for (var j = 0; j < ni; j++) row.push((r() - 0.5) * 0.6); W1.push(row); b1.push(0); W2.push((r() - 0.5) * 0.2); }
+      return { W1: W1, b1: b1, W2: W2, b2: 0 };
+    }
+    return {};
+  };
+  ForecastLoop.prototype._at = function (id, sec) { var R = this.rt[id]; return R ? R.s[sec] || null : null; };
+  ForecastLoop.prototype._near = function (id, sec) { return this._at(id, sec) || this._at(id, sec - 1) || this._at(id, sec + 1) || this._at(id, sec - 2); };
+  // inputs for a model of meter id, made at second s0 for s0 + h
+  // a channel at second s0, from the meter if it carries it, else the base:
+  // z = how far from its usual value (in SDs), d = its change over 60 s
+  ForecastLoop.prototype._chan = function (id, k, s0) {
+    var R = this.rt[id], E = this.env, src = null, st = null;
+    function get(S, s) { for (var j = 0; j <= 2; j++) { var o = S[s - j]; if (o && o.x && o.x[k] != null) return o.x[k]; } return null; }
+    var v = R ? get(R.s, s0) : null;
+    if (v != null) { src = R.s; st = R.cs[k]; } else { v = get(E.s, s0); if (v != null) { src = E.s; st = E.cs[k]; } }
+    if (v == null || !st || st.n < 10) return { z: 0, d: 0 };
+    var sd = Math.sqrt(Math.max(st.v, 1e-9)), old = get(src, s0 - 60);
+    return { z: Math.max(-4, Math.min(4, (v - st.m) / sd)), d: old == null ? 0 : Math.max(-4, Math.min(4, (v - old) / sd)) };
+  };
+  function chanStats(cs, x) {
+    for (var k in x) {
+      var v = x[k]; if (!isFinite(v)) continue;
+      var S = cs[k] || (cs[k] = { m: v, v: 0, n: 0 }); S.n++;
+      var a = 1 / Math.min(S.n, 600), d = v - S.m; S.m += a * d; S.v += a * (d * d - S.v);
+    }
+  }
+  ForecastLoop.prototype.addEnv = function (t, x) {
+    var sec = Math.round(t); if (!x || this.env.s[sec]) return;
+    this.env.s[sec] = { x: x }; chanStats(this.env.cs, x);
+    for (var k in x) this.chan[k] = true;
+    for (var q in this.env.s) if (+q < sec - 150) delete this.env.s[q];
+  };
+  ForecastLoop.prototype.channels = function () { return Object.keys(this.chan).sort(); };
+  ForecastLoop.prototype._x = function (c, id, s0, h, cur) {
+    var prev = this._at(id, s0 - 5) || this._at(id, s0 - 4) || this._at(id, s0 - 6) || cur;
+    var xu = [1, cur.u, cur.mu, cur.u - prev.u], xv = [1, cur.v, cur.mv, cur.v - prev.v];
+    for (var i = 0; i < c.leaders.length; i++) {
+      var L = c.leaders[i], lv = this._near(L.by, Math.min(s0, s0 + h - L.lag));
+      if (!lv) { var R = this.rt[L.by]; lv = R && isFinite(R.last) && R.last <= s0 && R.last > s0 - 10 ? R.s[R.last] : null; }
+      xu.push(lv ? lv.u : cur.u); xv.push(lv ? lv.v : cur.v);
+    }
+    for (i = 0; i < (c.inputs || []).length; i++) {
+      var I = c.inputs[i], f = this._chan(id, I.k, I.lag ? Math.min(s0, s0 + h - I.lag) : s0);
+      xu.push(f.z, f.d, f.z * cur.u / 10); xv.push(f.z, f.d, f.z * cur.v / 10);
+    }
+    return { u: xu, v: xv };
+  };
+  function mlpOut(m, x) {
+    var H = m.W1.length, a = new Array(H), o = m.b2;
+    for (var i = 0; i < H; i++) { var s = m.b1[i], w = m.W1[i]; for (var j = 1; j < x.length; j++) s += w[j - 1] * x[j] / 10; a[i] = Math.tanh(s); o += m.W2[i] * a[i]; }
+    return { o: o, a: a };
+  }
+  function mlpStep(m, x, y, lr) {          // y: change from now / 10
+    var f = mlpOut(m, x), e = Math.max(-3, Math.min(3, f.o - y)), H = m.W1.length;
+    for (var i = 0; i < H; i++) {
+      var g = e * m.W2[i] * (1 - f.a[i] * f.a[i]);
+      m.W2[i] -= lr * e * f.a[i];
+      m.b1[i] -= lr * g;
+      for (var j = 1; j < x.length; j++) m.W1[i][j - 1] -= lr * g * x[j] / 10;
+    }
+    m.b2 -= lr * e;
+  }
+  ForecastLoop.prototype._pred = function (c, h, X) {
+    if (c.kind === 'stay') return { x: X.u[1], y: X.v[1] };
+    var mu = c.M[h].u, mv = c.M[h].v;
+    if (c.kind === 'rls') { var a = 0, b = 0; for (var i = 0; i < X.u.length; i++) { a += mu.w[i] * X.u[i]; b += mv.w[i] * X.v[i]; } return { x: a, y: b }; }
+    return { x: X.u[1] + 10 * mlpOut(mu, X.u).o, y: X.v[1] + 10 * mlpOut(mv, X.v).o };
+  };
+  ForecastLoop.prototype._learn = function (c, h, X, tu, tv) {
+    if (c.kind === 'rls') { rlsStep(c.M[h].u, X.u, tu, c.lam); rlsStep(c.M[h].v, X.v, tv, c.lam); }
+    else if (c.kind === 'mlp') { mlpStep(c.M[h].u, X.u, (tu - X.u[1]) / 10, c.lr); mlpStep(c.M[h].v, X.v, (tv - X.v[1]) / 10, c.lr); }
+  };
+  // the blend: the best few grown-up models, weighted by 1 / recent error
+  ForecastLoop.prototype._blend = function (p, h, preds) {
+    var ok = p.list.filter(function (c) { return c.S[h].n >= 60 && preds[c.id]; }).sort(function (a, b) { return a.S[h].e2 - b.S[h].e2; }).slice(0, 3);
+    if (!ok.length) { var st = p.list[0]; return preds[st.id]; }
+    var sw = 0, x = 0, y = 0;
+    ok.forEach(function (c) { var w = 1 / Math.max(1e-3, c.S[h].e2); sw += w; x += w * preds[c.id].x; y += w * preds[c.id].y; });
+    return { x: x / sw, y: y / sw };
+  };
+  ForecastLoop.prototype.add = function (id, t, mph, dir, extra) {
+    var sec = Math.round(t); id = String(id);
+    if (!isFinite(mph) || !isFinite(dir)) return;
+    var R = this.rt[id] || (this.rt[id] = { s: {}, k: 0, mu: null, mv: null, last: -Infinity, cs: {} });
+    if (R.s[sec]) return;
+    var d = dir * Math.PI / 180, u = -Math.sin(d) * mph, v = -Math.cos(d) * mph;
+    if (R.mu == null) { R.mu = u; R.mv = v; }
+    R.k++; var al = 1 / Math.min(R.k, 60);
+    R.mu += al * (u - R.mu); R.mv += al * (v - R.mv);
+    var cur = R.s[sec] = { u: u, v: v, mu: R.mu, mv: R.mv };
+    if (extra) { cur.x = extra; chanStats(R.cs, extra); for (var ck in extra) this.chan[ck] = true; }
+    var newest = sec > R.last; if (newest) R.last = sec;
+    for (var k in R.s) if (+k < R.last - 150) delete R.s[k];
+    var p = this._pool(id), me = this, i;
+    // 1) check what was predicted for this second
+    var due = p.pend[sec];
+    if (due) {
+      delete p.pend[sec];
+      due.forEach(function (q) {
+        var h = q.h;
+        p.list.forEach(function (c) {
+          var pr = q.c[c.id]; if (!pr) return;
+          var e = ((pr.x - u) * (pr.x - u) + (pr.y - v) * (pr.y - v)) / 2, S = c.S[h];
+          S.n++; S.e2 += Math.max(1 / S.n, 1 / 200) * (e - S.e2);     // recent error: a slow starter is judged on what it does now
+        });
+        var eb = ((q.b.x - u) * (q.b.x - u) + (q.b.y - v) * (q.b.y - v)) / 2, ep = ((q.s.x - u) * (q.s.x - u) + (q.s.y - v) * (q.s.y - v)) / 2, B = p.B[h], W = p.W[h];
+        B.n++; var a = Math.max(1 / B.n, 1 / 600); B.e2 += a * (eb - B.e2); B.p2 += a * (ep - B.p2);
+        W.se += eb; W.sp += ep; W.n++;
+        if (h === 10) { p.trace.push({ t: sec, a: Math.hypot(u, v), p: Math.hypot(q.b.x, q.b.y), au: u, av: v, pu: q.b.x, pv: q.b.y }); if (p.trace.length > 240) p.trace.shift(); }
+        p.checked++;
+      });
+    }
+    for (var s in p.pend) if (+s < R.last - 30) delete p.pend[s];
+    // 2) every model learns from it
+    for (i = 0; i < this.H.length; i++) {
+      var h = this.H[i], c0 = this._at(id, sec - h); if (!c0) continue;
+      for (var j = 0; j < p.list.length; j++) { var c = p.list[j]; if (c.kind !== 'stay') this._learn(c, h, this._x(c, id, sec - h, h, c0), u, v); }
+    }
+    // 3) predict from this second, write it down
+    if (newest) {
+      for (i = 0; i < this.H.length; i++) {
+        var hh = this.H[i], preds = {};
+        p.list.forEach(function (c) { preds[c.id] = me._pred(c, hh, me._x(c, id, sec, hh, cur)); });
+        (p.pend[sec + hh] || (p.pend[sec + hh] = [])).push({ h: hh, c: preds, b: this._blend(p, hh, preds), s: preds[p.list[0].id] });
+      }
+    }
+    // 4) evolve
+    p.k++;
+    if (p.k % this.genS === 0) this._generation(id, p, sec);
+  };
+  function cdesc(c) {
+    var k = c.kind === 'stay' ? 'Stays as it is' : c.kind === 'mlp' ? 'Neural net (' + c.hidden + ')' : 'Linear' + (c.lam < 0.995 ? ', fast memory' : '');
+    if (c.kind !== 'stay') k += c.leaders.length ? ' + ' + c.leaders.map(function (l) { return l.by + ' ' + l.lag + ' s ahead'; }).join(' + ') : (c.inputs && c.inputs.length ? '' : ', own history');
+    if (c.inputs && c.inputs.length) k += ' + ' + c.inputs.map(function (q) { return q.k + (q.lag ? ' ' + q.lag + ' s ahead' : ''); }).join(' + ');
+    return k;
+  }
+  ForecastLoop.describe = cdesc;
+  // relative score: mean over horizons of error / "stays" error (lower is better)
+  ForecastLoop.prototype._score = function (p, c) {
+    var st = p.list[0], s = 0, n = 0;
+    for (var i = 0; i < this.H.length; i++) { var h = this.H[i]; if (c.S[h].n < 120 || st.S[h].e2 <= 0) return null; s += c.S[h].e2 / st.S[h].e2; n++; }
+    return s / n;
+  };
+  ForecastLoop.prototype._generation = function (id, p, sec) {
+    p.g++;
+    var me = this, sk = {};
+    this.H.forEach(function (h) { var W = p.W[h]; sk[h] = W.n && W.sp > 0 ? Math.round((1 - Math.sqrt(W.se / W.sp)) * 1000) / 1000 : null; p.W[h] = { se: 0, sp: 0, n: 0 }; });
+    var ranked = p.list.map(function (c) { return { c: c, s: me._score(p, c) }; }).filter(function (r) { return r.s != null; }).sort(function (a, b) { return a.s - b.s; });
+    var best = ranked.length ? ranked[0].c : null;
+    p.hist.push({ g: p.g, t: sec, skill: sk, best: best ? best.id : null, size: p.list.length });
+    if (p.hist.length > 400) p.hist.shift();
+    function log(txt) { p.log.push({ g: p.g, t: sec, txt: txt }); if (p.log.length > 80) p.log.shift(); }
+    if (best && best.id !== p.champ) { if (p.champ != null) log('New best: #' + best.id + ' ' + cdesc(best) + ', ' + Math.round((1 - Math.sqrt(ranked[0].s)) * 100) + '% better than "stays as it is"'); p.champ = best.id; }
+    if (!this.evolve) return;
+    // how much training this meter gets follows how much it matters to the
+    // shot: a bigger pool and two new models a generation for the meters
+    // that carry the call, a small pool for the ones that hardly count
+    var cap = this.cap(id), tries = this.importanceFn && this._imp(id) >= 0.25 ? 2 : 1, me2 = this;
+    function retire() {
+      var cand = ranked.filter(function (r) { return p.list.indexOf(r.c) >= 0 && r.c.kind !== 'stay' && r.c.id !== p.champ && p.g - r.c.born >= (r.c.kind === 'mlp' ? 5 : 3); });
+      if (!cand.length) return false;
+      var w = cand[cand.length - 1];
+      p.list.splice(p.list.indexOf(w.c), 1);
+      p.tabu = p.tabu || {}; p.tabu[lsig(w.c)] = p.g;
+      log('Retired #' + w.c.id + ' ' + cdesc(w.c) + (best && w.s ? ' (misses ' + Math.sqrt(w.s / ranked[0].s).toFixed(1) + '× as much as the best)' : ''));
+      return true;
+    }
+    while (p.list.length > cap && retire()) { /* the meter matters less now */ }
+    for (var k = 0; k < tries; k++) {
+      if (p.list.length >= cap && !retire()) break;
+      var sigs = p.list.map(lsig), tabu = p.tabu || {};
+      var bad = function (sp) { var g = lsig(sp); return sigs.indexOf(g) >= 0 || (tabu[g] != null && p.g - tabu[g] < 15); };
+      var spec = me2._spawn(id, p, best);
+      for (var t2 = 0; spec && t2 < 8 && bad(spec); t2++) spec = me2._spawn(id, p, best);
+      if (!spec || bad(spec)) break;
+      var c = me2._addCand(p, spec, spec.origin);
+      log('Trying #' + c.id + ' ' + cdesc(c) + ' (' + (spec.origin === 'relation' ? 'Relations found this pair' : spec.origin === 'explore' ? 'a blind guess' : 'a change to #' + spec.from) + ')');
+    }
+  };
+  // a meter's share of the shot (0..1) from the page, and the pool size it earns
+  ForecastLoop.prototype._imp = function (id) { var v = this.importanceFn ? +this.importanceFn(id) : NaN; return isFinite(v) ? Math.max(0, Math.min(1, v)) : null; };
+  ForecastLoop.prototype.cap = function (id) { var v = this._imp(id); return v == null ? this.maxC : Math.max(4, Math.min(10, Math.round(4 + 16 * v))); };
+  ForecastLoop.prototype._spawn = function (id, p, best) {
+    var r = this.rnd, others = Object.keys(this.rt).filter(function (k) { return k !== id; });
+    var sug = (this.leadersFn ? this.leadersFn(id) || [] : []).filter(function (l) { return l && l.by !== id; });
+    var have = {}; p.list.forEach(function (c) { c.leaders.forEach(function (l) { have[l.by + '@' + l.lag] = 1; }); });
+    var fresh = sug.filter(function (l) { return !have[l.by + '@' + Math.round(l.lagS)]; });
+    var x = r();
+    if (fresh.length && x < 0.4) { var l = fresh[Math.floor(r() * fresh.length)]; return { kind: 'rls', lam: 0.998, leaders: [{ by: l.by, lag: l.lagS }], origin: 'relation' }; }
+    if (best && best.kind !== 'stay' && x < 0.8) {
+      var s = { kind: best.kind, lam: best.lam, hidden: best.hidden, lr: best.lr, leaders: best.leaders.map(function (l) { return { by: l.by, lag: l.lag }; }), inputs: (best.inputs || []).map(function (q) { return { k: q.k, lag: q.lag }; }), origin: 'mutation', from: best.id, parent: best };
+      var m = r(), chans = this.channels(), lagged = s.leaders.concat(s.inputs);
+      if (lagged.length && m < 0.4) {                  // walk a Sentinel's (or sensor's) lag: next door first, then further
+        var L = lagged[Math.floor(r() * lagged.length)], sigs = p.list.map(lsig), tabu = p.tabu || {}, base = L.lag;
+        var steps = r() < 0.7 ? [1, -1, 2, -2, 3, -3, 4, -4] : [8, -8, 6, -6, 12, -12], pickd = null;
+        for (var q = 0; q < steps.length && pickd == null; q++) { L.lag = Math.max(L.k ? 0 : 1, base + steps[q]); var g = lsig(s); if (sigs.indexOf(g) < 0 && !(tabu[g] != null && p.g - tabu[g] < 15)) pickd = L.lag; }
+        L.lag = pickd == null ? Math.max(1, base + (r() < 0.5 ? -1 : 1) * (1 + Math.floor(r() * 6))) : pickd;
+      }
+      else if (chans.length && m < 0.5) { var ck = chans[Math.floor(r() * chans.length)], ix = s.inputs.findIndex(function (q) { return q.k === ck; }); if (ix >= 0) s.inputs.splice(ix, 1); else s.inputs.push({ k: ck, lag: r() < 0.5 ? 0 : 2 + Math.floor(r() * 38) }); }
+      else if (m < 0.55 && s.leaders.length < 2 && others.length) { var pick = sug.length && r() < 0.6 ? sug[Math.floor(r() * sug.length)] : null; s.leaders.push(pick ? { by: pick.by, lag: pick.lagS } : { by: others[Math.floor(r() * others.length)], lag: 2 + Math.floor(r() * 38) }); }
+      else if (m < 0.65 && s.leaders.length) s.leaders.splice(Math.floor(r() * s.leaders.length), 1);
+      else if (m < 0.82) s.lam = [0.99, 0.995, 0.998, 0.999][Math.floor(r() * 4)];
+      else if (s.kind === 'rls') { s.kind = 'mlp'; s.hidden = 6; } else { s.kind = 'rls'; }
+      return s;
+    }
+    var cs = this.channels();
+    if (cs.length && (r() < 0.25 || !others.length)) return { kind: r() < 0.3 ? 'mlp' : 'rls', lam: 0.998, hidden: 6, leaders: [], inputs: [{ k: cs[Math.floor(r() * cs.length)], lag: r() < 0.5 ? 0 : 2 + Math.floor(r() * 38) }], origin: 'explore' };
+    if (!others.length) return null;
+    return { kind: r() < 0.25 ? 'mlp' : 'rls', lam: 0.998, hidden: 6, leaders: [{ by: others[Math.floor(r() * others.length)], lag: 2 + Math.floor(r() * 38) }], origin: 'explore' };
+  };
+  ForecastLoop.prototype.latest = function (id) { var R = this.rt[String(id)]; return R && isFinite(R.last) ? R.last : null; };
+  ForecastLoop.prototype._one = function (id, s0, h) {
+    var cur = this._at(id, s0), p = this.P[id]; if (!cur || !p) return null;
+    var me = this, preds = {};
+    p.list.forEach(function (c) { preds[c.id] = me._pred(c, h, me._x(c, id, s0, h, cur)); });
+    var b = this._blend(p, h, preds), B = p.B[h], ready = B.n >= 60;
+    return { x: b.x, y: b.y, sd: B.n >= 10 ? Math.sqrt(B.e2) : null, n: B.n, ready: ready };
+  };
+  ForecastLoop.prototype.predict = Forecaster.prototype.predict;
+  ForecastLoop.prototype.meters = function () { return Object.keys(this.rt).sort(); };
+  ForecastLoop.prototype.stats = function (id) {
+    var p = this.P[String(id)];
+    return this.H.map(function (h) {
+      var B = p && p.B[h]; if (!B || !B.n) return { h: h, n: 0 };
+      var e = Math.sqrt(B.e2), q = Math.sqrt(B.p2);
+      return { h: h, n: B.n, rmse: e, rmseStay: q, skill: q > 0 ? 1 - e / q : 0 };
+    });
+  };
+  // the pool for a meter, best first at horizon h (default 10 s)
+  ForecastLoop.prototype.pool = function (id, h) {
+    var p = this.P[String(id)], me = this; h = h || 10; if (!p) return [];
+    var st = p.list[0];
+    return p.list.map(function (c) {
+      var S = c.S[h], sc = me._score(p, c);
+      return { id: c.id, kind: c.kind, leaders: c.leaders.slice(), inputs: (c.inputs || []).slice(), desc: cdesc(c), origin: c.origin, from: c.from, born: c.born, n: S.n,
+        rmse: S.n ? Math.sqrt(S.e2) : null, skill: S.n >= 30 && st.S[h].e2 > 0 ? 1 - Math.sqrt(S.e2 / st.S[h].e2) : null, score: sc, champ: c.id === p.champ };
+    }).sort(function (a, b) { return (a.rmse == null) - (b.rmse == null) || a.rmse - b.rmse; });
+  };
+  ForecastLoop.prototype.history = function (id) { var p = this.P[String(id)]; return p ? p.hist.slice() : []; };
+  ForecastLoop.prototype.log = function (id) { var p = this.P[String(id)]; return p ? p.log.slice() : []; };
+  ForecastLoop.prototype.trace = function (id) { var p = this.P[String(id)]; return p ? p.trace.slice() : []; };
+  ForecastLoop.prototype.info = function (id) { var p = this.P[String(id)]; return p ? { generation: p.g, checked: p.checked, models: p.list.length, cap: this.cap(String(id)), share: this._imp(String(id)), champ: p.champ } : null; };
+  // Sentinel/node pairs the loop has proven: the best model at 10 s leans
+  // on another meter and beats the best model without one by >= 10 %
+  ForecastLoop.prototype.provenPairs = function () {
+    var me = this, out = [];
+    Object.keys(this.P).forEach(function (id) {
+      var L = me.pool(id, 10).filter(function (c) { return c.n >= 120 && c.rmse != null; });
+      var withL = L.filter(function (c) { return c.leaders.length; })[0], own = L.filter(function (c) { return !c.leaders.length; })[0];
+      if (!withL || !own || withL.rmse > own.rmse * 0.9) return;
+      withL.leaders.forEach(function (l) { out.push({ sentId: l.by, nodeId: id, lagS: l.lag, gain: 1 - withL.rmse / own.rmse, model: withL.id }); });
+    });
+    return out;
+  };
+  function packModel(m) {
+    var o = {}; for (var k in m) { var v = m[k]; o[k] = Array.isArray(v) ? v.map(function (x) { return Array.isArray(x) ? x.map(round6) : round6(x); }) : round6(v); }
+    return o;
+  }
+  ForecastLoop.prototype.toJSON = function () {
+    var P = {};
+    for (var id in this.P) {
+      var p = this.P[id];
+      P[id] = { next: p.next, g: p.g, k: p.k, checked: p.checked, champ: p.champ, B: p.B, hist: p.hist, log: p.log, tabu: p.tabu || {},
+        list: p.list.map(function (c) { var M = {}; for (var h in c.M) M[h] = { u: packModel(c.M[h].u), v: packModel(c.M[h].v) }; return { id: c.id, kind: c.kind, lam: c.lam, hidden: c.hidden, lr: c.lr, leaders: c.leaders, inputs: c.inputs || [], born: c.born, origin: c.origin, from: c.from, S: c.S, M: M }; }) };
+    }
+    return { kind: 'loop', v: 1, H: this.H, maxC: this.maxC, genS: this.genS, seed: this.seed, channels: this.channels(), P: P };
+  };
+  ForecastLoop.prototype._restorePool = function (o) {
+    var p = this._newPool(), H = this.H;
+    p.list = o.list.map(function (c) { var d = JSON.parse(JSON.stringify(c)); H.forEach(function (h) { d.S[h] = d.S[h] || { e2: 0, n: 0 }; }); return d; });
+    p.list.forEach(function (c) { c.inputs = (c.inputs || []).map(function (q) { return typeof q === 'string' ? { k: q, lag: 0 } : q; }); });
+    ['next', 'g', 'k', 'checked', 'champ', 'hist', 'log', 'tabu'].forEach(function (k) { if (o[k] != null) p[k] = o[k]; });
+    if (o.B) p.B = JSON.parse(JSON.stringify(o.B));
+    return p;
+  };
+
+  /*
    * Lines /windsec readings (or simulator seconds) up on whole seconds.
    * add(id, tSec, spd, dir) as readings arrive (any order, repeats fine);
    * release(nowSec, fn) hands every second older than nowSec - settle to
@@ -696,7 +1079,7 @@
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,
     Relations: Relations, relationKind: relationKind, expectedLag: expectedLag, upwindOk: upwindOk,
-    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, Forecaster: Forecaster,
+    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, Forecaster: Forecaster, ForecastLoop: ForecastLoop,
     hitChance: hitChance
   };
 })(typeof window !== 'undefined' ? window : globalThis);

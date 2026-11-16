@@ -158,6 +158,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-shoot" aria-selected="true">Shoot</button>
       <button role="tab" id="tab-learn" aria-selected="false">Learning</button>
+      <button role="tab" id="tab-pred" aria-selected="false">Predict</button>
       <button role="tab" id="tab-rel" aria-selected="false">Relations</button>
       <button role="tab" id="tab-model" aria-selected="false">Model</button>
       <button role="tab" id="tab-setup" aria-selected="false">Setup</button>
@@ -229,6 +230,52 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="tblwrap"><table id="shotTbl"></table></div>
         <div class="note">Mark a pulled shot as a flier and the model relearns without it.</div>
       </div>
+    </div>
+
+    <div class="pane" id="pane-pred" hidden>
+      <div class="note">Two models make the call. <b>This one learns from the wind alone, no shots.</b> Every second it predicts each meter's wind 2 to 20 s ahead, checks each prediction when that wind arrives, learns from the miss, and keeps trying new models and Sentinel pairs, keeping what predicts best. The other model (Learning tab) learns from where shots land: how much to trust each meter for the bullet. The learned call uses this one's forecast of what each meter will read as the bullet passes it, then the shot model's weights.</div>
+      <div class="chips">
+        <div class="chip"><div class="lbl">Predictions checked</div><div class="v" id="kPc">0</div><div class="note">every meter, every horizon</div></div>
+        <div class="chip"><div class="lbl">Skill now</div><div class="v" id="kPs">–</div><div class="note" id="kPsN">error removed vs "stays as it is"</div></div>
+        <div class="chip"><div class="lbl">Generations</div><div class="v" id="kPg">0</div><div class="note" id="kPgN">one per 90 s of wind</div></div>
+        <div class="chip"><div class="lbl">Pairs proven</div><div class="v" id="kPp">0</div><div class="note">Sentinel → meter</div></div>
+      </div>
+      <div class="note" id="pChan"></div>
+      <div class="row">
+        <label class="f" style="min-width:110px">Meter<select id="pMeter"></select></label>
+        <label class="f" style="min-width:110px">Seconds ahead<select id="pH"><option value="2">2 s</option><option value="5">5 s</option><option value="10" selected>10 s</option><option value="20">20 s</option></select></label>
+        <button class="btn" id="pTrain" style="align-self:flex-end">Train on 30 min of wind</button>
+      </div>
+      <label class="ck" style="font-size:.85rem;display:flex;gap:8px"><input id="pEvolve" type="checkbox"> Keep trying new models (retire the worst, try a new one every generation)</label>
+      <div>
+        <div class="lbl" style="margin-bottom:4px" id="pTraceLbl">Predicted 10 s ahead vs the wind that arrived</div>
+        <svg class="chart" id="pTrace" viewBox="0 0 520 170" role="img" aria-label="Predicted against actual wind speed"></svg>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Skill by generation</div>
+        <svg class="chart" id="pHist" viewBox="0 0 520 170" role="img" aria-label="Prediction skill by generation"></svg>
+        <div class="note">Each point is one generation's predictions, checked against the wind that arrived. 0% is "the wind stays as it is"; 100% would be perfect.</div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Where the training goes</div>
+        <div class="tblwrap"><table id="pFocus"></table></div>
+        <div class="note">Share of the shot is how much of the call rests on each meter: its spot on the path, weighted by how much a crosswind there moves the bullet (wind near the muzzle counts most), times its learned multiplier. A Sentinel earns part of the share of the meter it warns. Meters with a bigger share get a bigger pool and try two new models every generation.</div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Model pool for this meter</div>
+        <div class="tblwrap"><table id="pPool"></table></div>
+        <div class="note">The forecast is a blend of the three best, weighted by how small their recent misses are.</div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Sentinel pairs proven by prediction</div>
+        <div class="tblwrap"><table id="pPairs"></table></div>
+        <div class="note">A pair is proven when the best model for a meter leans on another meter's reading and beats every model without it by at least 10%. One that is not upwind still helps the forecast (big gusts and swings cover several meters) but makes a poor Wind Lab Sentinel; Wind Lab's pairs come from Relations, which demands an upwind leader.</div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">What it tried</div>
+        <div class="tblwrap" style="max-height:240px;overflow:auto"><table id="pLog"></table></div>
+      </div>
+      <div class="row"><button class="btn" id="pReset">Start the wind model over</button></div>
     </div>
 
     <div class="pane" id="pane-rel" hidden>
@@ -408,7 +455,7 @@ function defaultState() {
   return {
     v: 1, seed: (Math.random() * 1e9) | 0,
     settings: { mv: 2710, bc: 0.326, rifleSd: 0.10, plateShape: 'rect', plateW: 18, plateH: 24, windSpeed: 10, windFrom: 270, gust: 2.5, wobble: 12, gustSize: 'medium', drift: true,
-      radio: 'sf9', loss: 3.5, sendMissed: true, useLead: true, unmeasured: 0.8, useForecast: true, delay: 2 },
+      radio: 'sf9', loss: 3.5, sendMissed: true, useLead: true, unmeasured: 0.8, useForecast: true, delay: 2, evolve: true },
     shooter: { x: 0, y: 0 }, target: { x: 0, y: 800 },
     meters: [
       { id: 'M1', type: 'inspeed', x: -14, y: 45, cal: 1.0, epoch: 0 },
@@ -596,6 +643,21 @@ function computeCalls(delay) {
 // the learned call if the shot breaks d seconds from now, for a few d
 function outlook() { return [0, 3, 6, 10].map(function (d) { var C = computeCalls((ST.settings.delay || 0) + d); return C ? { d: d, v: C.learned, sd: C.callSd, hit: C.hit } : null; }); }
 // best early-warning meter for each meter in the current wind (for the forecaster)
+// the wind model (no shots): an older save's plain forecaster starts over
+function newLoop(st) { return new WL.ForecastLoop(st && st.kind === 'loop' ? st : null, { evolve: ST.settings.evolve !== false, seed: (ST.seed % 100000) + 1, leadersFn: function (id) { return RT.leadList[id] || []; }, importanceFn: function (id) { return RT.imp ? RT.imp[id] || 0 : null; } }); }
+// each meter's share of the shot: its ballistic path weight (wind near the
+// muzzle counts most) times its learned multiplier; a meter that warns an
+// important one earns part of that meter's share
+function computeImportance() {
+  var C = RT.calls; if (!C) return;
+  var imp = {}, tot = 0;
+  C.geo.rows.forEach(function (r) { if (!r.included) return; var m = ST.meters.find(function (x) { return x.id === r.id; }); var e = (C.wL[r.id] || 0) * Math.max(0, RT.learner.meter(lkey(m), C.sector).mult); imp[r.id] = e; tot += e; });
+  if (tot > 0) for (var k in imp) imp[k] /= tot;
+  var path = Object.assign({}, imp);
+  RT.fc.provenPairs().forEach(function (q) { imp[q.sentId] = (imp[q.sentId] || 0) + (path[q.nodeId] || 0) * q.gain; });
+  Object.keys(RT.leadList || {}).forEach(function (f) { RT.leadList[f].forEach(function (l) { imp[l.by] = Math.max(imp[l.by] || 0, 0.15 * (path[f] || 0)); }); });
+  RT.imp = imp;
+}
 function refreshLeaders() {
   var sec = RT.calls ? RT.calls.sector : null, out = {};
   if (sec != null) {
@@ -606,6 +668,15 @@ function refreshLeaders() {
     });
   }
   RT.leaders = out;
+  // every pair Relations trusts, for the wind model to try (it proves them itself)
+  var all = {};
+  if (sec != null) RT.rel.summary(sec).pairs.forEach(function (x) {
+    var p = x.p; if (!p || !p.significant || p.lagS < 2 || WL.relationKind(p) !== 'leads') return;
+    var A = ST.meters.find(function (m) { return m.id === p.lead; }), B = ST.meters.find(function (m) { return m.id === p.follow; });
+    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: p.lagS });
+  });
+  RT.leadList = all;
+  computeImportance();
 }
 
 // ------------------------------------------------------------------ shots
@@ -985,14 +1056,99 @@ function renderLearn() {
 }
 $('shotTbl').addEventListener('change', function (e) { var n = +e.target.dataset.flier; if (!n) return; var s = ST.shots[n - 1]; s.flier = e.target.checked; relearn(); RT.dirty = true; });
 
+// ------------------------------------------------- wind model (Predict tab)
+function lineChart(svg, series, o) {
+  var W = 520, H = 170, L = 40, Rm = 10, T = 10, B = 24;
+  var pts = []; series.forEach(function (S) { pts = pts.concat(S.pts); });
+  if (pts.length < 2) { svg.innerHTML = '<text x="' + W / 2 + '" y="' + H / 2 + '" text-anchor="middle" fill="' + COL.muted + '" font-size="13">' + esc(o.empty) + '</text>'; return; }
+  var x0 = Math.min.apply(0, pts.map(function (q) { return q[0]; })), x1 = Math.max.apply(0, pts.map(function (q) { return q[0]; }));
+  var y0 = o.ymin != null ? o.ymin : Math.min.apply(0, pts.map(function (q) { return q[1]; })), y1 = o.ymax != null ? o.ymax : Math.max.apply(0, pts.map(function (q) { return q[1]; }));
+  if (o.ymin == null) { var pad = Math.max(0.5, (y1 - y0) * 0.1); y0 = Math.floor(y0 - pad); y1 = Math.ceil(y1 + pad); }
+  if (x1 === x0) x1 = x0 + 1; if (y1 === y0) y1 = y0 + 1;
+  var xs = function (v) { return L + (v - x0) / (x1 - x0) * (W - L - Rm); }, ys = function (v) { return T + (1 - (Math.max(y0, Math.min(y1, v)) - y0) / (y1 - y0)) * (H - T - B); };
+  var g = '', st = o.ystep || Math.max(1, Math.round((y1 - y0) / 4));
+  for (var v = Math.ceil(y0 / st) * st; v <= y1 + 1e-9; v += st) g += '<line x1="' + L + '" x2="' + (W - Rm) + '" y1="' + ys(v) + '" y2="' + ys(v) + '" stroke="' + COL.line + '"/><text x="' + (L - 6) + '" y="' + (ys(v) + 4) + '" text-anchor="end" font-size="11" fill="' + COL.muted + '" font-family="IBM Plex Mono, monospace">' + (o.yfmt ? o.yfmt(v) : v) + '</text>';
+  series.forEach(function (S) {
+    if (S.pts.length < 2) return;
+    g += '<polyline fill="none" stroke="' + S.col + '" stroke-width="' + (S.w || 2) + '"' + (S.dash ? ' stroke-dasharray="' + S.dash + '"' : '') + ' stroke-linejoin="round" points="' + S.pts.map(function (q) { return xs(q[0]).toFixed(1) + ',' + ys(q[1]).toFixed(1); }).join(' ') + '"/>';
+  });
+  g += '<text x="' + L + '" y="' + (H - 6) + '" font-size="11" fill="' + COL.muted + '">' + esc(o.x0 || '') + '</text><text x="' + (W - Rm) + '" y="' + (H - 6) + '" text-anchor="end" font-size="11" fill="' + COL.muted + '">' + esc(o.x1 || '') + '</text>';
+  var lx = L + 90; series.forEach(function (S) { if (!S.name) return; g += '<rect x="' + lx + '" y="' + (H - 15) + '" width="12" height="3" fill="' + S.col + '"/><text x="' + (lx + 16) + '" y="' + (H - 11) + '" font-size="11" fill="' + COL.ink + '">' + esc(S.name) + '</text>'; lx += 30 + S.name.length * 6.2; });
+  svg.innerHTML = g;
+}
+function pct(v) { return v == null ? '–' : Math.round(v * 100) + '%'; }
+function renderPred() {
+  var F = RT.fc, ids = F.meters(), sel = $('pMeter'), h = +$('pH').value || 10;
+  if (sel.options.length !== ids.length || ids.some(function (id, i) { return sel.options[i].value !== id; })) {
+    var keep = sel.value; sel.innerHTML = ids.map(function (id) { return '<option value="' + esc(id) + '">' + esc(id) + '</option>'; }).join('');
+    sel.value = ids.indexOf(keep) >= 0 ? keep : (ids.indexOf('M3') >= 0 ? 'M3' : ids[0] || '');
+  }
+  var id = sel.value;
+  $('pTrain').hidden = ST.mode === 'live';
+  $('pEvolve').checked = ST.settings.evolve !== false;
+  var chk = 0, gen = 0, sk = [];
+  ids.forEach(function (m) { var I = F.info(m); if (!I) return; chk += I.checked; gen = Math.max(gen, I.generation); var x = F.stats(m).find(function (q) { return q.h === h; }); if (x && x.n >= 60) sk.push(x.skill); });
+  $('kPc').textContent = chk.toLocaleString();
+  $('kPs').textContent = sk.length ? pct(sk.reduce(function (a, b) { return a + b; }, 0) / sk.length) : '–';
+  $('kPsN').textContent = h + ' s ahead, all meters: error removed vs "stays as it is"';
+  $('kPg').textContent = gen;
+  var pairs = F.provenPairs(); $('kPp').textContent = pairs.length;
+  var ch = F.channels();
+  $('pChan').textContent = ch.length ? 'Other sensors it is trying as inputs: ' + ch.join(', ') + '.' : 'Other sensors: none reporting. Light, pressure, temperature or any other reading the base sends are tried as inputs automatically, and kept only if they improve the predictions.';
+  if (!id) { $('pPool').innerHTML = ''; lineChart($('pTrace'), [], { empty: 'Waiting for the first meter readings' }); lineChart($('pHist'), [], { empty: 'The first generation takes 90 s of wind' }); return; }
+  var I = F.info(id) || { models: 0 };
+  $('kPgN').textContent = I.models + ' models in ' + id + "'s pool";
+  // predicted vs actual
+  var tr = F.trace(id).slice(-180), tEnd = tr.length ? tr[tr.length - 1].t : 0;
+  $('pTraceLbl').textContent = 'Predicted 10 s ahead vs the wind that arrived, ' + id + ' (mph)';
+  lineChart($('pTrace'), [
+    { name: 'Arrived', col: COL.ink, w: 1.6, pts: tr.map(function (q) { return [q.t - tEnd, q.a]; }) },
+    { name: 'Predicted 10 s before', col: COL.accent, w: 2.2, pts: tr.map(function (q) { return [q.t - tEnd, q.p]; }) }
+  ], { empty: 'Predictions are checked 10 s after they are made', x0: tr.length ? Math.round((tr[0].t - tEnd) / 60 * 10) / 10 + ' min' : '', x1: 'now' });
+  // skill by generation
+  var hs = F.history(id).filter(function (q) { return q.skill[h] != null; });
+  lineChart($('pHist'), [{ col: COL.accent, w: 2.4, pts: hs.map(function (q) { return [q.g, Math.max(-0.2, q.skill[h])]; }) }],
+    { ymin: -0.2, ymax: 1, ystep: 0.2, yfmt: function (v) { return Math.round(v * 100) + '%'; }, empty: 'The first generation takes 90 s of wind', x0: hs.length ? 'gen ' + hs[0].g : '', x1: hs.length ? 'gen ' + hs[hs.length - 1].g : '' });
+  // training focus
+  var ft = '<thead><tr><th>Meter</th><th>Share of the shot</th><th>Models</th><th>Skill ' + h + ' s</th><th>Best model</th></tr></thead><tbody>';
+  ids.slice().sort(function (a, b) { return ((RT.imp || {})[b] || 0) - ((RT.imp || {})[a] || 0); }).forEach(function (m) {
+    var In = F.info(m) || {}, x = F.stats(m).find(function (q) { return q.h === h; }), bm = F.pool(m, h).find(function (c) { return c.champ; });
+    ft += '<tr><td><b>' + esc(m) + '</b></td><td class="n">' + (In.share == null ? '–' : pct(In.share)) + '</td><td class="n">' + (In.models || 0) + (In.models > In.cap ? ' → ' + In.cap : ' of ' + (In.cap || '–')) + '</td><td class="n">' + (x && x.n >= 60 ? pct(x.skill) : '<span class="muted">learning</span>') + '</td><td>' + (bm ? esc(bm.desc) : '<span class="muted">–</span>') + '</td></tr>';
+  });
+  $('pFocus').innerHTML = ft + '</tbody>';
+  // the pool
+  var pool = F.pool(id, h), t = '<thead><tr><th>#</th><th>Model</th><th>Came from</th><th>Skill ' + h + ' s</th><th>Checked</th></tr></thead><tbody>';
+  pool.forEach(function (c, i) {
+    var from = c.origin === 'start' ? 'starter' : c.origin === 'relation' ? 'Relations pair' : c.origin === 'explore' ? 'blind guess' : 'change to #' + c.from;
+    t += '<tr><td class="n">' + c.id + '</td><td>' + esc(c.desc) + (c.champ ? ' <span class="pill good">Best</span>' : i < 3 && c.n >= 60 ? ' <span class="pill acc">In blend</span>' : '') + '</td><td class="muted">' + from + ', gen ' + c.born + '</td><td class="n">' + (c.n < 60 ? '<span class="muted">learning</span>' : pct(c.skill)) + '</td><td class="n">' + c.n.toLocaleString() + '</td></tr>';
+  });
+  $('pPool').innerHTML = t + '</tbody>';
+  // proven pairs
+  var sec = RT.calls ? RT.calls.sector : null, rs = sec != null ? RT.rel.suggestSentinels(sec) : [];
+  var pt = '<thead><tr><th>Sentinel</th><th>Warns</th><th>Ahead</th><th>Better by</th><th>Upwind now</th><th>Relations agrees</th></tr></thead><tbody>';
+  pairs.sort(function (a, b) { return b.gain - a.gain; }).forEach(function (q) {
+    var ag = rs.some(function (r) { return String(r.sentId) === q.sentId && String(r.nodeId) === q.nodeId; });
+    var A = ST.meters.find(function (m) { return m.id === q.sentId; }), Bm = ST.meters.find(function (m) { return m.id === q.nodeId; }), up = sec != null && A && Bm && WL.upwindOk(A, Bm, sectorWind(sec, 10));
+    pt += '<tr><td><b>' + esc(q.sentId) + '</b></td><td>' + esc(q.nodeId) + '</td><td class="n">' + q.lagS + ' s</td><td class="n">' + pct(q.gain) + '</td><td>' + (up ? '<span class="pill good">Yes</span>' : '<span class="pill dim">No</span>') + '</td><td>' + (ag ? '<span class="pill good">Yes</span>' : '<span class="pill dim">Not yet</span>') + '</td></tr>';
+  });
+  $('pPairs').innerHTML = pt + (pairs.length ? '' : '<tr><td colspan="6" class="muted">None yet. It takes a few generations to find and prove a pair.</td></tr>') + '</tbody>';
+  // what it tried
+  var lg = F.log(id).slice().reverse(), lt = '<thead><tr><th>Gen</th><th>' + esc(id) + '</th></tr></thead><tbody>';
+  lg.forEach(function (q) { lt += '<tr><td class="n">' + q.g + '</td><td>' + esc(q.txt) + '</td></tr>'; });
+  $('pLog').innerHTML = lt + (lg.length ? '' : '<tr><td colspan="2" class="muted">Nothing yet.</td></tr>') + '</tbody>';
+}
+$('pMeter').onchange = renderPred; $('pH').onchange = renderPred;
+$('pEvolve').onchange = function () { ST.settings.evolve = $('pEvolve').checked; RT.fc.evolve = ST.settings.evolve; };
+$('pTrain').onclick = function () { if (ST.mode === 'live') return; var b = $('pTrain'); b.disabled = true; b.textContent = 'Training…'; setTimeout(function () { advance(1800); b.disabled = false; b.textContent = 'Train on 30 min of wind'; RT.dirty = true; renderPred(); toast('30 minutes of wind: every prediction made, checked and learned from.'); }, 30); };
+$('pReset').onclick = function () { RT.fc = newLoop(null); renderPred(); toast('The wind model starts over. The shot model is unchanged.'); };
 function renderForecasts() {
   var ids = RT.fc.meters(), H = RT.fc.H, h = '<thead><tr><th>Meter</th>' + H.map(function (x) { return '<th>' + x + ' s</th>'; }).join('') + '<th>Early warning</th></tr></thead><tbody>';
   ids.forEach(function (id) {
-    var st = RT.fc.stats(id), ld = RT.leaders[id];
+    var st = RT.fc.stats(id), bm = RT.fc.pool(id, 10).find(function (c) { return c.champ; });
     h += '<tr><td><b>' + esc(id) + '</b></td>' + st.map(function (x) {
       if (!x.n || x.n < 60) return '<td class="n muted">…</td>';
       return '<td class="n" title="' + x.rmse.toFixed(2) + ' mph off, vs ' + x.rmseStay.toFixed(2) + ' if it stays">' + Math.round(x.skill * 100) + '%<div class="muted">' + x.rmse.toFixed(1) + ' mph</div></td>';
-    }).join('') + '<td>' + (ld ? esc(ld.by) + ', ' + Math.round(ld.lagS) + ' s ahead' : '<span class="muted">none</span>') + '</td></tr>';
+    }).join('') + '<td>' + (bm && bm.leaders.length ? bm.leaders.map(function (l) { return esc(l.by) + ', ' + l.lag + ' s ahead'; }).join(' + ') : '<span class="muted">none</span>') + '</td></tr>';
   });
   $('fcTbl').innerHTML = h + (ids.length ? '' : '<tr><td colspan="' + (H.length + 2) + '" class="muted">Needs a minute of 1 s readings.</td></tr>') + '</tbody>';
 }
@@ -1139,13 +1295,18 @@ function ingestWindSec(j) {
       if (H.length && t <= H[H.length - 1].t + 0.05) return;
       var d = deg * Math.PI / 180, v = { t: t, x: -Math.sin(d) * mph, y: -Math.cos(d) * mph };
       H.push(v); B.latest[id] = v;
-      RT.align.add(id, t, mph, deg); RT.fc.add(id, t, mph, deg);
+      // a 4th element, when firmware sends one, carries other sensors on that
+      // meter for that second, e.g. {light: lux, pressure: hPa, temp: degF}
+      RT.align.add(id, t, mph, deg); RT.fc.add(id, t, mph, deg, q[3] && typeof q[3] === 'object' ? q[3] : null);
       ST.windLog.push([Math.round(q[0]), id, mph, deg]);
     });
     while (H.length && H[0].t < nowS - 300) H.shift();
     if (H.length && H[H.length - 1].t > nowS - 30) newest.push(H[H.length - 1].t);
   });
   if (newest.length) LIVE.since = Math.floor(Math.min.apply(0, newest) * 1000) - 1;
+  // sensors at the base, when firmware sends them: /data.json base.env = {pressure: .., temp: .., light: ..}
+  var env = LIVE.data && LIVE.data.base && LIVE.data.base.env;
+  if (env && typeof env === 'object') RT.fc.addEnv(nowS, env);
   if (ST.windLog.length > 120000) ST.windLog.splice(0, ST.windLog.length - 100000);
   RT.align.release(nowS, ingestRel);
 }
@@ -1370,7 +1531,7 @@ function modelSnapshot(name) {
 function loadModel(o) {
   if (!o || o.kind !== 'coriolis-learned-model') { toast(o && o.kind === 'coriolis-live-model' ? 'That is a Wind Lab file; use "Load a Wind Lab file".' : 'That is not a model file.'); return; }
   RT.learner = new WL.Learner(o.learner); RT.rel = new WL.Relations(o.relations); RT.rel.lastT = null;
-  if (o.forecaster) RT.fc = new WL.Forecaster(o.forecaster, { leaderFn: function (id) { return RT.leaders[id] || null; } });
+  if (o.forecaster) RT.fc = newLoop(o.forecaster);
   if (o.drive) ST.drive = Object.assign(ST.drive, o.drive);
   if (o.nodeMap) ST.nodeMap = o.nodeMap;
   if (o.settings) Object.assign(ST.settings, o.settings);
@@ -1415,8 +1576,8 @@ function load(o) {
   if (!Array.isArray(ST.windLog)) ST.windLog = [];
   stopLive();
   RT = { t: o.simT || 0, field: null, nodes: {}, base: { latest: {}, hist: {} }, pending: [], speed: RT.speed || 1, awaiting: null, dirty: true, calls: null,
-    rel: new WL.Relations(o.relations || null), align: new WL.SecondAligner(ST.mode === 'live' ? 8 : 10), relNext: 0, lastPush: 0, leadNext: 0, leaders: {} };
-  RT.fc = new WL.Forecaster(o.forecaster || null, { leaderFn: function (id) { return RT.leaders[id] || null; } });
+    rel: new WL.Relations(o.relations || null), align: new WL.SecondAligner(ST.mode === 'live' ? 8 : 10), relNext: 0, lastPush: 0, leadNext: 0, leaders: {}, leadList: {} };
+  RT.fc = newLoop(o.forecaster);
   RT.field = makeField(ST.seed);
   RT.learner = new WL.Learner(o.learner || null);
   ballCache = {}; LIVE.since = null; LIVE.at = 0; LIVE.ok = false; LIVE.lastOk = 0; LIVE.data = null; LIVE.sig = '';
@@ -1442,8 +1603,8 @@ $('burstL').onclick = function () { burst('learned'); }; $('burstT').onclick = f
 $('resetLearn').onclick = function () { $('resetConfirm').hidden = false; };
 $('resetNo').onclick = function () { $('resetConfirm').hidden = true; };
 $('resetYes').onclick = function () { $('resetConfirm').hidden = true; ST.shots.forEach(function (s) { s.flier = s.flier; }); ST.shots = []; RT.learner = new WL.Learner(); renderLearn(); renderLast(); toast('Learning cleared. Shots removed too.'); };
-var TABS = ['shoot', 'learn', 'rel', 'model', 'setup', 'sessions'];
-TABS.forEach(function (k) { $('tab-' + k).onclick = function () { TABS.forEach(function (j) { $('tab-' + j).setAttribute('aria-selected', j === k); $('pane-' + j).hidden = j !== k; }); if (k === 'learn') renderLearn(); if (k === 'rel') renderRel(); if (k === 'model') renderModel(); if (k === 'setup') renderSetup(); if (k === 'sessions') renderSessions(); RT.dirty = true; }; });
+var TABS = ['shoot', 'learn', 'pred', 'rel', 'model', 'setup', 'sessions'];
+TABS.forEach(function (k) { $('tab-' + k).onclick = function () { TABS.forEach(function (j) { $('tab-' + j).setAttribute('aria-selected', j === k); $('pane-' + j).hidden = j !== k; }); if (k === 'learn') renderLearn(); if (k === 'pred') renderPred(); if (k === 'rel') renderRel(); if (k === 'model') renderModel(); if (k === 'setup') renderSetup(); if (k === 'sessions') renderSessions(); RT.dirty = true; }; });
 [[0, 'spd0'], [1, 'spd1'], [4, 'spd4'], [16, 'spd16']].forEach(function (p) { $(p[1]).onclick = function () { RT.speed = p[0]; ['spd0', 'spd1', 'spd4', 'spd16'].forEach(function (id) { $(id).setAttribute('aria-pressed', id === p[1]); }); }; });
 
 var lastFrame = 0, acc = 0, uiAcc = 0, relAcc = 0;
@@ -1455,6 +1616,7 @@ function frame(ts) {
   if (relAcc > 1.5) {
     relAcc = 0;
     if (!$('pane-rel').hidden && RT.relDirty) { RT.relDirty = false; renderRel(); }
+    if (!$('pane-pred').hidden) renderPred();
     if (ST.autoPush && wlOn() && Date.now() - RT.lastPush > 60000) { pushWL(true); if (!$('pane-model').hidden) renderModel(); }
   }
   if (uiAcc > 0.25 || RT.dirty) {
