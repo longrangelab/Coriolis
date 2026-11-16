@@ -67,7 +67,7 @@ main{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px;m
 
 .side{min-width:0}
 .tabs{display:flex;border-bottom:1px solid var(--line);padding:0 8px;gap:2px;overflow-x:auto}
-.tabs button{border:0;background:transparent;padding:11px 12px 9px;cursor:pointer;font-family:var(--f-display);font-weight:600;letter-spacing:.06em;text-transform:uppercase;font-size:.95rem;color:var(--muted);border-bottom:3px solid transparent;white-space:nowrap}
+.tabs button{border:0;background:transparent;padding:11px 9px 9px;cursor:pointer;font-family:var(--f-display);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:.9rem;color:var(--muted);border-bottom:3px solid transparent;white-space:nowrap}
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
 .pane{padding:14px;display:flex;flex-direction:column;gap:14px}
 
@@ -120,8 +120,10 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
 <header class="top">
   <!--BACKLINK--><div class="brand"><h1>Wind Learning Range</h1><span class="sub">Coriolis simulator for the learned wind call</span></div>
   <div class="clock">
-    <span class="lbl">Sim time</span><span class="t" id="clock">0:00</span>
-    <div class="seg" role="group" aria-label="Simulation speed">
+    <div class="seg" role="group" aria-label="Mode"><button id="modeSim" aria-pressed="true">Practice</button><button id="modeLive" aria-pressed="false">Live</button></div>
+    <span class="lbl" id="clockLbl">Sim time</span><span class="t" id="clock">0:00</span>
+    <span class="pill dim" id="liveStat" hidden>not connected</span>
+    <div class="seg" role="group" aria-label="Simulation speed" id="spdSeg">
       <button id="spd0" aria-pressed="false">Pause</button><button id="spd1" aria-pressed="true">1×</button><button id="spd4" aria-pressed="false">4×</button><button id="spd16" aria-pressed="false">16×</button>
     </div>
   </div>
@@ -152,6 +154,8 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
     <div class="tabs" role="tablist">
       <button role="tab" id="tab-shoot" aria-selected="true">Shoot</button>
       <button role="tab" id="tab-learn" aria-selected="false">Learning</button>
+      <button role="tab" id="tab-rel" aria-selected="false">Relations</button>
+      <button role="tab" id="tab-model" aria-selected="false">Model</button>
       <button role="tab" id="tab-setup" aria-selected="false">Setup</button>
       <button role="tab" id="tab-sessions" aria-selected="false">Sessions</button>
     </div>
@@ -170,7 +174,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="note" style="margin-top:4px">Mil, 0.1 mil clicks. Enter what the turret is actually on; the app records it with the shot.</div>
       </div>
       <button class="shotbtn" id="shoot">SHOT</button>
-      <div class="row">
+      <div class="row" id="simPlotRow">
         <span class="lbl">Who plots</span>
         <div class="seg" role="group" aria-label="Plot mode"><button id="plotAuto" aria-pressed="true">Spotter (sim)</button><button id="plotMan" aria-pressed="false">I plot it</button></div>
         <button class="btn" id="burstL">Fire 25 · dial learned</button>
@@ -213,13 +217,74 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
       </div>
     </div>
 
+    <div class="pane" id="pane-rel" hidden>
+      <div class="note">How the meters move together, learned second by second from their 1 s wind readings. A meter that sees the same gusts a few seconds before another is an early warning for it: that is what a Sentinel is. Every wind direction is learned on its own, because who is upwind changes with it.</div>
+      <div class="row">
+        <label class="f" style="min-width:190px">Wind direction<select id="relSector"></select></label>
+        <span class="note" id="relInfo" style="flex:1;min-width:160px"></span>
+      </div>
+      <div class="tblwrap"><table id="relTbl"></table></div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px" id="relChartLbl">Gust match by time shift</div>
+        <svg class="chart" id="relChart" viewBox="0 0 520 170" role="img" aria-label="Correlation by lag for the selected pair"></svg>
+        <div class="note" id="relChartNote">Tap a pair above to see how well their gusts line up at each time shift.</div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Best early warning for each meter</div>
+        <div class="note" id="relPred"></div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Sentinel pairs this wind supports</div>
+        <div class="tblwrap"><table id="relSent"></table></div>
+        <div class="note">The Sentinel's reading from <i>lag</i> seconds ago, times the speed ratio, is what the paired meter should read now. Tolerances are set from how far it normally strays. The Model tab sends these to Wind Lab.</div>
+      </div>
+      <div class="row"><button class="btn" id="relReset">Reset relationships</button><span class="note" id="relResetConfirm" hidden>Forget every learned relationship? <button class="btn" id="relResetYes">Forget</button> <button class="btn" id="relResetNo">Keep</button></span></div>
+    </div>
+
+    <div class="pane" id="pane-model" hidden>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Drive Wind Lab with this model</div>
+        <div class="note">Wind Lab on this phone reads the model and, for the wind direction it sees right now, sets each meter's multiplier and weight and the Sentinel pairs. Your own settings stay saved underneath; Stop puts them straight back.</div>
+      </div>
+      <div class="tblwrap"><table id="mapTbl"></table></div>
+      <fieldset><legend>What the model controls</legend>
+        <label class="ck"><input id="drvMult" type="checkbox" checked> Speed multipliers</label>
+        <label class="ck"><input id="drvW" type="checkbox" checked> Meter weights (from each meter's spot on the path, for each wind direction)</label>
+        <label class="ck"><input id="drvSent" type="checkbox" checked> Sentinel pairs, with learned lag and tolerances</label>
+        <label class="f">Typical wind for the weights (mph)<input id="drvMph" type="number" step="1" min="2"></label>
+        <label class="ck"><input id="autoPush" type="checkbox"> Keep Wind Lab updated after every shot and every minute</label>
+      </fieldset>
+      <div class="row"><button class="btn primary" id="pushWL">Send to Wind Lab now</button><button class="btn" id="stopWL">Stop driving Wind Lab</button></div>
+      <div class="prompt" id="wlStatus"></div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">What Wind Lab will use, by wind direction</div>
+        <div class="tblwrap"><table id="modelPreview"></table></div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Saved models</div>
+        <div class="row"><label class="f" style="flex:1;min-width:160px">Model name<input id="modelName" type="text" placeholder="e.g. Home range, 800 yd north"></label><button class="btn primary" id="modelSave" style="align-self:flex-end">Save model</button></div>
+        <div class="note">A model is what was learned: multipliers, relationships and the meter spots they belong to. It does not hold the shots; save a session for that.</div>
+        <div class="tblwrap"><table id="modelTbl"></table></div>
+        <div class="row" style="margin-top:6px"><label class="btn" for="modelFile">Open a model file</label><input id="modelFile" type="file" accept=".json,application/json,text/plain" hidden>
+          <button class="btn" id="wlDownload">Download Wind Lab file</button><label class="btn" for="wlFile">Load a Wind Lab file</label><input id="wlFile" type="file" accept=".json,application/json,text/plain" hidden></div>
+        <div class="note">A Wind Lab file is the exported model alone. Load it here on another phone to have that phone's Wind Lab use it.</div>
+      </div>
+    </div>
+
     <div class="pane" id="pane-setup" hidden>
+      <fieldset id="liveSetup" hidden><legend>Live range</legend>
+        <label class="f">Target range (yd)<input id="lvRange" type="number" step="5" min="50"></label>
+        <label class="f">Firing direction (degrees)<input id="lvAz" type="number" step="1"></label>
+        <div class="note" style="grid-column:1/-1">Meters are placed from their GPS, relative to the base, which is taken to be the shooter. A meter without GPS uses the downrange distance typed in Wind Lab, or a spot you type below. Drag the target on the map to change range and direction.</div>
+        <div class="tblwrap" style="grid-column:1/-1"><table id="liveMeters"></table></div>
+      </fieldset>
       <fieldset><legend>Rifle and load</legend>
         <label class="f">Muzzle velocity (fps)<input id="sMv" type="number" step="5"></label>
         <label class="f">G7 BC<input id="sBc" type="number" step="0.001"></label>
         <label class="f">Rifle + shooter spread (mil, 1 SD)<input id="sSd" type="number" step="0.01"></label>
         <div class="note" style="grid-column:1/-1">Air is fixed at 59 °F, 29.92 inHg. Spin drift and aero jump are left out so the windage numbers are wind only.</div>
       </fieldset>
+      <div id="simSetup" style="display:flex;flex-direction:column;gap:14px">
       <fieldset><legend>Simulated wind</legend>
         <label class="f">Average speed (mph)<input id="wS" type="number" step="0.5"></label>
         <label class="f">From (degrees)<input id="wD" type="number" step="5"></label>
@@ -245,15 +310,16 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="tblwrap"><table id="setupTerrain"></table></div>
         <div class="note">Wind inside a feature's circle is scaled by its effect, fading out at the edge. Trees and berms shelter; hilltops speed the wind up.</div>
       </div>
+      </div>
     </div>
 
     <div class="pane" id="pane-sessions" hidden>
       <div class="row"><label class="f" style="flex:1;min-width:160px">Session name<input id="sessName" type="text" placeholder="e.g. North range, west wind"></label><button class="btn primary" id="sessSave" style="align-self:flex-end">Save session</button></div>
-      <div class="note">Saves the layout, settings, shots and learned model in this browser.</div>
+      <div class="note">Saves the layout, settings, shots, learned model and relationships in this browser. A live session also keeps the meters' 1 s wind log.</div>
       <div class="tblwrap"><table id="sessTbl"></table></div>
       <div>
         <div class="lbl" style="margin-bottom:4px">Move a session between devices</div>
-        <div class="row"><button class="btn" id="sessCopy">Copy current session as text</button><label class="btn" for="sessFile">Open a session file</label><input id="sessFile" type="file" accept=".json,application/json,text/plain" hidden></div>
+        <div class="row"><button class="btn" id="sessDownload">Download session file</button><button class="btn" id="sessCopy">Copy current session as text</button><label class="btn" for="sessFile">Open a session file</label><input id="sessFile" type="file" accept=".json,application/json,text/plain" hidden></div>
         <textarea id="sessText" placeholder="Session text appears here, or paste one and press Load"></textarea>
         <div class="row" style="margin-top:6px"><button class="btn" id="sessLoadText">Load pasted session</button><button class="btn" id="sessNew">Start a fresh range</button></div>
       </div>
@@ -332,16 +398,21 @@ function defaultState() {
       { id: 'M1', type: 'inspeed', x: -14, y: 45, cal: 1.0, epoch: 0 },
       { id: 'M2', type: 'sparkfun', x: 30, y: 330, cal: 1.0, epoch: 0 },
       { id: 'M3', type: 'inspeed', x: -105, y: 545, cal: 0.92, epoch: 0 },
-      { id: 'M4', type: 'inspeed', x: 26, y: 960, cal: 1.0, epoch: 0 }
+      { id: 'M4', type: 'inspeed', x: 26, y: 960, cal: 1.0, epoch: 0 },
+      { id: 'M5', type: 'inspeed', x: -235, y: 560, cal: 1.0, epoch: 0, role: 'sentinel' }
     ],
     terrain: [
       { id: 'T1', kind: 'trees', x: 64, y: 330, r: 40, f: 0.55 },
       { id: 'T2', kind: 'hill', x: -230, y: 210, r: 80, f: 1.2 },
       { id: 'T3', kind: 'valley', x: 170, y: 690, r: 70, f: 0.8 }
     ],
-    shots: [], learner: null, dial: 0, plotMode: 'auto'
+    shots: [], learner: null, dial: 0, plotMode: 'auto',
+    mode: 'sim', nodeMap: {}, drive: { mult: true, weights: true, sentinels: true, mph: 10 }, autoPush: false,
+    live: { rangeYd: 800, az: 0, pos: {}, anchors: {} }, windLog: []
   };
 }
+// a sentinel meter only warns; it is left out of both wind calls
+function isPath(m) { return m.role !== 'sentinel'; }
 var KINDS = { trees: { name: 'Tree line', f: 0.55, r: 55 }, berm: { name: 'Berm', f: 0.7, r: 40 }, hill: { name: 'Hill', f: 1.2, r: 80 }, valley: { name: 'Valley', f: 0.8, r: 70 } };
 
 var ST = defaultState();
@@ -420,12 +491,15 @@ function deliver(m, N) {
   var live = { t: RT.t, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   B.latest[m.id] = live;
   var H = B.hist[m.id] || (B.hist[m.id] = []);
+  var lastT = H.length ? H[H.length - 1].t : -1e9, fresh = [];
   if (ST.settings.sendMissed) {
-    var lastT = H.length ? H[H.length - 1].t : -1e9;
-    N.sec.slice(-3).forEach(function (r) { if (r.t > lastT + 0.01) H.push(r); });
-  } else H.push(live);
+    N.sec.slice(-3).forEach(function (r) { if (r.t > lastT + 0.01) { H.push(r); fresh.push(r); } });
+  } else { H.push(live); fresh.push(a); }
   while (H.length && H[0].t < RT.t - 120) H.shift();
+  // the same timed 1 s readings the base serves on /windsec feed the relationships
+  fresh.forEach(function (r) { RT.align.add(m.id, r.t, Math.hypot(r.x, r.y), WL.fromDeg(r)); });
 }
+function ingestRel(t, readings) { RT.rel.ingest(t, readings); RT.relDirty = true; }
 function valueAt(id, tq) {
   var B = RT.base, L = B.latest[id]; if (!L) return null;
   if (tq >= L.t - 1) return L;
@@ -446,6 +520,7 @@ function tickField(dt) {
 }
 function step(dt) {
   RT.t += dt; tickField(dt); tickMeters(dt);
+  if (RT.t >= RT.relNext) { RT.relNext = Math.floor(RT.t) + 1; RT.align.release(RT.t, ingestRel); }
   for (var i = RT.pending.length - 1; i >= 0; i--) {
     var p = RT.pending[i];
     if (RT.t >= p.at) { RT.pending.splice(i, 1); impactArrives(p.shot); }
@@ -457,7 +532,7 @@ function advance(sec) { var n = Math.round(sec / 0.1); for (var i = 0; i < n; i+
 function ball() { var s = ST.settings, R = Math.hypot(ST.target.x - ST.shooter.x, ST.target.y - ST.shooter.y); return ballistics(s.mv, s.bc, Math.max(50, Math.round(R))); }
 function computeCalls() {
   var B = RT.base, bl = ball(), s = ST.settings;
-  var have = ST.meters.filter(function (m) { return B.latest[m.id]; });
+  var have = ST.meters.filter(function (m) { return B.latest[m.id] && isPath(m) && (ST.mode !== 'live' || RT.t - B.latest[m.id].t < 15); });
   if (!have.length) return null;
   var lof = WL.lineOfFire(ST.shooter, ST.target);
   // today: every reporting meter, weighted by where it sits along the path
@@ -487,6 +562,7 @@ function computeCalls() {
 // ------------------------------------------------------------------ shots
 function fire(dial) {
   var C = computeCalls(); if (!C) { toast('No meter has reported yet. Give it a few seconds.'); return null; }
+  if (ST.mode === 'live') return fireLive(dial, C);
   var bl = C.bl, lof = C.lof, t0 = RT.t, X0 = { x: RT.field.X.x, y: RT.field.X.y }, U = meanVec(RT.field);
   var dr = bl.drift(function (xm, tf) {
     var syd = xm / YD, px = ST.shooter.x + lof.u.x * syd, py = ST.shooter.y + lof.u.y * syd;
@@ -502,6 +578,21 @@ function fire(dial) {
   RT.pending.push({ at: t0 + dr.tof, shot: shot });
   return shot;
 }
+// A real shot: the calls and each meter's reading at the trigger are saved;
+// the shooter (or spotter) then taps where it landed.
+function fireLive(dial, C) {
+  var sd = ST.settings.rifleSd, bl = C.bl;
+  var shot = { n: ST.shots.length + 1, t: RT.t, utc: LIVE.utc ? Math.round(LIVE.utc + (Date.now() - LIVE.at)) : null, live: true,
+    range: Math.round(C.lof.R), az: Math.round(C.lof.bearing), dial: dial, today: C.today, learned: C.learned, learnedSd: C.learnedSd,
+    perfect: null, truth: null, impact: null, plotted: false, flier: false,
+    feats: C.feats.map(function (f) { return { lkey: f.lkey, x: f.x }; }), sector: C.sector, mpm: bl.mpm,
+    meters: Object.keys(C.used).map(function (id) { var u = C.used[id]; return { id: id, cross: Math.round(u.cross * 100) / 100, age: Math.round(u.age * 10) / 10, w: Math.round(u.w * 1000) / 1000 }; }),
+    sigma: Math.sqrt(Math.pow(sd / bl.mpm, 2) + Math.pow(ST.settings.unmeasured, 2)), tof: bl.tof };
+  ST.shots.push(shot);
+  RT.awaiting = shot; showPrompt('Shot ' + shot.n + ' recorded. Tap the target view where it hit (anywhere off the plate is ground).');
+  RT.dirty = true;
+  return shot;
+}
 function impactArrives(shot) {
   if (ST.plotMode === 'auto' || RT.burst) plotShot(shot, shot.truth);
   else { RT.awaiting = shot; showPrompt('Shot ' + shot.n + ' is down. Tap the target view where it hit (anywhere off the plate is ground).'); }
@@ -513,9 +604,11 @@ function plotShot(shot, pt) {
   shot.hit = isHit(shot, pt.x, pt.y);
   shot.hitToday = isHit(shot, pt.x - shot.dial + shot.today, pt.y);
   shot.y = (pt.x - shot.dial) / shot.mpm;
+  if (shot.live) shot.perfect = shot.dial - pt.x;     // the hold that would have centred it
   if (!shot.flier) RT.learner.update(shot.feats, shot.sector, shot.y, shot.sigma);
   if (RT.awaiting === shot) { RT.awaiting = null; showPrompt(null); }
   RT.dirty = true; renderLast(); renderLearn();
+  if (ST.autoPush && wlOn()) pushWL(true);
 }
 function isHit(shot, x, y) {
   var T = shot.target, k = shot.range * 0.036, w = T.w / k / 2;
@@ -598,7 +691,7 @@ function drawMap(dtReal) {
   var reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   c.strokeStyle = COL.streak; c.lineWidth = 1.2;
   var sim = RT.speed, adv = (dtReal || 0) * Math.max(sim, 0.0001) * 9 * (reduce ? 0 : 1);
-  for (var i = 0; i < parts.length; i++) {
+  for (var i = 0; i < parts.length && ST.mode !== 'live'; i++) {
     var P = parts[i];
     if (P.age > P.life || P.x < tl.x || P.x > br.x || P.y > tl.y || P.y < br.y) { P.x = tl.x + rnd() * (br.x - tl.x); P.y = br.y + rnd() * (tl.y - br.y); P.age = 0; P.life = 2 + rnd() * 4; }
     var v = windAt(P.x, P.y, RT.t);
@@ -629,13 +722,14 @@ function drawMap(dtReal) {
     var inc = row && row.included, up = row && row.side === 'upwind' && row.included;
     if (L) { var spd = Math.hypot(L.x, L.y), k = 3.2 * VIEW.sc; var e = toPx(m.x + L.x * k / VIEW.sc * 0.9, m.y + L.y * k / VIEW.sc * 0.9); c.strokeStyle = COL.ink; c.lineWidth = 2; c.beginPath(); c.moveTo(p.x, p.y); c.lineTo(e.x, e.y); c.stroke(); var an = Math.atan2(e.y - p.y, e.x - p.x); c.beginPath(); c.moveTo(e.x, e.y); c.lineTo(e.x - 7 * Math.cos(an - 0.45), e.y - 7 * Math.sin(an - 0.45)); c.lineTo(e.x - 7 * Math.cos(an + 0.45), e.y - 7 * Math.sin(an + 0.45)); c.closePath(); c.fillStyle = COL.ink; c.fill(); }
     c.lineWidth = 3; c.setLineDash(inc ? [] : [4, 3]);
-    c.strokeStyle = !row ? COL.muted : (up ? COL.good : (inc ? COL.accent : COL.muted));
+    c.strokeStyle = !isPath(m) ? COL.good : !row ? COL.muted : (up ? COL.good : (inc ? COL.accent : COL.muted));
     c.fillStyle = inc ? COL['accent-soft'] : COL.panel;
     c.beginPath(); c.arc(p.x, p.y, 9, 0, 6.2832); c.fill(); c.stroke(); c.setLineDash([]);
     c.fillStyle = COL.ink; c.font = '700 13px "Barlow Condensed", sans-serif';
     var lab = m.id + (m.type === 'sparkfun' ? ' SF' : '') + (L ? '  ' + Math.hypot(L.x, L.y).toFixed(1) + ' mph' : '');
     c.fillText(lab, p.x + 13, p.y - 4);
     if (row) { c.font = '11px "IBM Plex Sans", sans-serif'; c.fillStyle = up ? COL.good : COL.muted; var sub = !row.included ? 'ignored' : (row.side === 'upwind' ? 'air arrives in ' + Math.round(row.lead) + ' s' : (row.side === 'downwind' ? 'downwind' : 'on the line')); c.fillText(sub, p.x + 13, p.y + 10); }
+    else if (!isPath(m)) { c.font = '11px "IBM Plex Sans", sans-serif'; c.fillStyle = COL.good; c.fillText('sentinel', p.x + 13, p.y + 10); }
   });
   // shooter (base) and target
   c.fillStyle = COL.ink; c.beginPath(); c.moveTo(sp.x, sp.y - 10); c.lineTo(sp.x + 9, sp.y + 7); c.lineTo(sp.x - 9, sp.y + 7); c.closePath(); c.fill();
@@ -643,14 +737,18 @@ function drawMap(dtReal) {
   c.fillStyle = COL.bad; c.fillRect(tp.x - 7, tp.y - 9, 14, 18); c.strokeStyle = COL.ink; c.lineWidth = 1.5; c.strokeRect(tp.x - 7, tp.y - 9, 14, 18);
   if (C) { c.fillStyle = COL.ink; c.fillText('TARGET ' + Math.round(C.lof.R) + ' yd · ' + String(Math.round(C.lof.bearing)).padStart(3, '0') + '°', tp.x + 12, tp.y + 4); }
   // wind badge
-  var F = RT.field, U = meanVec(F), bx = 46, by = 44;
-  c.fillStyle = COL.panel; c.globalAlpha = 0.9; c.fillRect(8, 8, 170, 66); c.globalAlpha = 1; c.strokeStyle = COL.line; c.lineWidth = 1; c.strokeRect(8.5, 8.5, 170, 66);
+  var F = RT.field, U = meanVec(F), bx = 46, by = 44, fS = F.S, fD = F.D, fLbl = 'FIELD WIND (SIM TRUTH)';
+  if (ST.mode === 'live') {
+    var av = C ? C.avg : { x: 0, y: 0 }; U = av; fS = Math.hypot(av.x, av.y); fD = WL.fromDeg(av); fLbl = 'METERS, PATH-WEIGHTED';
+    if (!C) fLbl = 'WAITING FOR METERS';
+  }
+  c.fillStyle = COL.panel; c.globalAlpha = 0.9; c.fillRect(8, 8, 196, 66); c.globalAlpha = 1; c.strokeStyle = COL.line; c.lineWidth = 1; c.strokeRect(8.5, 8.5, 196, 66);
   var mag = Math.hypot(U.x, U.y) || 1, ux = U.x / mag, uy = -U.y / mag;
   c.strokeStyle = COL.accent; c.lineWidth = 3; c.beginPath(); c.moveTo(bx - ux * 22, by - uy * 22); c.lineTo(bx + ux * 22, by + uy * 22); c.stroke();
   var ah = Math.atan2(uy, ux); c.fillStyle = COL.accent; c.beginPath(); c.moveTo(bx + ux * 24, by + uy * 24); c.lineTo(bx + ux * 24 - 9 * Math.cos(ah - 0.5), by + uy * 24 - 9 * Math.sin(ah - 0.5)); c.lineTo(bx + ux * 24 - 9 * Math.cos(ah + 0.5), by + uy * 24 - 9 * Math.sin(ah + 0.5)); c.closePath(); c.fill();
-  c.fillStyle = COL.muted; c.font = '600 11px "Barlow Condensed", sans-serif'; c.fillText('FIELD WIND (SIM TRUTH)', 78, 26);
-  c.fillStyle = COL.ink; c.font = '700 20px "Barlow Condensed", sans-serif'; c.fillText(F.S.toFixed(1) + ' mph', 78, 48);
-  c.font = '12px "IBM Plex Mono", monospace'; c.fillText('from ' + String(Math.round((F.D % 360 + 360) % 360)).padStart(3, '0') + '° ' + WL.SECTOR_NAMES[WL.sectorOf(F.D)], 78, 66);
+  c.fillStyle = COL.muted; c.font = '600 11px "Barlow Condensed", sans-serif'; c.fillText(fLbl, 78, 26);
+  c.fillStyle = COL.ink; c.font = '700 20px "Barlow Condensed", sans-serif'; c.fillText(fS.toFixed(1) + ' mph', 78, 48);
+  c.font = '12px "IBM Plex Mono", monospace'; c.fillText('from ' + String(Math.round((fD % 360 + 360) % 360)).padStart(3, '0') + '° ' + WL.SECTOR_NAMES[WL.sectorOf(fD)], 78, 66);
   // north arrow
   c.fillStyle = COL.muted; c.font = '700 12px "Barlow Condensed", sans-serif'; c.fillText('N ↑', w - 30, 22);
 }
@@ -683,6 +781,11 @@ map.addEventListener('pointermove', function (e) {
 });
 function endDrag() {
   if (!drag) return; var d = drag; drag = null; map.style.cursor = 'grab';
+  if (ST.mode === 'live') {
+    if (d.kind === 'target') { var lf = WL.lineOfFire(ST.shooter, ST.target); ST.live.rangeYd = Math.round(lf.R); ST.live.az = Math.round(lf.bearing); liveTarget(); ballCache = {}; syncLiveMeters(); }
+    if (d.kind === 'meter') { ST.live.pos[d.o.id] = { x: d.o.x, y: d.o.y }; syncLiveMeters(); }
+    renderSetup(); RT.dirty = true; return;
+  }
   if (d.kind === 'meter') {
     var m = d.o, ax = m.ax == null ? d.start.x : m.ax, ay = m.ay == null ? d.start.y : m.ay;
     if (m.ax == null) { m.ax = d.start.x; m.ay = d.start.y; }
@@ -747,8 +850,8 @@ function renderLast() {
   var s = ST.shots[ST.shots.length - 1], el = $('lastShot');
   if (!s) { el.innerHTML = '<dt>Last shot</dt><dd>none yet</dd>'; return; }
   var rows = [['Shot', '#' + s.n + ' at ' + s.range + ' yd'], ['Dialed', lr(s.dial, 1) + ' mil']];
-  if (!s.plotted) rows.push(['Status', 'in flight / waiting for plot']);
-  else rows.push(['Landed', (s.hit ? 'HIT · ' : 'Miss · ') + lr(s.impact.x, 2) + ' mil, ' + ud(s.impact.y)], ['Wind needed', lr(s.perfect, 2) + ' mil (sim truth)'],
+  if (!s.plotted) rows.push(['Status', s.live ? 'waiting for you to plot it' : 'in flight / waiting for plot']);
+  else rows.push(['Landed', (s.hit ? 'HIT · ' : 'Miss · ') + lr(s.impact.x, 2) + ' mil, ' + ud(s.impact.y)], ['Wind needed', lr(s.perfect, 2) + (s.live ? ' mil (from where it hit)' : ' mil (sim truth)')],
     ["Today's call", lr(s.today, 2) + ' (off by ' + Math.abs(s.today - s.perfect).toFixed(2) + ')'], ['Learned call', lr(s.learned, 2) + ' (off by ' + Math.abs(s.learned - s.perfect).toFixed(2) + ')']);
   el.innerHTML = rows.map(function (r) { return '<dt>' + r[0] + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
 }
@@ -826,15 +929,16 @@ function drawChart(P) {
 function bindNum(id, key, after) { var el = $(id); el.value = ST.settings[key]; el.onchange = function () { var v = parseFloat(el.value); if (!isFinite(v)) { el.value = ST.settings[key]; return; } ST.settings[key] = v; if (after) after(); RT.dirty = true; }; }
 function bindCk(id, key, after) { var el = $(id); el.checked = !!ST.settings[key]; el.onchange = function () { ST.settings[key] = el.checked; if (after) after(); }; }
 function renderSetup() {
+  if (ST.mode === 'live') renderLiveSetup();
   bindNum('sMv', 'mv', function () { ballCache = {}; }); bindNum('sBc', 'bc', function () { ballCache = {}; }); bindNum('sSd', 'rifleSd');
   renderTargetPick();
   bindNum('wS', 'windSpeed', function () { RT.field.S = ST.settings.windSpeed; }); bindNum('wD', 'windFrom', function () { RT.field.D = ST.settings.windFrom; }); bindNum('wG', 'gust'); bindNum('wW', 'wobble'); bindCk('wDrift', 'drift');
   var ws = $('wSize'); ws.value = ST.settings.gustSize; ws.onchange = function () { ST.settings.gustSize = ws.value; var F = makeField(ST.seed); F.X = RT.field.X; F.S = RT.field.S; F.D = RT.field.D; RT.field = F; };
   var rm = $('rMode'); rm.value = ST.settings.radio; rm.onchange = function () { ST.settings.radio = rm.value; resetRadio(); };
   bindNum('rLoss', 'loss'); bindNum('lU', 'unmeasured'); bindCk('rMissed', 'sendMissed'); bindCk('lLead', 'useLead');
-  var mh = '<thead><tr><th>Meter</th><th>Type</th><th>Sim truth: reads</th><th>Spot (yd E, N)</th><th></th></tr></thead><tbody>';
+  var mh = '<thead><tr><th>Meter</th><th>Type</th><th>Use as</th><th>Sim truth: reads</th><th>Spot (yd E, N)</th><th></th></tr></thead><tbody>';
   ST.meters.forEach(function (m, i) {
-    mh += '<tr class="mini"><td><b>' + m.id + '</b></td><td><select data-mt="' + i + '" aria-label="' + m.id + ' type"><option value="inspeed"' + (m.type === 'inspeed' ? ' selected' : '') + '>Inspeed (cups + vane)</option><option value="sparkfun"' + (m.type === 'sparkfun' ? ' selected' : '') + '>SparkFun (16-step vane)</option></select></td><td><input type="number" step="1" data-mc="' + i + '" value="' + Math.round(m.cal * 100) + '" aria-label="' + m.id + ' reads percent"></td><td class="n">' + m.x + ', ' + m.y + '</td><td><button class="btn" data-mr="' + i + '">Remove</button></td></tr>';
+    mh += '<tr class="mini"><td><b>' + m.id + '</b></td><td><select data-mt="' + i + '" aria-label="' + m.id + ' type"><option value="inspeed"' + (m.type === 'inspeed' ? ' selected' : '') + '>Inspeed (cups + vane)</option><option value="sparkfun"' + (m.type === 'sparkfun' ? ' selected' : '') + '>SparkFun (16-step vane)</option></select></td><td><select data-mrole="' + i + '" aria-label="' + m.id + ' role"><option value="path"' + (isPath(m) ? ' selected' : '') + '>Path meter</option><option value="sentinel"' + (!isPath(m) ? ' selected' : '') + '>Sentinel only</option></select></td><td><input type="number" step="1" data-mc="' + i + '" value="' + Math.round(m.cal * 100) + '" aria-label="' + m.id + ' reads percent"></td><td class="n">' + m.x + ', ' + m.y + '</td><td><button class="btn" data-mr="' + i + '">Remove</button></td></tr>';
   });
   $('setupMeters').innerHTML = mh + '</tbody>';
   var th = '<thead><tr><th>Feature</th><th>Radius (yd)</th><th>Wind inside (%)</th><th></th></tr></thead><tbody>';
@@ -844,6 +948,7 @@ function renderSetup() {
 $('setupMeters').addEventListener('change', function (e) {
   var d = e.target.dataset;
   if (d.mt) ST.meters[+d.mt].type = e.target.value;
+  if (d.mrole) { ST.meters[+d.mrole].role = e.target.value; RT.dirty = true; }
   if (d.mc) { var v = parseFloat(e.target.value); if (isFinite(v) && v > 10) ST.meters[+d.mc].cal = v / 100; }
 });
 $('setupMeters').addEventListener('click', function (e) { var d = e.target.dataset; if (d.mr == null) return; if (ST.meters.length <= 1) { toast('Keep at least one meter.'); return; } var m = ST.meters.splice(+d.mr, 1)[0]; delete RT.base.latest[m.id]; resetRadio(); renderSetup(); });
@@ -866,31 +971,365 @@ $('follow').onchange = function () { ST.follow = $('follow').checked; };
 var LSK = 'windLearningRange.sessions';
 function lsGet() { try { return JSON.parse(localStorage.getItem(LSK) || '{}'); } catch (e) { return {}; } }
 function lsSet(o) { try { localStorage.setItem(LSK, JSON.stringify(o)); return true; } catch (e) { return false; } }
-function snapshot() { var o = JSON.parse(JSON.stringify(ST)); o.learner = RT.learner.toJSON(); o.savedAt = new Date().toISOString(); o.simT = RT.t; return o; }
+function snapshot(noLog) { var o = JSON.parse(JSON.stringify(noLog ? Object.assign({}, ST, { windLog: [] }) : ST)); o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.savedAt = new Date().toISOString(); o.simT = ST.mode === 'live' ? 0 : RT.t; o.kind = 'coriolis-learn-session'; return o; }
+// Big live wind logs may not fit in browser storage: then the session is kept
+// without its raw 1 s log (the model and relationships still hold what it learned).
+function saveSession(n, quiet) {
+  var all = lsGet(); all[n] = snapshot();
+  if (lsSet(all)) { if (!quiet) toast('Saved "' + n + '".'); renderSessions(); return true; }
+  all[n] = snapshot(true);
+  var ok = lsSet(all);
+  if (!quiet) toast(ok ? 'Saved "' + n + '" without its raw wind log (too big for the browser). Download the session file to keep the log.' : 'This browser blocked saving. Use "Download session file" instead.');
+  renderSessions(); return ok;
+}
 function renderSessions() {
   var all = lsGet(), names = Object.keys(all).sort(function (a, b) { return (all[b].savedAt || '').localeCompare(all[a].savedAt || ''); });
   var h = '<thead><tr><th>Saved session</th><th>Shots</th><th>Saved</th><th></th></tr></thead><tbody>';
-  names.forEach(function (n) { var s = all[n]; h += '<tr><td>' + esc(n) + '</td><td class="n">' + (s.shots || []).length + '</td><td class="n">' + esc((s.savedAt || '').slice(0, 16).replace('T', ' ')) + '</td><td><button class="btn" data-sl="' + esc(n) + '">Load</button> <button class="btn" data-sd="' + esc(n) + '">Delete</button></td></tr>'; });
+  names.forEach(function (n) { var s = all[n]; h += '<tr><td>' + esc(n) + '<div class="muted">' + (s.mode === 'live' ? 'live' : 'practice') + '</div></td><td class="n">' + (s.shots || []).length + '</td><td class="n">' + esc((s.savedAt || '').slice(0, 16).replace('T', ' ')) + '</td><td><button class="btn" data-sl="' + esc(n) + '">Load</button> <button class="btn" data-sd="' + esc(n) + '">Delete</button></td></tr>'; });
   $('sessTbl').innerHTML = h + (names.length ? '' : '<tr><td colspan="4" class="muted">Nothing saved in this browser yet.</td></tr>') + '</tbody>';
 }
-$('sessSave').onclick = function () { var n = $('sessName').value.trim() || ('Range ' + new Date().toLocaleString()); var all = lsGet(); all[n] = snapshot(); if (lsSet(all)) toast('Saved "' + n + '".'); else toast('This browser blocked saving. Use "Copy current session as text" instead.'); renderSessions(); };
+$('sessSave').onclick = function () { saveSession($('sessName').value.trim() || ((ST.mode === 'live' ? 'Live ' : 'Range ') + new Date().toLocaleString()), false); };
+$('sessDownload').onclick = function () { var n = $('sessName').value.trim() || ((ST.mode === 'live' ? 'Live ' : 'Range ') + new Date().toISOString().slice(0, 16)); download(fileName(n, '.session.json'), snapshot()); };
 $('sessTbl').addEventListener('click', function (e) { var d = e.target.dataset, all = lsGet(); if (d.sl && all[d.sl]) { load(all[d.sl]); toast('Loaded "' + d.sl + '".'); } if (d.sd) { delete all[d.sd]; lsSet(all); renderSessions(); } });
 $('sessCopy').onclick = function () { var txt = JSON.stringify(snapshot()); $('sessText').value = txt; try { navigator.clipboard.writeText(txt).then(function () { toast('Copied. Paste it into a file or another device.'); }, function () { $('sessText').select(); toast('Select the text below and copy it.'); }); } catch (e) { $('sessText').select(); } };
 $('sessLoadText').onclick = function () { try { load(JSON.parse($('sessText').value)); toast('Session loaded.'); } catch (e) { toast('That text is not a session. Paste the whole thing.'); } };
 $('sessFile').onchange = function (e) { var f = e.target.files[0]; if (!f) return; var r = new FileReader(); r.onload = function () { try { load(JSON.parse(r.result)); toast('Loaded ' + f.name + '.'); } catch (x) { toast('That file is not a session.'); } }; r.readAsText(f); };
-$('sessNew').onclick = function () { load(defaultState()); toast('Fresh range with the example layout.'); };
+$('sessNew').onclick = function () {
+  if (ST.mode === 'live') { var o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live = Object.assign(o.live, { rangeYd: ST.live.rangeYd, az: ST.live.az, roles: ST.live.roles, pos: ST.live.pos }); o.settings = ST.settings; load(o); toast('Fresh live session: no shots, nothing learned yet.'); }
+  else { load(defaultState()); toast('Fresh range with the example layout.'); }
+};
+
+// ------------------------------------------------------------- live mode
+// Live: the page is opened from the base (same Wi-Fi as Wind Lab). It reads
+// /data.json for the meters' GPS spots and /windsec for their timed 1 s wind,
+// keeps its own history (the base holds about two minutes), learns from your
+// real shots and plots, and learns how the meters relate as the wind blows.
+var LIVE = { timer: null, since: null, baseNow: 0, at: 0, utc: null, data: null, ok: false, lastOk: 0, busy: false, unplaced: [], lastSave: 0 };
+var YD_PER_DEG = 111319.4908 * 1.0936133;
+function liveClock() { return LIVE.at ? (LIVE.baseNow + (Date.now() - LIVE.at)) / 1000 : 0; }
+function lsRead(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsWrite(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+function liveTarget() {
+  var a = ST.live.az * Math.PI / 180, R = Math.max(50, ST.live.rangeYd);
+  ST.shooter = { x: 0, y: 0 }; ST.target = { x: Math.round(Math.sin(a) * R), y: Math.round(Math.cos(a) * R) };
+}
+function syncLiveMeters() {
+  var d = LIVE.data; if (!d) return;
+  var b = d.base || {}, baseFix = b.gps !== false && !!(b.lat && b.lon), man = {};
+  try { man = JSON.parse(lsRead('nodeDownManual') || '{}') || {}; } catch (e) {}
+  var az = ST.live.az * Math.PI / 180, list = [], unplaced = [];
+  (d.nodes || []).forEach(function (n) {
+    var id = String(n.id), p = ST.live.pos[id], src = 'typed';
+    if (!p && baseFix && n.gps !== false && n.lat && n.lon) { p = { x: (n.lon - b.lon) * Math.cos(b.lat * Math.PI / 180) * YD_PER_DEG, y: (n.lat - b.lat) * YD_PER_DEG }; src = 'GPS'; }
+    if (!p && man[n.id] != null && isFinite(+man[n.id])) { p = { x: Math.sin(az) * man[n.id], y: Math.cos(az) * man[n.id] }; src = 'Wind Lab downrange'; }
+    if (!p) { unplaced.push(id); return; }
+    var A = ST.live.anchors[id];
+    if (!A) A = ST.live.anchors[id] = { x: p.x, y: p.y, epoch: 0 };
+    else if (Math.hypot(p.x - A.x, p.y - A.y) > 20) { A.epoch++; A.x = p.x; A.y = p.y; toast('Meter ' + id + ' moved, so its learning starts over at the new spot.'); }
+    list.push({ id: id, type: 'node', x: Math.round(p.x), y: Math.round(p.y), cal: 1, epoch: A.epoch, role: (ST.live.roles || {})[id] || 'path', src: src, windOk: n.windOk !== false });
+  });
+  var sig = list.map(function (m) { return m.id + ':' + m.x + ':' + m.y + ':' + m.role + ':' + m.epoch; }).join(',') + '|' + unplaced.join(',');
+  ST.meters = list; LIVE.unplaced = unplaced;
+  if (sig !== LIVE.sig) { LIVE.sig = sig; RT.dirty = true; if (!$('pane-setup').hidden) renderLiveSetup(); }
+}
+// Readings since the oldest "newest reading" of the meters still talking, so a
+// meter whose packet lands late still gets its seconds; repeats are dropped.
+function ingestWindSec(j) {
+  var B = RT.base, nowS = j.now / 1000, newest = [];
+  Object.keys(j.nodes || {}).forEach(function (id) {
+    var rs = j.nodes[id].r || [], H = B.hist[id] || (B.hist[id] = []);
+    rs.forEach(function (q) {
+      var t = q[0] / 1000, mph = q[1], deg = q[2];
+      if (!isFinite(t) || !isFinite(mph) || !isFinite(deg)) return;
+      if (H.length && t <= H[H.length - 1].t + 0.05) return;
+      var d = deg * Math.PI / 180, v = { t: t, x: -Math.sin(d) * mph, y: -Math.cos(d) * mph };
+      H.push(v); B.latest[id] = v;
+      RT.align.add(id, t, mph, deg);
+      ST.windLog.push([Math.round(q[0]), id, mph, deg]);
+    });
+    while (H.length && H[0].t < nowS - 300) H.shift();
+    if (H.length && H[H.length - 1].t > nowS - 30) newest.push(H[H.length - 1].t);
+  });
+  if (newest.length) LIVE.since = Math.floor(Math.min.apply(0, newest) * 1000) - 1;
+  if (ST.windLog.length > 120000) ST.windLog.splice(0, ST.windLog.length - 100000);
+  RT.align.release(nowS, ingestRel);
+}
+async function livePoll() {
+  if (LIVE.busy || ST.mode !== 'live') return; LIVE.busy = true;
+  try {
+    var r = await fetch('/data.json', { cache: 'no-store' }); if (!r.ok) throw new Error('data');
+    LIVE.data = await r.json(); syncLiveMeters();
+    var r2 = await fetch('/windsec' + (LIVE.since != null ? '?since=' + LIVE.since : ''), { cache: 'no-store' }); if (!r2.ok) throw new Error('windsec');
+    var j = await r2.json();
+    if (LIVE.at && j.now < LIVE.baseNow - 5000) {   // the base restarted: its clock went back to zero
+      LIVE.since = null; RT.base = { latest: {}, hist: {} }; RT.align = new WL.SecondAligner(8); RT.rel.rt = {}; RT.rel.lastT = null;
+      if (LIVE.since == null) { var r3 = await fetch('/windsec', { cache: 'no-store' }); j = await r3.json(); }
+    }
+    LIVE.baseNow = j.now; LIVE.at = Date.now(); LIVE.utc = j.utc; LIVE.ok = true; LIVE.lastOk = Date.now();
+    ingestWindSec(j);
+  } catch (e) { LIVE.ok = false; }
+  LIVE.busy = false; renderLiveStat();
+  if (LIVE.ok && Date.now() - LIVE.lastSave > 60000) { LIVE.lastSave = Date.now(); autosave(); }
+}
+function renderLiveStat() {
+  var el = $('liveStat'); if (ST.mode !== 'live') { el.hidden = true; return; }
+  el.hidden = false;
+  var n = Object.keys(RT.base.latest).filter(function (id) { return RT.t - RT.base.latest[id].t < 15; }).length;
+  if (LIVE.ok) { el.className = 'pill ' + (n ? 'good' : 'warn'); el.textContent = 'base connected · ' + n + ' meter' + (n === 1 ? '' : 's') + ' reporting'; }
+  else { el.className = 'pill bad'; el.textContent = LIVE.lastOk ? 'lost the base' : 'no base: open this page from the base Wi-Fi'; }
+}
+function startLive() { stopLive(); livePoll(); LIVE.timer = setInterval(livePoll, 2000); }
+function stopLive() { if (LIVE.timer) clearInterval(LIVE.timer); LIVE.timer = null; }
+function renderLiveSetup() {
+  $('lvRange').value = ST.live.rangeYd; $('lvAz').value = ST.live.az;
+  var h = '<thead><tr><th>Meter</th><th>Spot (yd E, N)</th><th>From</th><th>Use as</th><th>Type a spot</th></tr></thead><tbody>';
+  ST.meters.forEach(function (m) {
+    h += '<tr class="mini"><td><b>' + esc(m.id) + '</b>' + (m.windOk === false ? '<div class="muted">no wind</div>' : '') + '</td><td class="n">' + m.x + ', ' + m.y + '</td><td>' + esc(m.src || '') + '</td>' +
+      '<td><select data-lr="' + esc(m.id) + '" aria-label="Meter ' + esc(m.id) + ' role"><option value="path"' + (m.role !== 'sentinel' ? ' selected' : '') + '>Path meter</option><option value="sentinel"' + (m.role === 'sentinel' ? ' selected' : '') + '>Sentinel only</option></select></td>' +
+      '<td>' + (ST.live.pos[m.id] ? '<button class="btn" data-lc="' + esc(m.id) + '">Use GPS</button>' : '<input type="text" inputmode="decimal" placeholder="E, N" data-lp="' + esc(m.id) + '" aria-label="Meter ' + esc(m.id) + ' spot">') + '</td></tr>';
+  });
+  LIVE.unplaced.forEach(function (id) {
+    h += '<tr class="mini"><td><b>' + esc(id) + '</b></td><td colspan="3" class="muted">no GPS fix and no Wind Lab downrange: type where it is</td><td><input type="text" inputmode="decimal" placeholder="E, N" data-lp="' + esc(id) + '" aria-label="Meter ' + esc(id) + ' spot"></td></tr>';
+  });
+  if (!ST.meters.length && !LIVE.unplaced.length) h += '<tr><td colspan="5" class="muted">' + (LIVE.ok ? 'The base has no meters yet.' : 'Waiting for the base.') + '</td></tr>';
+  $('liveMeters').innerHTML = h + '</tbody>';
+}
+$('liveMeters').addEventListener('change', function (e) {
+  var d = e.target.dataset;
+  if (d.lr) { ST.live.roles = ST.live.roles || {}; ST.live.roles[d.lr] = e.target.value; syncLiveMeters(); RT.dirty = true; }
+  if (d.lp) { var a = e.target.value.split(/[ ,]+/).map(parseFloat); if (a.length >= 2 && isFinite(a[0]) && isFinite(a[1])) { ST.live.pos[d.lp] = { x: a[0], y: a[1] }; syncLiveMeters(); renderLiveSetup(); } else toast('Type the spot as yards east, yards north, for example 20, 450'); }
+});
+$('liveMeters').addEventListener('click', function (e) { var d = e.target.dataset; if (d.lc) { delete ST.live.pos[d.lc]; syncLiveMeters(); renderLiveSetup(); } });
+$('lvRange').onchange = function () { var v = parseFloat($('lvRange').value); if (v >= 50) { ST.live.rangeYd = v; liveTarget(); ballCache = {}; RT.dirty = true; } };
+$('lvAz').onchange = function () { var v = parseFloat($('lvAz').value); if (isFinite(v)) { ST.live.az = ((v % 360) + 360) % 360; liveTarget(); syncLiveMeters(); RT.dirty = true; } };
+
+// Practice and Live each keep their own range; switching autosaves the one
+// you leave and brings back the last one of the other kind.
+var AUTOSAVE = { sim: '⟳ Autosave: practice', live: '⟳ Autosave: live' };
+function autosave() { saveSession(AUTOSAVE[ST.mode], true); }
+function setMode(m) {
+  if (m === ST.mode) return;
+  autosave();
+  var all = lsGet(), o = all[AUTOSAVE[m]];
+  if (!o) {
+    o = defaultState(); o.mode = m; o.settings = Object.assign(o.settings, { mv: ST.settings.mv, bc: ST.settings.bc, rifleSd: ST.settings.rifleSd });
+    if (m === 'live') {
+      o.meters = []; o.terrain = []; o.plotMode = 'manual';
+      o.live.az = parseFloat(lsRead('fireAz')) || 0; o.live.rangeYd = parseFloat(lsRead('sol_range')) || 800;
+    }
+  }
+  load(o);
+  lsWrite('windLearningRange.mode', m);
+  toast(m === 'live' ? 'Live: reading the meters from the base. Shoot, then tap where it hit.' : 'Practice: simulated range.');
+}
+function applyModeUI() {
+  var live = ST.mode === 'live';
+  $('modeSim').setAttribute('aria-pressed', !live); $('modeLive').setAttribute('aria-pressed', live);
+  $('spdSeg').hidden = live; $('clockLbl').textContent = live ? 'Base time' : 'Sim time';
+  $('simPlotRow').hidden = live; $('simSetup').hidden = live; $('liveSetup').hidden = !live;
+  document.querySelectorAll('.tool').forEach(function (b) { if (b.dataset.tool === 'meter') b.hidden = live; });
+  renderLiveStat();
+}
+$('modeSim').onclick = function () { setMode('sim'); };
+$('modeLive').onclick = function () { setMode('live'); };
+
+// ------------------------------------------------------------- relations
+var REL = { pick: null, built: '' };
+(function () {
+  var o = '<option value="cur">The wind right now</option><option value="all">Every direction, pooled</option>';
+  for (var s = 0; s < 8; s++) o += '<option value="' + s + '">From ' + WL.SECTOR_NAMES[s] + '</option>';
+  $('relSector').innerHTML = o;
+})();
+function relSector() {
+  var v = $('relSector').value;
+  if (v === 'cur') return RT.calls ? RT.calls.sector : (ST.mode === 'live' ? 'all' : WL.sectorOf(RT.field.D));
+  return v === 'all' ? 'all' : +v;
+}
+function fmtDur(s) { s = Math.round(s); if (s < 90) return s + ' s'; if (s < 5400) return Math.round(s / 60) + ' min'; return (s / 3600).toFixed(1) + ' h'; }
+function sectorWind(sec, mph) { var d = sec * 45 * Math.PI / 180; return { x: -Math.sin(d) * mph, y: -Math.cos(d) * mph }; }
+function relRowHtml(row, sec) {
+  var p = row.p, k = row.kind, pill, who = '–', geo = '–';
+  if (k === 'learning') pill = '<span class="pill dim">Learning</span>';
+  else if (k === 'independent') pill = '<span class="pill dim">Different air</span>';
+  else if (k === 'same air') pill = '<span class="pill good">Same gusts, same time</span>';
+  else if (k === 'leads') pill = '<span class="pill acc">' + esc(p.lead) + ' warns ' + esc(p.follow) + '</span>';
+  else pill = '<span class="pill warn">Shared slow swings</span>';
+  if (p && k !== 'independent') who = p.lagS <= 1 ? 'together' : esc(p.lead) + ' first by ' + p.lagS + ' s';
+  if (p && sec !== 'all') {
+    var A = ST.meters.find(function (m) { return m.id === p.lead; }), Bm = ST.meters.find(function (m) { return m.id === p.follow; });
+    var mph = Math.max(2, ((p.meanLead || 0) + (p.meanFollow || 0)) / 2);
+    var e = A && Bm ? WL.expectedLag(A, Bm, sectorWind(sec, mph)) : null;
+    if (e) geo = (e.lagS >= 0 ? esc(p.lead) + ' first by ' : esc(p.follow) + ' first by ') + Math.round(Math.abs(e.lagS)) + ' s' + (e.crossYd > 150 ? ' <span class="muted">(' + Math.round(e.crossYd) + ' yd apart across the wind)</span>' : '');
+  }
+  var sel = REL.pick && REL.pick[0] === row.a && REL.pick[1] === row.b;
+  return '<tr data-ra="' + esc(row.a) + '" data-rb="' + esc(row.b) + '" style="cursor:pointer' + (sel ? ';background:var(--accent-soft)' : '') + '"><td><b>' + esc(row.a) + ' · ' + esc(row.b) + '</b></td><td>' + pill + '</td><td class="n">' + who + '</td>' +
+    '<td class="n">' + (p ? p.r.toFixed(2) : '–') + '</td><td class="n">' + (p ? (p.skill >= 0 ? '+' : '') + p.skill.toFixed(2) : '–') + '</td>' +
+    '<td class="n">' + (p ? esc(p.follow) + ' ' + p.ratio.toFixed(2) + '×' : '–') + '</td><td class="n">' + (p ? (p.dirOff >= 0 ? '+' : '') + Math.round(p.dirOff) + '° <span class="muted">±' + Math.round(Math.min(p.dirSd, 99)) + '</span>' : '–') + '</td><td>' + geo + '</td></tr>';
+}
+function renderRel() {
+  var sec = relSector(), R = RT.rel, S = R.summary(sec);
+  var name = sec === 'all' ? 'every direction' : 'from ' + WL.SECTOR_NAMES[sec];
+  $('relInfo').textContent = 'Learned from ' + fmtDur(S.seconds) + ' of wind ' + name + (sec === 'all' ? '' : ' (' + fmtDur(R.secs) + ' in all)') + '. Needs about 2 minutes per direction before it shows a pattern.';
+  var h = '<thead><tr><th>Meters</th><th>Pattern</th><th>Who sees gusts first</th><th>Gust match r</th><th>Beats own past</th><th>Speed ratio</th><th>Direction offset</th><th>Geometry says</th></tr></thead><tbody>';
+  S.pairs.forEach(function (row) { h += relRowHtml(row, sec); });
+  $('relTbl').innerHTML = h + (S.pairs.length ? '' : '<tr><td colspan="8" class="muted">Needs two or more meters reporting.</td></tr>') + '</tbody>';
+  var pred = Object.keys(S.predictors).sort().map(function (f) { var b = S.predictors[f]; return '<b>' + esc(f) + '</b>: ' + esc(b.by) + ' sees its gusts ' + b.lagS + ' s earlier (r ' + b.r.toFixed(2) + ', ' + (b.skill >= 0 ? '+' : '') + b.skill.toFixed(2) + ' over its own past)'; });
+  $('relPred').innerHTML = pred.length ? pred.join('<br>') : 'No meter gives a useful early warning for another in this wind yet.';
+  var sg = sec === 'all' ? [] : R.suggestSentinels(sec).filter(function (q) {
+    var A = ST.meters.find(function (m) { return m.id === q.sentId; }), Bm = ST.meters.find(function (m) { return m.id === q.nodeId; });
+    return WL.upwindOk(A, Bm, sectorWind(sec, 10));
+  });
+  var t = '<thead><tr><th>Sentinel → meter</th><th>Lag</th><th>Speed tol.</th><th>Dir tol.</th><th>Ratio</th><th>r</th></tr></thead><tbody>';
+  sg.forEach(function (p) { t += '<tr><td><b>' + esc(p.sentId) + ' → ' + esc(p.nodeId) + '</b></td><td class="n">' + p.lagS + ' s</td><td class="n">±' + p.spdPct + '%</td><td class="n">±' + p.dirDeg + '°</td><td class="n">' + p.ratio.toFixed(2) + '×</td><td class="n">' + p.r.toFixed(2) + '</td></tr>'; });
+  $('relSent').innerHTML = t + (sg.length ? '' : '<tr><td colspan="6" class="muted">' + (sec === 'all' ? 'Pick one wind direction: who is upwind depends on it.' : 'None yet for this wind.') + '</td></tr>') + '</tbody>';
+  drawRelChart(sec);
+}
+$('relTbl').addEventListener('click', function (e) { var tr = e.target.closest('tr'); if (!tr || !tr.dataset.ra) return; REL.pick = [tr.dataset.ra, tr.dataset.rb]; renderRel(); });
+$('relSector').onchange = function () { renderRel(); };
+function drawRelChart(sec) {
+  var svg = $('relChart'), W = 520, H = 170, Lm = 36, Rm = 10, T = 12, Bm = 28;
+  if (!REL.pick) { svg.innerHTML = ''; return; }
+  var a = REL.pick[0], b = REL.pick[1], cv = RT.rel.curve(a, b, sec).filter(function (q) { return q.n > 0; });
+  $('relChartLbl').textContent = 'Gust match by time shift: ' + a + ' and ' + b;
+  if (!cv.length) { svg.innerHTML = '<text x="' + W / 2 + '" y="' + H / 2 + '" text-anchor="middle" fill="' + COL.muted + '" font-size="13">No data for this pair in this wind yet</text>'; $('relChartNote').textContent = ''; return; }
+  var L = RT.rel.L, xs = function (lag) { return Lm + (lag + L) / (2 * L) * (W - Lm - Rm); }, ys = function (r) { return T + (1 - (r + 0.2) / 1.2) * (H - T - Bm); };
+  var g = '';
+  [-0.2, 0, 0.2, 0.4, 0.6, 0.8, 1].forEach(function (v) { g += '<line x1="' + Lm + '" x2="' + (W - Rm) + '" y1="' + ys(v) + '" y2="' + ys(v) + '" stroke="' + (v === 0 ? COL.muted : COL.line) + '" stroke-width="1"/><text x="' + (Lm - 5) + '" y="' + (ys(v) + 4) + '" text-anchor="end" font-size="10" fill="' + COL.muted + '" font-family="IBM Plex Mono, monospace">' + v.toFixed(1) + '</text>'; });
+  for (var lg = -L; lg <= L; lg += 10) g += '<text x="' + xs(lg) + '" y="' + (H - 12) + '" text-anchor="middle" font-size="10" fill="' + COL.muted + '" font-family="IBM Plex Mono, monospace">' + (lg > 0 ? '+' : '') + lg + '</text>';
+  g += '<line x1="' + xs(0) + '" x2="' + xs(0) + '" y1="' + T + '" y2="' + (H - Bm) + '" stroke="' + COL.muted + '" stroke-dasharray="3 3"/>';
+  g += '<polyline fill="none" stroke="' + COL.accent + '" stroke-width="2.4" stroke-linejoin="round" points="' + cv.map(function (q) { return xs(q.lag).toFixed(1) + ',' + ys(Math.max(-0.2, q.r)).toFixed(1); }).join(' ') + '"/>';
+  var p = RT.rel.pair(a, b, sec);
+  if (p) { var pk = p.lead === a ? p.lagS : -p.lagS; g += '<circle cx="' + xs(pk) + '" cy="' + ys(p.r) + '" r="4.5" fill="' + COL.accent + '"/>'; }
+  g += '<text x="' + (W - Rm) + '" y="' + (H - 1) + '" text-anchor="end" font-size="10" fill="' + COL.ink + '">' + esc(a) + ' earlier →</text><text x="' + Lm + '" y="' + (H - 1) + '" font-size="10" fill="' + COL.ink + '">← ' + esc(b) + ' earlier</text>';
+  svg.innerHTML = g;
+  $('relChartNote').textContent = p ? ('Peak r ' + p.r.toFixed(2) + (p.lagS ? ' with ' + p.lead + ' ' + p.lagS + ' s ahead' : ' with no shift') + '. ' + p.follow + "'s own gusts " + p.lagS + ' s earlier match it at ' + Math.max(0, p.rPersist).toFixed(2) + ', so ' + p.lead + (p.skill > 0.05 ? ' adds real warning.' : ' adds little beyond that.') + (p.significant ? '' : ' Not enough data yet to trust it.')) : 'Not enough data yet.';
+}
+$('relReset').onclick = function () { $('relResetConfirm').hidden = false; };
+$('relResetNo').onclick = function () { $('relResetConfirm').hidden = true; };
+$('relResetYes').onclick = function () { $('relResetConfirm').hidden = true; RT.rel = new WL.Relations(); renderRel(); toast('Relationships cleared; learning them again from now.'); };
+
+// ------------------------------------------------------- model + Wind Lab
+var LSM = 'windLearningRange.models';
+function nodeIdFor(m) {
+  if (ST.mode === 'live') return isFinite(+m.id) ? +m.id : m.id;
+  var v = ST.nodeMap[m.id]; if (v != null && v !== '') return +v;
+  var d = parseInt(String(m.id).replace(/\D/g, ''), 10); return isFinite(d) ? d : m.id;
+}
+function liveModel(name) {
+  var meters = ST.meters.map(function (m) { return { id: m.id, nodeId: nodeIdFor(m), lkey: lkey(m), x: m.x, y: m.y, role: m.role || 'path' }; });
+  var lm = WL.buildLiveModel({ name: name, meters: meters, shooter: ST.shooter, target: ST.target, kernel: ball().kernel,
+    learner: RT.learner, relations: RT.rel, windMph: ST.drive.mph || 10,
+    drive: { mult: !!ST.drive.mult, weights: !!ST.drive.weights, sentinels: !!ST.drive.sentinels } });
+  lm.source = ST.mode === 'live' ? 'live' : 'practice';
+  return lm;
+}
+function wlOn() { return lsRead('learnedOn') === '1' && !!lsRead('learnedModel'); }
+function pushWL(quiet) {
+  var nm = ($('modelName').value || '').trim() || (ST.mode === 'live' ? 'Live model' : 'Practice model');
+  var ok = lsWrite('learnedModel', JSON.stringify(liveModel(nm))) && lsWrite('learnedOn', '1');
+  RT.lastPush = Date.now();
+  if (!quiet) toast(ok ? 'Wind Lab on this phone now runs "' + nm + '".' : 'This browser blocked saving; download the Wind Lab file instead.');
+  renderWLStatus();
+}
+function renderWLStatus() {
+  var el = $('wlStatus'), m = null; try { m = JSON.parse(lsRead('learnedModel') || 'null'); } catch (e) {}
+  if (wlOn() && m) el.innerHTML = 'Wind Lab is running <b>' + esc(m.name) + '</b> (' + m.shots + ' shots, ' + fmtDur(m.relSeconds || 0) + ' of relationships, built for ' + m.rangeYd + ' yd at ' + m.azDeg + '°, sent ' + esc(String(m.created).slice(11, 16)) + ' UTC). It picks the row below for the wind it sees.';
+  else el.innerHTML = 'Wind Lab is using your own multipliers, weights and Sentinel pairs.';
+}
+function renderModel() {
+  var live = ST.mode === 'live', h = '<thead><tr><th>Meter</th><th>Wind Lab node</th><th>Role</th><th>Learned at this spot</th></tr></thead><tbody>';
+  ST.meters.forEach(function (m) {
+    var nid = nodeIdFor(m), mi = RT.learner.idx['m:' + lkey(m)] != null;
+    h += '<tr class="mini"><td><b>' + esc(m.id) + '</b></td><td>' + (live ? 'Node ' + esc(nid) : '<input type="number" min="1" max="15" step="1" data-nm="' + esc(m.id) + '" value="' + esc(nid) + '" aria-label="' + esc(m.id) + ' node id" style="max-width:80px">') + '</td><td>' + (m.role === 'sentinel' ? 'Sentinel only' : 'Path meter') + '</td><td>' + (mi ? '<span class="pill good">yes</span>' : '<span class="pill dim">not yet</span>') + '</td></tr>';
+  });
+  $('mapTbl').innerHTML = h + '</tbody>';
+  $('drvMult').checked = !!ST.drive.mult; $('drvW').checked = !!ST.drive.weights; $('drvSent').checked = !!ST.drive.sentinels; $('drvMph').value = ST.drive.mph || 10; $('autoPush').checked = !!ST.autoPush;
+  // preview
+  var lm = liveModel('preview'), ids = lm.nodes.map(function (n) { return n.id; }), cur = RT.calls ? RT.calls.sector : -1;
+  var p = '<thead><tr><th>Wind from</th>' + ids.map(function (id) { return '<th>Node ' + esc(id) + '<br>× · weight</th>'; }).join('') + '<th>Sentinels</th></tr></thead><tbody>';
+  lm.sectors.forEach(function (S, s) {
+    p += '<tr' + (s === cur ? ' style="background:var(--accent-soft)"' : '') + '><td><b>' + WL.SECTOR_NAMES[s] + '</b></td>' + ids.map(function (id) { return '<td class="n">' + (lm.drive.mult ? '×' + S.mult[id].toFixed(2) : '–') + ' · ' + (lm.drive.weights ? Math.round(S.wPct[id]) + '%' : '–') + '</td>'; }).join('') +
+      '<td class="n">' + (lm.drive.sentinels ? (S.sent.map(function (q) { return q.sentId + '→' + q.nodeId + ' ' + q.lagS + ' s'; }).join(', ') || '–') : 'off') + '</td></tr>';
+  });
+  $('modelPreview').innerHTML = p + '</tbody>';
+  renderWLStatus(); renderModels();
+}
+$('mapTbl').addEventListener('change', function (e) { var d = e.target.dataset; if (!d.nm) return; var v = parseInt(e.target.value, 10); if (v >= 1) ST.nodeMap[d.nm] = v; else delete ST.nodeMap[d.nm]; renderModel(); });
+function drvChange() { ST.drive.mult = $('drvMult').checked; ST.drive.weights = $('drvW').checked; ST.drive.sentinels = $('drvSent').checked; var v = parseFloat($('drvMph').value); if (v >= 2) ST.drive.mph = v; ST.autoPush = $('autoPush').checked; renderModel(); if (wlOn() && ST.autoPush) pushWL(true); }
+['drvMult', 'drvW', 'drvSent', 'drvMph', 'autoPush'].forEach(function (id) { $(id).onchange = drvChange; });
+$('pushWL').onclick = function () { pushWL(false); };
+$('stopWL').onclick = function () { lsWrite('learnedOn', '0'); renderWLStatus(); toast('Wind Lab is back on your own settings.'); };
+function download(name, obj) {
+  var blob = new Blob([JSON.stringify(obj)], { type: 'application/json' }), a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+function fileName(n, ext) { return String(n).replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 60) + ext; }
+function modelSnapshot(name) {
+  return { kind: 'coriolis-learned-model', v: 1, name: name, savedAt: new Date().toISOString(), mode: ST.mode,
+    meters: JSON.parse(JSON.stringify(ST.meters)), shooter: ST.shooter, target: ST.target, live: ST.mode === 'live' ? { rangeYd: ST.live.rangeYd, az: ST.live.az, anchors: ST.live.anchors, roles: ST.live.roles || {} } : null,
+    nodeMap: ST.nodeMap, drive: ST.drive, settings: { mv: ST.settings.mv, bc: ST.settings.bc, rifleSd: ST.settings.rifleSd, unmeasured: ST.settings.unmeasured },
+    learner: RT.learner.toJSON(), relations: RT.rel.toJSON(), shots: RT.learner.n };
+}
+function loadModel(o) {
+  if (!o || o.kind !== 'coriolis-learned-model') { toast(o && o.kind === 'coriolis-live-model' ? 'That is a Wind Lab file; use "Load a Wind Lab file".' : 'That is not a model file.'); return; }
+  RT.learner = new WL.Learner(o.learner); RT.rel = new WL.Relations(o.relations); RT.rel.lastT = null;
+  if (o.drive) ST.drive = Object.assign(ST.drive, o.drive);
+  if (o.nodeMap) ST.nodeMap = o.nodeMap;
+  if (o.settings) Object.assign(ST.settings, o.settings);
+  if (ST.mode === 'sim' && o.mode === 'sim' && o.meters) {
+    ST.meters = o.meters; ST.target = o.target || ST.target; RT.nodes = {}; RT.base = { latest: {}, hist: {} }; resetRadio();
+  } else if (ST.mode === 'live' && o.live) { ST.live.anchors = o.live.anchors || ST.live.anchors; ST.live.roles = o.live.roles || {}; ST.live.rangeYd = o.live.rangeYd; ST.live.az = o.live.az; liveTarget(); syncLiveMeters(); }
+  else if (o.mode !== ST.mode) toast('Loaded a ' + (o.mode === 'live' ? 'live' : 'practice') + ' model into ' + (ST.mode === 'live' ? 'live' : 'practice') + ' mode: only meters with the same names use it.');
+  ballCache = {}; RT.dirty = true; renderSetup(); renderLearn(); renderModel();
+}
+function renderModels() {
+  var all = lsGetK(LSM), names = Object.keys(all).sort(function (a, b) { return (all[b].savedAt || '').localeCompare(all[a].savedAt || ''); });
+  var h = '<thead><tr><th>Model</th><th>Shots</th><th>Relations</th><th>Saved</th><th></th></tr></thead><tbody>';
+  names.forEach(function (n) { var s = all[n]; h += '<tr><td>' + esc(n) + '<div class="muted">' + (s.mode === 'live' ? 'live' : 'practice') + '</div></td><td class="n">' + (s.shots || 0) + '</td><td class="n">' + fmtDur((s.relations && s.relations.secs) || 0) + '</td><td class="n">' + esc((s.savedAt || '').slice(0, 16).replace('T', ' ')) + '</td><td><button class="btn" data-ml="' + esc(n) + '">Load</button> <button class="btn" data-mf="' + esc(n) + '">Download</button> <button class="btn" data-md="' + esc(n) + '">Delete</button></td></tr>'; });
+  $('modelTbl').innerHTML = h + (names.length ? '' : '<tr><td colspan="5" class="muted">No saved models yet.</td></tr>') + '</tbody>';
+}
+function lsGetK(k) { try { return JSON.parse(lsRead(k) || '{}') || {}; } catch (e) { return {}; } }
+$('modelSave').onclick = function () {
+  var n = $('modelName').value.trim() || ((ST.mode === 'live' ? 'Live ' : 'Practice ') + new Date().toLocaleString());
+  var all = lsGetK(LSM); all[n] = modelSnapshot(n);
+  if (lsWrite(LSM, JSON.stringify(all))) toast('Saved model "' + n + '".'); else { toast('This browser is out of room; downloading the model file instead.'); download(fileName(n, '.model.json'), all[n]); }
+  renderModels();
+};
+$('modelTbl').addEventListener('click', function (e) {
+  var d = e.target.dataset, all = lsGetK(LSM);
+  if (d.ml && all[d.ml]) { loadModel(all[d.ml]); $('modelName').value = d.ml; toast('Loaded model "' + d.ml + '".'); }
+  if (d.mf && all[d.mf]) download(fileName(d.mf, '.model.json'), all[d.mf]);
+  if (d.md) { delete all[d.md]; lsWrite(LSM, JSON.stringify(all)); renderModels(); }
+});
+function readFile(input, fn) { var f = input.files[0]; if (!f) return; var r = new FileReader(); r.onload = function () { var o = null; try { o = JSON.parse(r.result); } catch (x) {} input.value = ''; fn(o, f.name); }; r.readAsText(f); }
+$('modelFile').onchange = function () { readFile($('modelFile'), function (o, fn) { if (o) { loadModel(o); if (o.kind === 'coriolis-learned-model') { $('modelName').value = o.name || ''; toast('Loaded ' + fn + '.'); } } else toast('That file is not a model.'); }); };
+$('wlDownload').onclick = function () { var nm = ($('modelName').value || '').trim() || 'Wind Lab model'; download(fileName(nm, '.windlab.json'), liveModel(nm)); };
+$('wlFile').onchange = function () { readFile($('wlFile'), function (o, fn) {
+  if (!o || o.kind !== 'coriolis-live-model' || !o.sectors || o.sectors.length !== 8) { toast('That is not a Wind Lab file.'); return; }
+  if (lsWrite('learnedModel', JSON.stringify(o)) && lsWrite('learnedOn', '1')) toast('Wind Lab on this phone now runs "' + o.name + '".'); else toast('This browser blocked saving.');
+  renderWLStatus();
+}); };
 
 // ----------------------------------------------------------------- boot
 function load(o) {
   var d = defaultState(); ST = Object.assign(d, o); ST.settings = Object.assign(defaultState().settings, o.settings || {});
-  RT = { t: o.simT || 0, field: null, nodes: {}, base: { latest: {}, hist: {} }, pending: [], speed: RT.speed || 1, awaiting: null, dirty: true, calls: null };
+  ST.live = Object.assign(defaultState().live, o.live || {}); ST.drive = Object.assign(defaultState().drive, o.drive || {});
+  if (!Array.isArray(ST.windLog)) ST.windLog = [];
+  stopLive();
+  RT = { t: o.simT || 0, field: null, nodes: {}, base: { latest: {}, hist: {} }, pending: [], speed: RT.speed || 1, awaiting: null, dirty: true, calls: null,
+    rel: new WL.Relations(o.relations || null), align: new WL.SecondAligner(ST.mode === 'live' ? 8 : 10), relNext: 0, lastPush: 0 };
   RT.field = makeField(ST.seed);
   RT.learner = new WL.Learner(o.learner || null);
-  ballCache = {}; resetRadio();
-  ST.shots.forEach(function (s) { if (!s.plotted) { s.plotted = true; s.impact = s.truth; s.y = (s.truth.x - s.dial) / s.mpm; } });
+  ballCache = {}; LIVE.since = null; LIVE.at = 0; LIVE.ok = false; LIVE.lastOk = 0; LIVE.data = null; LIVE.sig = '';
+  ST.shots.forEach(function (s) { if (!s.plotted && s.truth) { s.plotted = true; s.impact = s.truth; s.y = (s.truth.x - s.dial) / s.mpm; } });
+  ST.shots = ST.shots.filter(function (s) { return s.plotted; });
   if (!o.learner) relearn();
-  advance(6);
+  if (ST.mode === 'live') { ST.plotMode = 'manual'; liveTarget(); startLive(); }
+  else { resetRadio(); advance(6); }
+  applyModeUI();
   renderSetup(); renderDial(); renderLast(); renderLearn(); renderSessions(); setPlotMode(ST.plotMode || 'auto');
+  if (!$('pane-rel').hidden) renderRel(); if (!$('pane-model').hidden) renderModel();
 }
 function setPlotMode(m) { ST.plotMode = m; $('plotAuto').setAttribute('aria-pressed', m === 'auto'); $('plotMan').setAttribute('aria-pressed', m === 'manual'); }
 $('plotAuto').onclick = function () { setPlotMode('auto'); if (RT.awaiting) plotShot(RT.awaiting, RT.awaiting.truth); };
@@ -905,14 +1344,21 @@ $('burstL').onclick = function () { burst('learned'); }; $('burstT').onclick = f
 $('resetLearn').onclick = function () { $('resetConfirm').hidden = false; };
 $('resetNo').onclick = function () { $('resetConfirm').hidden = true; };
 $('resetYes').onclick = function () { $('resetConfirm').hidden = true; ST.shots.forEach(function (s) { s.flier = s.flier; }); ST.shots = []; RT.learner = new WL.Learner(); renderLearn(); renderLast(); toast('Learning cleared. Shots removed too.'); };
-['shoot', 'learn', 'setup', 'sessions'].forEach(function (k) { $('tab-' + k).onclick = function () { ['shoot', 'learn', 'setup', 'sessions'].forEach(function (j) { $('tab-' + j).setAttribute('aria-selected', j === k); $('pane-' + j).hidden = j !== k; }); if (k === 'learn') renderLearn(); if (k === 'sessions') renderSessions(); RT.dirty = true; }; });
+var TABS = ['shoot', 'learn', 'rel', 'model', 'setup', 'sessions'];
+TABS.forEach(function (k) { $('tab-' + k).onclick = function () { TABS.forEach(function (j) { $('tab-' + j).setAttribute('aria-selected', j === k); $('pane-' + j).hidden = j !== k; }); if (k === 'learn') renderLearn(); if (k === 'rel') renderRel(); if (k === 'model') renderModel(); if (k === 'setup') renderSetup(); if (k === 'sessions') renderSessions(); RT.dirty = true; }; });
 [[0, 'spd0'], [1, 'spd1'], [4, 'spd4'], [16, 'spd16']].forEach(function (p) { $(p[1]).onclick = function () { RT.speed = p[0]; ['spd0', 'spd1', 'spd4', 'spd16'].forEach(function (id) { $(id).setAttribute('aria-pressed', id === p[1]); }); }; });
 
-var lastFrame = 0, acc = 0, uiAcc = 0;
+var lastFrame = 0, acc = 0, uiAcc = 0, relAcc = 0;
 function frame(ts) {
   var dtR = lastFrame ? Math.min(0.1, (ts - lastFrame) / 1000) : 0; lastFrame = ts;
-  if (RT.speed > 0) { acc += dtR * RT.speed; var n = 0; while (acc >= 0.1 && n < 40) { step(0.1); acc -= 0.1; n++; } if (n >= 40) acc = 0; }
-  uiAcc += dtR;
+  if (ST.mode === 'live') { if (LIVE.at) RT.t = liveClock(); }
+  else if (RT.speed > 0) { acc += dtR * RT.speed; var n = 0; while (acc >= 0.1 && n < 40) { step(0.1); acc -= 0.1; n++; } if (n >= 40) acc = 0; }
+  uiAcc += dtR; relAcc += dtR;
+  if (relAcc > 1.5) {
+    relAcc = 0;
+    if (!$('pane-rel').hidden && RT.relDirty) { RT.relDirty = false; renderRel(); }
+    if (ST.autoPush && wlOn() && Date.now() - RT.lastPush > 60000) { pushWL(true); if (!$('pane-model').hidden) renderModel(); }
+  }
   if (uiAcc > 0.25 || RT.dirty) {
     uiAcc = 0; RT.calls = computeCalls(); renderCalls();
     if (ST.follow && RT.calls && !RT.awaiting) { var fd = Math.round(RT.calls.learned * 10) / 10; if (fd !== ST.dial) { ST.dial = fd; renderDial(); } }
@@ -924,6 +1370,11 @@ function frame(ts) {
   drawMap(dtR);
   requestAnimationFrame(frame);
 }
-load(ST);
+(function boot() {
+  var o = null;
+  if (lsRead('windLearningRange.mode') === 'live') { o = lsGet()[AUTOSAVE.live] || null; if (!o) { o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live.az = parseFloat(lsRead('fireAz')) || 0; o.live.rangeYd = parseFloat(lsRead('sol_range')) || 800; } }
+  load(o || ST);
+})();
+window.addEventListener('pagehide', function () { if (ST.mode === 'live') autosave(); });
 requestAnimationFrame(frame);
 </script>

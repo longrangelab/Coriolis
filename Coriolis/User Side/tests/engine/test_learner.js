@@ -78,12 +78,117 @@ ok('meters that always agree are reported as tied', () => {
 });
 ok('sector names and lookup', () => { assert.strictEqual(WL.SECTOR_NAMES[WL.sectorOf(270)], 'W'); assert.strictEqual(WL.sectorOf(359), 0); near(WL.fromDeg({ x: 10, y: 0 }), 270, 1e-9); });
 
+// ---- relationships between meters
+function relData(seconds, opts) {
+  opts = opts || {};
+  const R = new WL.Relations(), rr = rng(opts.seed || 7), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const G = []; let x = 0;
+  for (let t = 0; t < seconds + 40; t++) { x = 0.9 * x + 0.9 * gg(); G.push(x); }
+  const dir = opts.dir == null ? 270 : opts.dir;
+  for (let t = 20; t < seconds + 20; t++) {
+    const rd = { A: { spd: 10 + 2 * G[t] + 0.3 * gg(), dir: dir + 3 * gg() }, B: { spd: 0.8 * (10 + 2 * G[t - 12]) + 0.3 * gg(), dir: dir + 10 + 5 * gg() }, C: { spd: 10 + 2 * gg(), dir: dir } };
+    if (t % 50 === 0) delete rd.C;            // a meter that drops a reading now and then
+    R.ingest(t, rd);
+  }
+  return R;
+}
+const REL = relData(3000);
+ok('relations: finds who leads, by how long, and the speed ratio', () => {
+  const p = REL.pair('B', 'A', 6);
+  assert.strictEqual(p.lead, 'A'); assert.strictEqual(p.follow, 'B'); assert.strictEqual(p.lagS, 12);
+  assert(p.r > 0.9 && p.significant, 'r ' + p.r);
+  near(p.ratio, 0.8, 0.03, 'ratio'); near(p.gain, 0.8, 0.05, 'gain'); near(p.dirOff, 10, 1.5, 'dir offset');
+  assert(p.skill > 0.5, 'beats persistence ' + p.skill);
+  assert.strictEqual(WL.relationKind(p), 'leads');
+});
+ok('relations: an unrelated meter reads as different air', () => {
+  const p = REL.pair('A', 'C', 6);
+  assert(!p.significant || p.r < 0.2, 'r ' + p.r); assert.strictEqual(WL.relationKind(p), 'independent');
+});
+ok('relations: best predictor and Sentinel suggestion', () => {
+  const S = REL.summary(6);
+  assert.strictEqual(S.predictors.B.by, 'A'); assert.strictEqual(S.predictors.B.lagS, 12);
+  const sg = REL.suggestSentinels(6);
+  assert.strictEqual(sg.length, 1);
+  assert.deepStrictEqual([sg[0].sentId, sg[0].nodeId, sg[0].lagS], ['A', 'B', 12]);
+  assert(sg[0].spdPct >= 8 && sg[0].spdPct <= 50 && sg[0].dirDeg >= 8 && sg[0].dirDeg <= 45);
+  near(sg[0].ratio, 0.8, 0.03);
+});
+ok('relations: each wind direction is learned on its own', () => {
+  assert.strictEqual(REL.pair('A', 'B', 2), null);
+  assert(REL.sectorSecs[6] > 2900 && REL.sectorSecs[2] === 0);
+  near(REL.pair('A', 'B', 'all').lagS, 12, 0);
+});
+ok('relations: a wind on a sector edge counts for both sectors', () => {
+  const R = relData(400, { dir: 250 });       // 2.5 deg inside W, next to SW
+  assert(R.sectorSecs[6] > 300 && R.sectorSecs[5] > 300, R.sectorSecs.join(','));
+  const C = relData(400, { dir: 270 });
+  assert.strictEqual(C.sectorSecs[5], 0);
+});
+ok('relations: saved state round-trips', () => {
+  const R2 = new WL.Relations(JSON.parse(JSON.stringify(REL.toJSON())));
+  const a = REL.pair('A', 'B', 6), b = R2.pair('A', 'B', 6);
+  assert.strictEqual(b.lagS, a.lagS); near(b.r, a.r, 1e-4); near(b.ratio, a.ratio, 1e-4);
+});
+ok('relations: frozen-air lag from positions', () => {
+  const e = WL.expectedLag({ x: -100, y: 0 }, { x: 0, y: 0 }, { x: 10, y: 0 });
+  near(e.lagS, 100 / (10 * WL.YD_PER_S_PER_MPH), 1e-9); near(e.crossYd, 0, 1e-9);
+  assert(WL.upwindOk({ x: -100, y: 0 }, { x: 0, y: 0 }, { x: 10, y: 0 }));
+  assert(!WL.upwindOk({ x: 100, y: 0 }, { x: 0, y: 0 }, { x: 10, y: 0 }));
+});
+ok('second aligner: buckets readings by second, in order, once', () => {
+  const al = new WL.SecondAligner(5), out = [];
+  al.add('1', 10.2, 5, 270); al.add('2', 9.8, 6, 270); al.add('1', 11.1, 7, 270); al.add('1', 9.6, 4, 260);
+  al.release(16, (t, r) => out.push([t, r]));
+  assert.deepStrictEqual(out.map(o => o[0]), [10, 11]);
+  near(out[0][1]['1'].spd, 4.5, 1e-9); near(out[0][1]['2'].spd, 6, 1e-9);
+  al.add('1', 10.4, 9, 270);                  // too late: second 10 already went out
+  al.release(30, (t, r) => out.push([t, r]));
+  assert.strictEqual(out.length, 2);
+});
+ok('live model: one row per wind sector for Wind Lab', () => {
+  const L = new WL.Learner();
+  for (let i = 0; i < 300; i++) { const a = 10 + 4 * gauss(), c = 10 + 4 * gauss(); L.update([{ lkey: 'P1#0', x: 0.6 * a }, { lkey: 'P2#0', x: 0.4 * 0.7 * c }], 6, 0.6 * a + 0.4 * c + 0.3 * gauss(), 0.6); }
+  const meters = [
+    { id: 'P1', nodeId: 1, lkey: 'P1#0', x: 0, y: 100 }, { id: 'P2', nodeId: 2, lkey: 'P2#0', x: 10, y: 500 },
+    { id: 'S', nodeId: 5, lkey: 'S#0', x: -250, y: 450, role: 'sentinel' }];
+  const R = new WL.Relations();             // S leads P2 by 8 s; also a fake P2-leads-S pairing must be dropped by geometry
+  const rr = rng(3), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const G = []; let x = 0; for (let t = 0; t < 2100; t++) { x = 0.9 * x + gg(); G.push(x); }
+  for (let t = 20; t < 2000; t++) R.ingest(t, { S: { spd: 10 + 2 * G[t], dir: 270 }, P2: { spd: 9 + 2 * G[t - 8], dir: 270 }, P1: { spd: 10 + 2 * gg(), dir: 270 } });
+  const lm = WL.buildLiveModel({ name: 'T', meters, shooter: { x: 0, y: 0 }, target: { x: 0, y: 800 }, kernel, learner: L, relations: R, windMph: 10 });
+  assert.strictEqual(lm.kind, 'coriolis-live-model'); assert.strictEqual(lm.sectors.length, 8);
+  const W = lm.sectors[6];
+  near(W.wPct[1] + W.wPct[2], 100, 0.2); assert.strictEqual(W.wPct[5], 0, 'a sentinel takes no path weight');
+  near(W.mult[2], 1 / 0.7, 0.15, 'learned multiplier');
+  assert.strictEqual(W.sent.length, 1); assert.deepStrictEqual([W.sent[0].sentId, W.sent[0].nodeId, W.sent[0].lagS], [5, 2, 8]);
+  // wind from the east: S is downwind, so it may not warn anyone
+  assert.strictEqual(lm.sectors[2].sent.length, 0);
+});
+
 // ---- the page: served like the base serves it, no internet, no console errors
 async function pageTest() {
   const { chromium } = require('playwright');
+  // a mock base station: three meters on GPS north of the base; meter 2's
+  // gusts reach meter 1 six seconds later; /windsec keeps two minutes
+  const t0 = Date.now() - 120000, YDD = 111319.4908 * 1.0936133;
+  const gust = t => 8 + 2 * Math.sin(2 * Math.PI * t / 37) + 1.3 * Math.sin(2 * Math.PI * t / 13 + 1);
+  const spd = { 1: t => gust(t - 6), 2: t => gust(t), 3: t => 8 + 1.5 * Math.sin(2 * Math.PI * t / 23 + 2) };
+  const node = (id, yd) => ({ id, speed: spd[id]((Date.now() - t0) / 1000), speedSd: 1, dir: 270, dirSd: 5, lat: 45 + yd / YDD, lon: -93, gps: true, windOk: true });
   const server = http.createServer((req, res) => {
-    if (req.url === '/learn') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); }
-    else if (req.url === '/wind-learner.js') { res.writeHead(200, { 'content-type': 'application/javascript' }); res.end(LIB); }
+    const u = new URL(req.url, 'http://x'), json = o => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+    if (u.pathname === '/learn') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); }
+    else if (u.pathname === '/wind-learner.js') { res.writeHead(200, { 'content-type': 'application/javascript' }); res.end(LIB); }
+    else if (u.pathname === '/data.json') json({ base: { lat: 45, lon: -93, gps: true }, nodes: [node(1, 120), node(2, 400), node(3, 650)] });
+    else if (u.pathname === '/windsec') {
+      const now = Date.now() - t0, since = u.searchParams.has('since') ? +u.searchParams.get('since') : -1, nodes = {};
+      for (const id of [1, 2, 3]) {
+        const r = [];
+        for (let t = Math.max(0, now - 120000) - (now % 1000) + id * 7; t <= now; t += 1000) if (t > since) r.push([t, +spd[id](t / 1000).toFixed(2), 270]);
+        nodes[id] = { src: 'beacon', period: 1000, r };
+      }
+      json({ now, utc: null, avg_ms: 2000, nodes });
+    }
     else { res.writeHead(404); res.end(); }
   });
   await new Promise(ok => server.listen(0, ok));
@@ -99,8 +204,39 @@ async function pageTest() {
   assert(await p.evaluate(() => !!document.querySelector('a[href="/"]')), 'back link to Wind Lab');
   const wide = await p.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
   assert(!wide, 'page scrolls sideways at phone width');
+  // relationships learned in practice, and the model sent to Wind Lab
+  await p.evaluate(() => advance(600));
+  await p.click('#tab-rel');
+  assert(await p.evaluate(() => RT.rel.secs > 500 && document.querySelectorAll('#relTbl tbody tr').length === 10), 'relations table for 5 meters');
+  await p.click('#relTbl tbody tr'); assert(await p.evaluate(() => document.querySelector('#relChart polyline') !== null), 'lag chart drawn');
+  await p.click('#tab-model'); await p.click('#pushWL');
+  const lm = await p.evaluate(() => JSON.parse(localStorage.getItem('learnedModel')));
+  assert(lm && lm.sectors.length === 8 && lm.shots === 25 && await p.evaluate(() => localStorage.getItem("learnedOn") === "1"), 'Wind Lab model written');
+  await p.fill('#modelName', 'Test range'); await p.click('#modelSave');
+  assert(await p.evaluate(() => !!JSON.parse(localStorage.getItem('windLearningRange.models'))['Test range']), 'model saved');
+  await p.click('#stopWL'); assert(await p.evaluate(() => localStorage.getItem('learnedOn') === '0'), 'Stop turns Wind Lab back to its own settings');
+  // live mode against the mock base
+  await p.click('#modeLive');
+  await p.waitForFunction(() => ST.mode === 'live' && ST.meters.length === 3 && RT.calls, null, { timeout: 15000 });
+  const geo = await p.evaluate(() => ST.meters.map(m => [m.id, m.x, m.y, m.src]));
+  assert(Math.abs(geo[1][2] - 400) < 1 && Math.abs(geo[1][1]) < 1 && geo[1][3] === 'GPS', 'meter 2 placed 400 yd north from GPS ' + JSON.stringify(geo));
+  await p.click('#tab-shoot'); await p.click('#shoot');
+  assert(await p.evaluate(() => !!RT.awaiting && RT.awaiting.live), 'live SHOT waits for a plot');
+  const box = await p.locator('#tgt').boundingBox();
+  await p.locator('#tgt').click({ position: { x: box.width * 0.6, y: box.height * 0.46 } });
+  const shot = await p.evaluate(() => ({ n: RT.learner.n, s: ST.shots[0] }));
+  assert(shot.n === 1 && shot.s.plotted && Math.abs(shot.s.perfect - (shot.s.dial - shot.s.impact.x)) < 1e-9, 'live shot plotted and learned ' + JSON.stringify(shot));
+  await p.waitForFunction(() => RT.rel.secs > 112, null, { timeout: 20000 });
+  const lp = await p.evaluate(() => RT.rel.pair('1', '2', 6, { minN: 80 }));
+  assert(lp && lp.lead === '2' && lp.lagS === 6 && lp.r > 0.9, 'live: meter 2 warns meter 1 six seconds ahead ' + JSON.stringify(lp));
+  // reload: it comes back in live mode with the shot
+  await p.evaluate(() => autosave());
+  await p.reload();
+  await p.waitForFunction(() => ST.mode === 'live' && ST.shots.length === 1, null, { timeout: 10000 });
+  await p.click('#modeSim');
+  assert(await p.evaluate(() => ST.mode === 'sim' && ST.shots.length === 25), 'practice range comes back with its shots');
   await b.close(); server.close();
   assert.deepStrictEqual(errs, []);
-  pass++; console.log('ok  Learn page runs offline at phone width, Fire 25 trains the model');
+  pass++; console.log('ok  Learn page: offline at phone width, Fire 25 trains, relations, model to Wind Lab, live mode on a mock base');
 }
 (process.argv.includes('--page') ? pageTest() : Promise.resolve()).then(() => console.log(pass + ' passed'), e => { console.error(e); process.exit(1); });
