@@ -88,6 +88,10 @@ main{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px;m
 .call.learned{border-color:var(--accent)}
 .call .v{font-family:var(--f-display);font-size:2rem;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums}
 .call .s{font-size:.78rem;color:var(--muted)}
+.outlook{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:.8rem}
+.outlook div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 6px;text-align:center}
+.outlook b{display:block;font-family:"IBM Plex Mono",monospace;font-size:.9rem}
+.outlook .muted{font-size:.72rem}
 .dial{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .dialbox{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .dialbox button{width:44px;height:48px;border:0;background:var(--panel2);font-size:1.4rem;cursor:pointer}
@@ -178,6 +182,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="call"><div class="lbl">Today's call</div><div class="v" id="callToday">–</div><div class="s" id="callTodayS">every meter, weighted by spot on the path</div></div>
         <div class="call learned"><div class="lbl">Learned call</div><div class="v" id="callLearn">–</div><div class="s" id="callLearnS">relevant meters, lead time, learned multipliers</div></div>
       </div>
+      <div class="outlook" id="outlook" aria-live="off"></div>
       <div>
         <div class="lbl" style="margin-bottom:6px">Scope dialed (windage)</div>
         <div class="dial">
@@ -211,10 +216,19 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="chip"><div class="lbl">Today's call error</div><div class="v" id="kToday">–</div><div class="note">RMS, last 20 shots</div></div>
         <div class="chip"><div class="lbl">Learned call error</div><div class="v" id="kLearn">–</div><div class="note">RMS, last 20 shots</div></div>
         <div class="chip"><div class="lbl">Hits, last 20</div><div class="v" id="kHits">–</div><div class="note" id="kHitsN">on the target you picked</div></div>
+        <div class="chip"><div class="lbl">Call doubt now</div><div class="v" id="kDoubt">–</div><div class="note" id="kDoubtN">1 SD, wind only</div></div>
+        <div class="chip"><div class="lbl">Is the doubt honest?</div><div class="v" id="kCal">–</div><div class="note" id="kCalN">real error ÷ stated doubt, last 20</div></div>
       </div>
+      <div class="note" id="changeNote"></div>
       <div>
         <div class="lbl" style="margin-bottom:4px">Call error by shot (mil, 15-shot rolling RMS)</div>
         <svg class="chart" id="chart" viewBox="0 0 520 190" role="img" aria-label="Call error chart"></svg>
+        <div class="note">The dashed line is the doubt the model stated before each shot. When the learned line sits on it, the ± and hit chance on the Shoot tab can be trusted.</div>
+      </div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Wind forecasts, learned from every 1 s reading</div>
+        <div class="tblwrap"><table id="fcTbl"></table></div>
+        <div class="note">Skill is how much of the error of &ldquo;it stays as it is now&rdquo; the forecast removes, 2 to 20 s ahead, with its typical miss underneath. A meter with an upwind early warning forecasts much better.</div>
       </div>
       <div>
         <div class="lbl" style="margin-bottom:4px">Meters, for the current wind and target</div>
@@ -295,6 +309,8 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <label class="f">Muzzle velocity (fps)<input id="sMv" type="number" step="5"></label>
         <label class="f">G7 BC<input id="sBc" type="number" step="0.001"></label>
         <label class="f">Rifle + shooter spread (mil, 1 SD)<input id="sSd" type="number" step="0.01"></label>
+        <label class="f">Your delay, call to trigger (s)<input id="sDelay" type="number" step="0.5" min="0" max="20"></label>
+        <label class="ck" style="grid-column:1/-1"><input id="lFc" type="checkbox"> Forecast each meter's wind to the moment the bullet passes it (learned from the meters' own 1 s history and from the meters upwind of them)</label>
         <div class="note" style="grid-column:1/-1">Air is fixed at 59 °F, 29.92 inHg. Spin drift and aero jump are left out so the windage numbers are wind only.</div>
       </fieldset>
       <div id="simSetup" style="display:flex;flex-direction:column;gap:14px">
@@ -405,7 +421,7 @@ function defaultState() {
   return {
     v: 1, seed: (Math.random() * 1e9) | 0,
     settings: { mv: 2710, bc: 0.326, rifleSd: 0.10, plateShape: 'rect', plateW: 18, plateH: 24, windSpeed: 10, windFrom: 270, gust: 2.5, wobble: 12, gustSize: 'medium', drift: true,
-      radio: 'sf9', loss: 3.5, sendMissed: true, useLead: true, unmeasured: 0.8 },
+      radio: 'sf9', loss: 3.5, sendMissed: true, useLead: true, unmeasured: 0.8, useForecast: true, delay: 2 },
     shooter: { x: 0, y: 0 }, target: { x: 0, y: 800 },
     meters: [
       { id: 'M1', type: 'inspeed', x: -14, y: 45, cal: 1.0, epoch: 0 },
@@ -510,7 +526,7 @@ function deliver(m, N) {
   } else { H.push(live); fresh.push(a); }
   while (H.length && H[0].t < RT.t - 120) H.shift();
   // the same timed 1 s readings the base serves on /windsec feed the relationships
-  fresh.forEach(function (r) { RT.align.add(m.id, r.t, Math.hypot(r.x, r.y), WL.fromDeg(r)); });
+  fresh.forEach(function (r) { var sp = Math.hypot(r.x, r.y), dg = WL.fromDeg(r); RT.align.add(m.id, r.t, sp, dg); RT.fc.add(m.id, r.t, sp, dg); });
 }
 function ingestRel(t, readings) { RT.rel.ingest(t, readings); RT.relDirty = true; }
 function valueAt(id, tq) {
@@ -534,6 +550,7 @@ function tickField(dt) {
 function step(dt) {
   RT.t += dt; tickField(dt); tickMeters(dt);
   if (RT.t >= RT.relNext) { RT.relNext = Math.floor(RT.t) + 1; RT.align.release(RT.t, ingestRel); }
+  if (RT.t >= RT.leadNext) { RT.leadNext = RT.t + 10; if (!RT.calls) RT.calls = computeCalls(); refreshLeaders(); }
   for (var i = RT.pending.length - 1; i >= 0; i--) {
     var p = RT.pending[i];
     if (RT.t >= p.at) { RT.pending.splice(i, 1); impactArrives(p.shot); }
@@ -543,8 +560,10 @@ function advance(sec) { var n = Math.round(sec / 0.1); for (var i = 0; i < n; i+
 
 // ------------------------------------------------------------------ calls
 function ball() { var s = ST.settings, R = Math.hypot(ST.target.x - ST.shooter.x, ST.target.y - ST.shooter.y); return ballistics(s.mv, s.bc, Math.max(50, Math.round(R))); }
-function computeCalls() {
+// delay: seconds from now until the trigger breaks (the call is for that moment)
+function computeCalls(delay) {
   var B = RT.base, bl = ball(), s = ST.settings;
+  delay = delay || 0;
   var have = ST.meters.filter(function (m) { return B.latest[m.id] && isPath(m) && (ST.mode !== 'live' || RT.t - B.latest[m.id].t < 15); });
   if (!have.length) return null;
   var lof = WL.lineOfFire(ST.shooter, ST.target);
@@ -557,25 +576,58 @@ function computeCalls() {
   var geo = WL.geometry(have, ST.shooter, ST.target, avg, {});
   var wL = WL.physicsWeights(geo.rows, lof.R, bl.kernel);
   var sector = WL.sectorOf(WL.fromDeg(avg));
-  var feats = [], used = {};
+  var feats = [], used = {}, fcVar = 0, nFc = 0;
   geo.rows.forEach(function (r) {
     if (!r.included) return;
     var m = have.find(function (x) { return x.id === r.id; });
-    var tq = RT.t;
-    if (s.useLead && r.lead > 0) tq = RT.t + bl.tAt(Math.max(0, Math.min(lof.R, r.s))) - r.lead;
-    var v = valueAt(r.id, tq), c = WL.components(v, lof).cross;
-    feats.push({ lkey: lkey(m), x: (wL[r.id] || 0) * c, id: r.id });
-    used[r.id] = { cross: c, age: RT.t - v.t, w: wL[r.id] || 0 };
+    // the moment the air this meter speaks for meets the bullet: trigger
+    // (now + delay) + flight time to its stretch - its upwind lead
+    var lead = s.useLead && r.lead > 0 ? r.lead : 0, sC = Math.max(0, Math.min(lof.R, r.s));
+    var tq = RT.t + delay + (lead > 0 || s.useForecast ? bl.tAt(sC) : 0) - lead;
+    var v = null, sdk = 0, src = 'reading', fl = RT.fc.latest(r.id);
+    if (s.useForecast && fl != null && tq > fl + 0.5) {
+      var f = RT.fc.predict(r.id, tq);
+      if (f && f.ready) { v = { x: f.x, y: f.y, t: tq }; sdk = f.sd || 0; src = 'forecast ' + Math.round(f.h) + ' s'; nFc++; }
+    }
+    if (!v) v = valueAt(r.id, tq);
+    var c = WL.components(v, lof).cross, w = wL[r.id] || 0;
+    feats.push({ lkey: lkey(m), x: w * c, id: r.id });
+    fcVar += Math.pow(w * sdk / Math.SQRT2, 2);          // forecast doubt, crosswind share
+    used[r.id] = { cross: c, age: RT.t - v.t, w: w, src: src, sd: sdk };
   });
   var pred = RT.learner.predict(feats, sector);
-  return { lof: lof, bl: bl, today: -bl.mpm * cT, learned: -bl.mpm * pred.mean, learnedSd: bl.mpm * pred.sd,
-    feats: feats, sector: sector, geo: geo, wToday: wToday, wL: wL, used: used, avg: avg, have: have };
+  // the whole call's doubt (mil, 1 SD): what the model is unsure of, the
+  // forecasts' own error and the wind no meter sees
+  // scaled by how big the surprises have really been (learned, shot by shot)
+  var rifleMph = s.rifleSd / bl.mpm, base = pred.sd * pred.sd + fcVar + s.unmeasured * s.unmeasured, k2 = Math.pow(RT.learner.noiseScale(), 2);
+  var mphSd = Math.sqrt(Math.max(base * Math.min(1, k2), k2 * (base + rifleMph * rifleMph) - rifleMph * rifleMph)), callSd = bl.mpm * mphSd;
+  var k = lof.R * 0.036, round = s.plateShape === 'circle';
+  var hit = WL.hitChance({ windSd: callSd, rifleSd: s.rifleSd, halfW: s.plateW / k / 2, halfH: (round ? s.plateW : s.plateH) / k / 2, round: round });
+  return { lof: lof, bl: bl, today: -bl.mpm * cT, learned: -bl.mpm * pred.mean, learnedSd: bl.mpm * pred.sd, callSd: callSd, hit: hit,
+    delay: delay, nFc: nFc, feats: feats, sector: sector, geo: geo, wToday: wToday, wL: wL, used: used, avg: avg, have: have };
+}
+// the learned call if the shot breaks d seconds from now, for a few d
+function outlook() { return [0, 3, 6, 10].map(function (d) { var C = computeCalls((ST.settings.delay || 0) + d); return C ? { d: d, v: C.learned, sd: C.callSd, hit: C.hit } : null; }); }
+// best early-warning meter for each meter in the current wind (for the forecaster)
+function refreshLeaders() {
+  var sec = RT.calls ? RT.calls.sector : null, out = {};
+  if (sec != null) {
+    var S = RT.rel.summary(sec);
+    Object.keys(S.predictors).forEach(function (f) {
+      var p = S.predictors[f], A = ST.meters.find(function (m) { return m.id === p.by; }), B = ST.meters.find(function (m) { return m.id === f; });
+      if (p.lagS >= 2 && WL.upwindOk(A, B, sectorWind(sec, 10))) out[f] = p;
+    });
+  }
+  RT.leaders = out;
 }
 
 // ------------------------------------------------------------------ shots
-function fire(dial) {
+// Cd: the call as it stood when the shooter decided (shown on screen); the
+// shot learns from the meters as they stand when the trigger breaks.
+function fire(dial, Cd) {
   var C = computeCalls(); if (!C) { toast('No meter has reported yet. Give it a few seconds.'); return null; }
-  if (ST.mode === 'live') return fireLive(dial, C);
+  Cd = Cd || callAt(RT.t - (ST.settings.delay || 0)) || RT.calls || C;
+  if (ST.mode === 'live') return fireLive(dial, C, Cd);
   var bl = C.bl, lof = C.lof, t0 = RT.t, X0 = { x: RT.field.X.x, y: RT.field.X.y }, U = meanVec(RT.field);
   var dr = bl.drift(function (xm, tf) {
     var syd = xm / YD, px = ST.shooter.x + lof.u.x * syd, py = ST.shooter.y + lof.u.y * syd;
@@ -583,7 +635,7 @@ function fire(dial) {
     var c = WL.components(v, lof); return { c: c.cross * MPH, h: c.head * MPH };
   });
   var sd = ST.settings.rifleSd;
-  var shot = { n: ST.shots.length + 1, t: t0, range: Math.round(lof.R), dial: dial, today: C.today, learned: C.learned, learnedSd: C.learnedSd,
+  var shot = { n: ST.shots.length + 1, t: t0, range: Math.round(lof.R), dial: dial, today: Cd.today, learned: Cd.learned, learnedSd: Cd.learnedSd, callSd: Cd.callSd, hitP: Cd.hit,
     perfect: -dr.mil, truth: { x: dr.mil + dial + gauss() * sd, y: gauss() * sd * 1.1 }, impact: null, plotted: false, flier: false,
     feats: C.feats.map(function (f) { return { lkey: f.lkey, x: f.x }; }), sector: C.sector, mpm: bl.mpm,
     sigma: Math.sqrt(Math.pow(sd / bl.mpm, 2) + Math.pow(ST.settings.unmeasured, 2)), tof: dr.tof };
@@ -593,13 +645,13 @@ function fire(dial) {
 }
 // A real shot: the calls and each meter's reading at the trigger are saved;
 // the shooter (or spotter) then taps where it landed.
-function fireLive(dial, C) {
+function fireLive(dial, C, Cd) {
   var sd = ST.settings.rifleSd, bl = C.bl;
   var shot = { n: ST.shots.length + 1, t: RT.t, utc: LIVE.utc ? Math.round(LIVE.utc + (Date.now() - LIVE.at)) : null, live: true,
-    range: Math.round(C.lof.R), az: Math.round(C.lof.bearing), dial: dial, today: C.today, learned: C.learned, learnedSd: C.learnedSd,
+    range: Math.round(C.lof.R), az: Math.round(C.lof.bearing), dial: dial, today: Cd.today, learned: Cd.learned, learnedSd: Cd.learnedSd, callSd: Cd.callSd, hitP: Cd.hit,
     perfect: null, truth: null, impact: null, plotted: false, flier: false,
     feats: C.feats.map(function (f) { return { lkey: f.lkey, x: f.x }; }), sector: C.sector, mpm: bl.mpm,
-    meters: Object.keys(C.used).map(function (id) { var u = C.used[id]; return { id: id, cross: Math.round(u.cross * 100) / 100, age: Math.round(u.age * 10) / 10, w: Math.round(u.w * 1000) / 1000 }; }),
+    meters: Object.keys(C.used).map(function (id) { var u = C.used[id]; return { id: id, cross: Math.round(u.cross * 100) / 100, age: Math.round(u.age * 10) / 10, w: Math.round(u.w * 1000) / 1000, src: u.src }; }),
     sigma: Math.sqrt(Math.pow(sd / bl.mpm, 2) + Math.pow(ST.settings.unmeasured, 2)), tof: bl.tof };
   ST.shots.push(shot);
   RT.awaiting = shot; showPrompt('Shot ' + shot.n + ' recorded. Tap the target view where it hit (anywhere off the plate is ground).');
@@ -618,7 +670,7 @@ function plotShot(shot, pt) {
   shot.hitToday = isHit(shot, pt.x - shot.dial + shot.today, pt.y);
   shot.y = (pt.x - shot.dial) / shot.mpm;
   if (shot.live) shot.perfect = shot.dial - pt.x;     // the hold that would have centred it
-  if (!shot.flier) RT.learner.update(shot.feats, shot.sector, shot.y, shot.sigma);
+  if (!shot.flier) { var up = RT.learner.update(shot.feats, shot.sector, shot.y, shot.sigma); if (up.changed) { shot.changed = true; toast('Shots keep landing off the call: conditions changed, so the model is relearning faster.'); } }
   if (RT.awaiting === shot) { RT.awaiting = null; showPrompt(null); }
   RT.dirty = true; renderLast(); renderLearn();
   if (ST.autoPush && wlOn()) pushWL(true);
@@ -637,9 +689,10 @@ function burst(mode) {
   RT.burst = true;
   for (var i = 0; i < 25; i++) {
     advance(6 + rnd() * 12);
-    var C = computeCalls(); if (!C) { advance(5); C = computeCalls(); if (!C) break; }
+    var dl = ST.settings.delay || 0;
+    var C = computeCalls(dl); if (!C) { advance(5); C = computeCalls(dl); if (!C) break; }
     var d = Math.round((mode === 'learned' ? C.learned : C.today) / 0.1) * 0.1;
-    ST.dial = d; var sh = fire(d); if (!sh) break;
+    ST.dial = d; advance(dl); var sh = fire(d, C); if (!sh) break;
     advance(sh.tof + 0.15);
   }
   RT.burst = false; renderDial(); renderLast(); renderLearn(); toast('Fired 25 shots. The spotter plotted each one.');
@@ -856,8 +909,23 @@ function renderCalls() {
   $('callLearn').textContent = lr(C.learned);
   var nUsed = Object.keys(C.used).length;
   $('callTodayS').textContent = C.have.length + ' meters · ' + C.bl.mpm.toFixed(3) + ' mil per mph at ' + Math.round(C.lof.R) + ' yd';
-  $('callLearnS').textContent = '± ' + C.learnedSd.toFixed(2) + ' mil model doubt · ' + nUsed + ' of ' + C.have.length + ' meters';
+  $('callLearnS').textContent = '± ' + C.callSd.toFixed(2) + ' mil · ' + Math.round(C.hit * 100) + '% hit chance · ' + nUsed + ' of ' + C.have.length + ' meters' + (C.nFc ? ', ' + C.nFc + ' forecast' : '');
   $('shoot').disabled = !!RT.awaiting;
+}
+// the learned call if the trigger breaks later than planned
+function renderOutlook() {
+  var el = $('outlook'), O = RT.calls ? outlook() : [];
+  if (!O.length || !O[0]) { el.innerHTML = ''; return; }
+  el.innerHTML = O.map(function (o, i) {
+    if (!o) return '<div>–</div>';
+    return '<div><span class="muted">' + (i ? '+' + o.d + ' s' : 'at ' + (ST.settings.delay || 0) + ' s') + '</span><b>' + lr(o.v) + '</b><span class="muted">± ' + o.sd.toFixed(2) + ' · ' + Math.round(o.hit * 100) + '%</span></div>';
+  }).join('');
+}
+// what the screen said `ago` seconds back (the call the shooter acted on)
+function callAt(t) {
+  var L = RT.callLog || [], best = null;
+  for (var i = L.length - 1; i >= 0; i--) { best = L[i].C; if (L[i].t <= t) break; }
+  return best;
 }
 function renderLast() {
   var s = ST.shots[ST.shots.length - 1], el = $('lastShot');
@@ -866,6 +934,7 @@ function renderLast() {
   if (!s.plotted) rows.push(['Status', s.live ? 'waiting for you to plot it' : 'in flight / waiting for plot']);
   else rows.push(['Landed', (s.hit ? 'HIT · ' : 'Miss · ') + lr(s.impact.x, 2) + ' mil, ' + ud(s.impact.y)], ['Wind needed', lr(s.perfect, 2) + (s.live ? ' mil (from where it hit)' : ' mil (sim truth)')],
     ["Today's call", lr(s.today, 2) + ' (off by ' + Math.abs(s.today - s.perfect).toFixed(2) + ')'], ['Learned call', lr(s.learned, 2) + ' (off by ' + Math.abs(s.learned - s.perfect).toFixed(2) + ')']);
+  if (s.callSd > 0) rows.push(['Call said', '± ' + s.callSd.toFixed(2) + ' mil, ' + Math.round((s.hitP || 0) * 100) + '% hit chance']);
   el.innerHTML = rows.map(function (r) { return '<dt>' + r[0] + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
 }
 function renderLearn() {
@@ -878,7 +947,19 @@ function renderLearn() {
   var hl = P.slice(-20).filter(function (s) { return s.target; });
   $('kHits').textContent = hl.length ? hl.filter(function (s) { return s.hit; }).length + ' of ' + hl.length : '–';
   $('kHitsN').textContent = hl.length ? "today's call would have hit " + hl.filter(function (s) { return s.hitToday; }).length : 'on the target you picked';
+  var C0 = RT.calls;
+  $('kDoubt').textContent = C0 ? '± ' + C0.callSd.toFixed(2) + ' mil' : '–';
+  $('kDoubtN').textContent = C0 ? Math.round(C0.hit * 100) + '% hit chance with the learned call' : '1 SD, wind only';
+  var cal = last.filter(function (s) { return s.callSd > 0; });
+  if (cal.length >= 5) {
+    var ratio = rms(cal.map(function (s) { return s.learned - s.perfect; })) / rms(cal.map(function (s) { return s.callSd; }));
+    $('kCal').textContent = '× ' + ratio.toFixed(2);
+    $('kCalN').textContent = ratio > 1.4 ? 'misses are bigger than it says: still learning, or the wind changed' : ratio < 0.7 ? 'calls are better than it says' : 'about right';
+  } else { $('kCal').textContent = '–'; $('kCalN').textContent = 'real error ÷ stated doubt, last 20'; }
+  var ev = RT.learner.events || [];
+  $('changeNote').textContent = ev.length ? 'Conditions changed ' + ev.length + (ev.length === 1 ? ' time' : ' times') + ' (last at learned shot ' + ev[ev.length - 1].n + ', calls running ' + (ev[ev.length - 1].zm > 0 ? 'short' : 'long') + '). The model loosened its grip on what it knew and relearned from the next shots.' : '';
   drawChart(P);
+  renderForecasts();
   // meter table
   var C = RT.calls, html = '<thead><tr><th>Meter</th><th>Role now</th><th>Path weight<br>today → learned</th><th>Multiplier<br>this wind</th><th>Status</th></tr></thead><tbody>';
   if (C) {
@@ -917,12 +998,24 @@ function renderLearn() {
 }
 $('shotTbl').addEventListener('change', function (e) { var n = +e.target.dataset.flier; if (!n) return; var s = ST.shots[n - 1]; s.flier = e.target.checked; relearn(); RT.dirty = true; });
 
+function renderForecasts() {
+  var ids = RT.fc.meters(), H = RT.fc.H, h = '<thead><tr><th>Meter</th>' + H.map(function (x) { return '<th>' + x + ' s</th>'; }).join('') + '<th>Early warning</th></tr></thead><tbody>';
+  ids.forEach(function (id) {
+    var st = RT.fc.stats(id), ld = RT.leaders[id];
+    h += '<tr><td><b>' + esc(id) + '</b></td>' + st.map(function (x) {
+      if (!x.n || x.n < 60) return '<td class="n muted">…</td>';
+      return '<td class="n" title="' + x.rmse.toFixed(2) + ' mph off, vs ' + x.rmseStay.toFixed(2) + ' if it stays">' + Math.round(x.skill * 100) + '%<div class="muted">' + x.rmse.toFixed(1) + ' mph</div></td>';
+    }).join('') + '<td>' + (ld ? esc(ld.by) + ', ' + Math.round(ld.lagS) + ' s ahead' : '<span class="muted">none</span>') + '</td></tr>';
+  });
+  $('fcTbl').innerHTML = h + (ids.length ? '' : '<tr><td colspan="' + (H.length + 2) + '" class="muted">Needs a minute of 1 s readings.</td></tr>') + '</tbody>';
+}
 function drawChart(P) {
   var svg = $('chart'), W = 520, H = 190, L = 40, Rm = 10, T = 12, B = 26;
   var data = P.slice(-120);
   if (!data.length) { svg.innerHTML = '<text x="' + W / 2 + '" y="' + H / 2 + '" text-anchor="middle" fill="' + COL.muted + '" font-size="13">Plotted shots show up here</text>'; return; }
   function roll(key) { return data.map(function (s, i) { var w = data.slice(Math.max(0, i - 14), i + 1); return rms(w.map(function (x) { return x[key] - x.perfect; })); }); }
   var rT = roll('today'), rL = roll('learned');
+  var rD = data.map(function (s, i) { var w = data.slice(Math.max(0, i - 14), i + 1).filter(function (x) { return x.callSd > 0; }); return w.length ? rms(w.map(function (x) { return x.callSd; })) : null; });
   var mx = Math.max(0.2, Math.max.apply(0, rT.concat(rL).concat(data.map(function (s) { return Math.abs(s.learned - s.perfect); })))) * 1.1;
   var step = mx > 0.8 ? 0.2 : 0.1; mx = Math.ceil(mx / step) * step;
   var xs = function (i) { return L + (data.length === 1 ? 0.5 : i / (data.length - 1)) * (W - L - Rm); }, ys = function (v) { return T + (1 - v / mx) * (H - T - B); };
@@ -931,6 +1024,8 @@ function drawChart(P) {
   data.forEach(function (s, i) { g += '<circle cx="' + xs(i) + '" cy="' + ys(Math.abs(s.learned - s.perfect)) + '" r="2.2" fill="' + COL.accent + '" opacity="0.35"/>'; });
   function path(arr, col, wd) { return '<polyline fill="none" stroke="' + col + '" stroke-width="' + wd + '" stroke-linejoin="round" points="' + arr.map(function (v, i) { return xs(i).toFixed(1) + ',' + ys(v).toFixed(1); }).join(' ') + '"/>'; }
   g += path(rT, COL.today, 2) + path(rL, COL.accent, 2.6);
+  var dp = rD.map(function (v, i) { return v == null ? null : xs(i).toFixed(1) + ',' + ys(Math.min(mx, v)).toFixed(1); }).filter(Boolean);
+  if (dp.length > 1) g += '<polyline fill="none" stroke="' + COL.accent + '" stroke-width="1.6" stroke-dasharray="5 4" opacity="0.8" points="' + dp.join(' ') + '"/>';
   var li = data.length - 1;
   g += '<circle cx="' + xs(li) + '" cy="' + ys(rL[li]) + '" r="4" fill="' + COL.accent + '"/><circle cx="' + xs(li) + '" cy="' + ys(rT[li]) + '" r="3.5" fill="' + COL.today + '"/>';
   g += '<text x="' + L + '" y="' + (H - 6) + '" font-size="11" fill="' + COL.muted + '">shot ' + data[0].n + '</text><text x="' + (W - Rm) + '" y="' + (H - 6) + '" text-anchor="end" font-size="11" fill="' + COL.muted + '">shot ' + data[li].n + '</text>';
@@ -943,7 +1038,7 @@ function bindNum(id, key, after) { var el = $(id); el.value = ST.settings[key]; 
 function bindCk(id, key, after) { var el = $(id); el.checked = !!ST.settings[key]; el.onchange = function () { ST.settings[key] = el.checked; if (after) after(); }; }
 function renderSetup() {
   if (ST.mode === 'live') renderLiveSetup();
-  bindNum('sMv', 'mv', function () { ballCache = {}; }); bindNum('sBc', 'bc', function () { ballCache = {}; }); bindNum('sSd', 'rifleSd');
+  bindNum('sMv', 'mv', function () { ballCache = {}; }); bindNum('sBc', 'bc', function () { ballCache = {}; }); bindNum('sSd', 'rifleSd'); bindNum('sDelay', 'delay'); bindCk('lFc', 'useForecast');
   renderTargetPick();
   bindNum('wS', 'windSpeed', function () { RT.field.S = ST.settings.windSpeed; }); bindNum('wD', 'windFrom', function () { RT.field.D = ST.settings.windFrom; }); bindNum('wG', 'gust'); bindNum('wW', 'wobble'); bindCk('wDrift', 'drift');
   var ws = $('wSize'); ws.value = ST.settings.gustSize; ws.onchange = function () { ST.settings.gustSize = ws.value; var F = makeField(ST.seed); F.X = RT.field.X; F.S = RT.field.S; F.D = RT.field.D; RT.field = F; };
@@ -984,7 +1079,7 @@ $('follow').onchange = function () { ST.follow = $('follow').checked; };
 var LSK = 'windLearningRange.sessions';
 function lsGet() { try { return JSON.parse(localStorage.getItem(LSK) || '{}'); } catch (e) { return {}; } }
 function lsSet(o) { try { localStorage.setItem(LSK, JSON.stringify(o)); return true; } catch (e) { return false; } }
-function snapshot(noLog) { var o = JSON.parse(JSON.stringify(noLog ? Object.assign({}, ST, { windLog: [] }) : ST)); o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.savedAt = new Date().toISOString(); o.simT = ST.mode === 'live' ? 0 : RT.t; o.kind = 'coriolis-learn-session'; return o; }
+function snapshot(noLog) { var o = JSON.parse(JSON.stringify(noLog ? Object.assign({}, ST, { windLog: [] }) : ST)); o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.forecaster = RT.fc.toJSON(); o.savedAt = new Date().toISOString(); o.simT = ST.mode === 'live' ? 0 : RT.t; o.kind = 'coriolis-learn-session'; return o; }
 // Big live wind logs may not fit in browser storage: then the session is kept
 // without its raw 1 s log (the model and relationships still hold what it learned).
 function saveSession(n, quiet) {
@@ -1057,7 +1152,7 @@ function ingestWindSec(j) {
       if (H.length && t <= H[H.length - 1].t + 0.05) return;
       var d = deg * Math.PI / 180, v = { t: t, x: -Math.sin(d) * mph, y: -Math.cos(d) * mph };
       H.push(v); B.latest[id] = v;
-      RT.align.add(id, t, mph, deg);
+      RT.align.add(id, t, mph, deg); RT.fc.add(id, t, mph, deg);
       ST.windLog.push([Math.round(q[0]), id, mph, deg]);
     });
     while (H.length && H[0].t < nowS - 300) H.shift();
@@ -1081,6 +1176,7 @@ async function livePoll() {
     LIVE.baseNow = j.now; LIVE.at = Date.now(); LIVE.utc = j.utc; LIVE.ok = true; LIVE.lastOk = Date.now();
     ingestWindSec(j);
   } catch (e) { LIVE.ok = false; }
+  if (LIVE.ok && Date.now() - (LIVE.leadAt || 0) > 10000) { LIVE.leadAt = Date.now(); refreshLeaders(); }
   LIVE.busy = false; renderLiveStat();
   if (LIVE.ok && Date.now() - LIVE.lastSave > 60000) { LIVE.lastSave = Date.now(); autosave(); }
 }
@@ -1282,11 +1378,12 @@ function modelSnapshot(name) {
   return { kind: 'coriolis-learned-model', v: 1, name: name, savedAt: new Date().toISOString(), mode: ST.mode,
     meters: JSON.parse(JSON.stringify(ST.meters)), shooter: ST.shooter, target: ST.target, live: ST.mode === 'live' ? { rangeYd: ST.live.rangeYd, az: ST.live.az, anchors: ST.live.anchors, roles: ST.live.roles || {} } : null,
     nodeMap: ST.nodeMap, drive: ST.drive, settings: { mv: ST.settings.mv, bc: ST.settings.bc, rifleSd: ST.settings.rifleSd, unmeasured: ST.settings.unmeasured },
-    learner: RT.learner.toJSON(), relations: RT.rel.toJSON(), shots: RT.learner.n };
+    learner: RT.learner.toJSON(), relations: RT.rel.toJSON(), forecaster: RT.fc.toJSON(), shots: RT.learner.n };
 }
 function loadModel(o) {
   if (!o || o.kind !== 'coriolis-learned-model') { toast(o && o.kind === 'coriolis-live-model' ? 'That is a Wind Lab file; use "Load a Wind Lab file".' : 'That is not a model file.'); return; }
   RT.learner = new WL.Learner(o.learner); RT.rel = new WL.Relations(o.relations); RT.rel.lastT = null;
+  if (o.forecaster) RT.fc = new WL.Forecaster(o.forecaster, { leaderFn: function (id) { return RT.leaders[id] || null; } });
   if (o.drive) ST.drive = Object.assign(ST.drive, o.drive);
   if (o.nodeMap) ST.nodeMap = o.nodeMap;
   if (o.settings) Object.assign(ST.settings, o.settings);
@@ -1331,7 +1428,8 @@ function load(o) {
   if (!Array.isArray(ST.windLog)) ST.windLog = [];
   stopLive();
   RT = { t: o.simT || 0, field: null, nodes: {}, base: { latest: {}, hist: {} }, pending: [], speed: RT.speed || 1, awaiting: null, dirty: true, calls: null,
-    rel: new WL.Relations(o.relations || null), align: new WL.SecondAligner(ST.mode === 'live' ? 8 : 10), relNext: 0, lastPush: 0 };
+    rel: new WL.Relations(o.relations || null), align: new WL.SecondAligner(ST.mode === 'live' ? 8 : 10), relNext: 0, lastPush: 0, leadNext: 0, leaders: {} };
+  RT.fc = new WL.Forecaster(o.forecaster || null, { leaderFn: function (id) { return RT.leaders[id] || null; } });
   RT.field = makeField(ST.seed);
   RT.learner = new WL.Learner(o.learner || null);
   ballCache = {}; LIVE.since = null; LIVE.at = 0; LIVE.ok = false; LIVE.lastOk = 0; LIVE.data = null; LIVE.sig = '';
@@ -1373,7 +1471,9 @@ function frame(ts) {
     if (ST.autoPush && wlOn() && Date.now() - RT.lastPush > 60000) { pushWL(true); if (!$('pane-model').hidden) renderModel(); }
   }
   if (uiAcc > 0.25 || RT.dirty) {
-    uiAcc = 0; RT.calls = computeCalls(); renderCalls();
+    uiAcc = 0; RT.calls = computeCalls(ST.settings.delay || 0); renderCalls();
+    if (RT.calls) { var CL = RT.callLog || (RT.callLog = []); if (CL.length && CL[CL.length - 1].t > RT.t) CL.length = 0; CL.push({ t: RT.t, C: RT.calls }); while (CL.length && CL[0].t < RT.t - 30) CL.shift(); }
+    if (!$('pane-shoot').hidden && RT.t - (RT.outlookAt || -9) >= 1) { RT.outlookAt = RT.t; renderOutlook(); }
     if (ST.follow && RT.calls && !RT.awaiting) { var fd = Math.round(RT.calls.learned * 10) / 10; if (fd !== ST.dial) { ST.dial = fd; renderDial(); } }
     var mm = Math.floor(RT.t / 60), ss = Math.floor(RT.t % 60); $('clock').textContent = mm + ':' + String(ss).padStart(2, '0');
     if (!$('pane-learn').hidden && RT.dirty) renderLearn();
@@ -1510,9 +1610,16 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     this.priorDsd = cfg.priorDsd || 0.15;
     this.priorBsd = cfg.priorBsd || 0.15;
     this.q = cfg.q == null ? 2e-4 : cfg.q;
+    this.adapt = cfg.adapt !== false;
     this.keys = []; this.idx = {}; this.mean = []; this.cov = []; this.n = 0;
     this.anchor = {};
+    // change watch: running mean of the normalised shot surprises
+    this.zm = 0; this.since = 0; this.events = [];
+    // learned noise scale: how big the shot surprises really are against
+    // what the model said (1 = honest); widens or narrows the stated doubt
+    this.k2 = 1;
     if (state) {
+      this.zm = state.zm || 0; this.k2 = state.k2 || 1; this.since = state.since || 0; this.events = (state.events || []).slice();
       this.keys = state.keys.slice(); this.mean = state.mean.slice();
       this.cov = state.cov.map(function (r) { return r.slice(); });
       this.n = state.n || 0; this.anchor = state.anchor || {};
@@ -1563,8 +1670,38 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     for (i = 0; i < n; i++) this.mean[i] += Ph[i] * innov / S;
     for (i = 0; i < n; i++) for (j = 0; j < n; j++) this.cov[i][j] -= Ph[i] * Ph[j] / S;
     this.n++;
-    return { innovation: innov, predicted: pred };
+    var z = innov / Math.sqrt(S), zs = z / Math.sqrt(this.k2);
+    this.k2 += Math.max(0.04, 1 / (this.n + 4)) * (Math.min(16, z * z) - this.k2);
+    this.k2 = Math.max(0.3, Math.min(9, this.k2));
+    var changed = this.adapt ? this._watch(zs) : false;
+    return { innovation: innov, predicted: pred, z: z, changed: changed };
   };
+  /*
+   * Conditions change (a meter gets knocked, the wind swings onto a new
+   * terrain feature, the zero shifts). The shots then keep landing off to
+   * the same side of the model's call. When the running mean of the
+   * normalised surprises (about the last 5 shots) passes 1 (3x its usual
+   * spread), the model widens its doubt on every multiplier and the offset
+   * so the next shots move it quickly, instead of slowly unlearning.
+   */
+  Learner.prototype._watch = function (z) {
+    this.since++;
+    this.zm += 0.2 * (Math.max(-4, Math.min(4, z)) - this.zm);
+    if (this.since < 8 || Math.abs(this.zm) < 1) return false;
+    for (var i = 0; i < this.keys.length; i++) {
+      var k = this.keys[i], sd = k === 'b' ? this.priorBsd : k.charAt(0) === 'm' ? this.priorMsd : this.priorDsd;
+      this.cov[i][i] += 0.5 * sd * sd;
+    }
+    this.events.push({ n: this.n, zm: Math.round(this.zm * 100) / 100 });
+    if (this.events.length > 20) this.events.shift();
+    this.zm = 0; this.since = 0;
+    return true;
+  };
+  // real shot surprises over stated ones (1 SD ratio); > 1 = the model's
+  // own doubt has been too small and the page widens it
+  Learner.prototype.noiseScale = function () { return Math.sqrt(this.k2); };
+  // the call's doubt from the model alone, for a set of features (mph, 1 SD)
+  Learner.prototype.doubt = function (feats, sector) { return this.predict(feats, sector).sd; };
   Learner.prototype.meter = function (lkey, sector) {
     var im = this.idx['m:' + lkey];
     if (im == null) return { mult: 1, sd: Math.hypot(this.priorMsd, this.priorDsd), base: 1, baseSd: this.priorMsd };
@@ -1587,7 +1724,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     var i = this.idx.b; return { mean: this.mean[i], sd: Math.sqrt(this.cov[i][i]) };
   };
   Learner.prototype.toJSON = function () {
-    return { keys: this.keys, mean: this.mean, cov: this.cov, n: this.n, anchor: this.anchor };
+    return { keys: this.keys, mean: this.mean, cov: this.cov, n: this.n, anchor: this.anchor, zm: this.zm, since: this.since, events: this.events, k2: this.k2 };
   };
 
   // ------------------------------------------------------------- relations
@@ -1789,7 +1926,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
       pairs.push(row);
       if (p && p.significant && p.lagS >= 1 && p.skill > 0.05) {
         var cur = best[p.follow];
-        if (!cur || p.skill > cur.skill) best[p.follow] = { by: p.lead, lagS: p.lagS, r: p.r, skill: p.skill };
+        if (!cur || p.skill > cur.skill) best[p.follow] = { by: p.lead, lagS: p.lagS, r: p.r, skill: p.skill, ratio: p.ratio };
       }
     }
     var secs = sector === 'all' ? this.secs : this.sectorSecs[sector];
@@ -1841,6 +1978,131 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     function pack(o) { var r = {}; for (var k in o) { r[k] = {}; for (var f in o[k]) r[k][f] = o[k][f].map(round6); } return r; }
     var M = {}; for (var k in this.M) M[k] = this.M[k].map(round6);
     return { L: this.L, tau: this.tau, P: pack(this.P), A: pack(this.A), M: M, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
+  };
+
+  // ------------------------------------------------------------- forecaster
+  /*
+   * Short-range wind forecast for every meter, trained on the meters alone:
+   * each second that arrives is the answer to the forecasts made 2, 5, 10
+   * and 20 s earlier, so it learns all day without a single shot.
+   *
+   * Per meter, horizon h and wind component (east u, north v of the air's
+   * motion) a small recursive-least-squares model with forgetting:
+   *   u(t+h) = w0 + w1 u(t) + w2 mean60(t) + w3 (u(t) - u(t-5)) + w4 adv
+   * adv = the air the meter's best early warning (from Relations) saw that
+   * reaches this meter at t+h: the leader's reading from (lag - h) s before t
+   * (or its newest one when the lag is shorter than h), times the speed ratio.
+   * It starts as "the wind stays as it is" (w1 = 1) and moves off that only
+   * as far as the data earns. Each model also keeps its forecast error and
+   * the error of "stays as it is", so it reports its own skill.
+   *
+   * add(id, tSec, mph, fromDeg) with every timed 1 s reading as it arrives.
+   * predict(id, tSec) -> {x, y (mph, air moves-to), sd, h, n, skill}.
+   */
+  function Forecaster(state, cfg) {
+    cfg = cfg || {}; state = state || null;
+    this.H = (state && state.H) || cfg.horizons || [2, 5, 10, 20];
+    this.lam = (state && state.lam) || cfg.lambda || 0.998;      // memory ~ 500 s of readings
+    this.M = (state && state.M) || {};                          // 'id|h|u' -> {w, P, n, e2, p2}
+    this.rt = {};                                               // per meter: {s: {sec: {u,v,mu,mv}}, k, last}
+    this.leaderFn = cfg.leaderFn || null;                       // id -> {by, lagS, ratio} or null
+    this.useLeader = cfg.useLeader !== false;
+  }
+  function eye(d) { return d.map(function (v, i) { var r = new Array(d.length).fill(0); r[i] = v; return r; }); }
+  Forecaster.prototype._model = function (key) {
+    return this.M[key] || (this.M[key] = { w: [0, 1, 0, 0, 0], P: eye([1, 0.01, 0.01, 0.01, 0.01]), n: 0, e2: 0, p2: 0 });
+  };
+  Forecaster.prototype._at = function (id, sec) { var R = this.rt[id]; return R ? R.s[sec] || null : null; };
+  Forecaster.prototype._feats = function (id, s0, h) {
+    var cur = this._at(id, s0); if (!cur) return null;
+    var prev = this._at(id, s0 - 5) || this._at(id, s0 - 4) || this._at(id, s0 - 6) || cur;
+    var adv = { u: cur.u, v: cur.v };
+    var L = this.useLeader && this.leaderFn ? this.leaderFn(id) : null;
+    if (L && L.by !== id) {
+      var sl = Math.min(s0, s0 + h - Math.round(L.lagS)), lv = this._at(L.by, sl) || this._at(L.by, sl - 1) || this._at(L.by, sl + 1);
+      var ra = L.ratio > 0 ? L.ratio : 1;
+      if (lv) adv = { u: lv.u * ra, v: lv.v * ra };
+    }
+    return {
+      u: [1, cur.u, cur.mu, cur.u - prev.u, adv.u],
+      v: [1, cur.v, cur.mv, cur.v - prev.v, adv.v],
+      cur: cur
+    };
+  };
+  function rlsStep(m, x, y, lam) {
+    var n = x.length, Px = new Array(n), d = lam, i, j, e = y;
+    for (i = 0; i < n; i++) { e -= m.w[i] * x[i]; var s = 0; for (j = 0; j < n; j++) s += m.P[i][j] * x[j]; Px[i] = s; d += x[i] * s; }
+    for (i = 0; i < n; i++) m.w[i] += Px[i] * e / d;
+    var tr = 0;
+    for (i = 0; i < n; i++) { for (j = 0; j < n; j++) m.P[i][j] = (m.P[i][j] - Px[i] * Px[j] / d) / lam; tr += m.P[i][i]; }
+    if (tr > 20) for (i = 0; i < n; i++) for (j = 0; j < n; j++) m.P[i][j] *= 20 / tr;   // calm spells must not blow it up
+    return e;
+  }
+  Forecaster.prototype.add = function (id, t, mph, dir) {
+    var sec = Math.round(t); id = String(id);
+    if (!isFinite(mph) || !isFinite(dir)) return;
+    var R = this.rt[id] || (this.rt[id] = { s: {}, k: 0, mu: null, mv: null, last: -Infinity });
+    if (R.s[sec]) return;
+    var d = dir * Math.PI / 180, u = -Math.sin(d) * mph, v = -Math.cos(d) * mph;
+    if (R.mu == null) { R.mu = u; R.mv = v; }
+    R.k++; var a = 1 / Math.min(R.k, 60);
+    R.mu += a * (u - R.mu); R.mv += a * (v - R.mv);
+    R.s[sec] = { u: u, v: v, mu: R.mu, mv: R.mv };
+    if (sec > R.last) R.last = sec;
+    for (var k in R.s) if (+k < R.last - 90) delete R.s[k];
+    // this reading answers the forecasts made h seconds ago
+    for (var i = 0; i < this.H.length; i++) {
+      var h = this.H[i], F = this._feats(id, sec - h, h); if (!F) continue;
+      var tgt = { u: u, v: v };
+      for (var c in tgt) {
+        var m = this._model(id + '|' + h + '|' + c);
+        var e = rlsStep(m, F[c], tgt[c], this.lam), p = tgt[c] - F.cur[c];
+        m.n++; var al = Math.max(1 / m.n, 1 / 400);
+        m.e2 += al * (e * e - m.e2); m.p2 += al * (p * p - m.p2);
+      }
+    }
+  };
+  Forecaster.prototype.latest = function (id) { var R = this.rt[String(id)]; return R && isFinite(R.last) ? R.last : null; };
+  Forecaster.prototype._one = function (id, s0, h) {
+    var F = this._feats(id, s0, h); if (!F) return null;
+    var mu = this.M[id + '|' + h + '|u'], mv = this.M[id + '|' + h + '|v'];
+    function dot(m, x) { var r = 0; for (var i = 0; i < x.length; i++) r += m.w[i] * x[i]; return r; }
+    var ready = mu && mv && mu.n >= 60;
+    var x = ready ? dot(mu, F.u) : F.cur.u, y = ready ? dot(mv, F.v) : F.cur.v;
+    var e2 = ready ? (mu.e2 + mv.e2) / 2 : (mu && mu.n >= 10 ? (mu.p2 + mv.p2) / 2 : null);
+    var p2 = mu && mu.n >= 10 ? (mu.p2 + mv.p2) / 2 : null;
+    return { x: x, y: y, sd: e2 == null ? null : Math.sqrt(e2), sdStay: p2 == null ? null : Math.sqrt(p2), n: mu ? mu.n : 0, ready: !!ready };
+  };
+  // forecast for meter id at time t (s), from its newest reading
+  Forecaster.prototype.predict = function (id, t) {
+    id = String(id); var s0 = this.latest(id); if (s0 == null) return null;
+    var h = t - s0, H = this.H;
+    if (h <= 0.5) { var c = this._at(id, Math.min(s0, Math.round(t))) || this._at(id, s0); return { x: c.u, y: c.v, sd: 0, h: 0, n: 0, ready: true }; }
+    var lo = { h: 0, f: { x: this._at(id, s0).u, y: this._at(id, s0).v, sd: 0, ready: true, n: 0 } }, hi = null;
+    for (var i = 0; i < H.length; i++) {
+      var f = this._one(id, s0, H[i]); if (!f) break;
+      if (H[i] <= h) lo = { h: H[i], f: f }; else { hi = { h: H[i], f: f }; break; }
+    }
+    if (!hi) { var g = lo.f; return { x: g.x, y: g.y, sd: g.sd, h: h, n: g.n, ready: g.ready }; }
+    var a = (h - lo.h) / (hi.h - lo.h), A = lo.f, B = hi.f;
+    var sd = A.sd == null || B.sd == null ? null : A.sd + a * (B.sd - A.sd);
+    return { x: A.x + a * (B.x - A.x), y: A.y + a * (B.y - A.y), sd: sd, h: h, n: B.n, ready: A.ready && B.ready };
+  };
+  // how good each meter's forecasts are: rmse vs "the wind stays as it is"
+  Forecaster.prototype.stats = function (id) {
+    var self = this; id = String(id);
+    return this.H.map(function (h) {
+      var mu = self.M[id + '|' + h + '|u'], mv = self.M[id + '|' + h + '|v'];
+      if (!mu || !mv || !mu.n) return { h: h, n: 0 };
+      var e = Math.sqrt((mu.e2 + mv.e2) / 2), p = Math.sqrt((mu.p2 + mv.p2) / 2);
+      return { h: h, n: mu.n, rmse: e, rmseStay: p, skill: p > 0 ? 1 - e / p : 0, wLeader: (mu.w[4] + mv.w[4]) / 2, wNow: (mu.w[1] + mv.w[1]) / 2 };
+    });
+  };
+  Forecaster.prototype.meters = function () { return Object.keys(this.rt).sort(); };
+  Forecaster.prototype.toJSON = function () {
+    var M = {};
+    for (var k in this.M) { var m = this.M[k]; M[k] = { w: m.w.map(round6), P: m.P.map(function (r) { return r.map(round6); }), n: m.n, e2: round6(m.e2), p2: round6(m.p2) }; }
+    return { H: this.H, lam: this.lam, M: M };
   };
 
   /*
@@ -1915,12 +2177,24 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     };
   }
 
+  // chance a shot lands on a plate, from the windage doubt and the rifle's
+  // spread (mil, 1 SD) and the plate's half width / half height (mil)
+  function erf(x) { var t = 1 / (1 + 0.3275911 * Math.abs(x)), y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return x >= 0 ? y : -y; }
+  function hitChance(o) {
+    var sx = Math.max(1e-6, Math.sqrt(o.windSd * o.windSd + o.rifleSd * o.rifleSd)), sy = Math.max(1e-6, o.rifleSd * 1.1);
+    var off = o.offset || 0, hw = o.halfW, hh = o.halfH;
+    if (o.round) { hw = hh = o.halfW * 0.8862; }               // the square with the same area
+    var px = 0.5 * (erf((hw - off) / (sx * Math.SQRT2)) + erf((hw + off) / (sx * Math.SQRT2)));
+    return px * erf(hh / (sy * Math.SQRT2));
+  }
+
   root.WindLearner = {
     YD_PER_S_PER_MPH: YD_PER_S_PER_MPH, SECTORS: SECTORS, SECTOR_NAMES: SECTOR_NAMES,
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,
     Relations: Relations, relationKind: relationKind, expectedLag: expectedLag, upwindOk: upwindOk,
-    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel
+    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, Forecaster: Forecaster,
+    hitChance: hitChance
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 )LEARNLIB";

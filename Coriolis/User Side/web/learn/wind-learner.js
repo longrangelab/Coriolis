@@ -113,9 +113,16 @@
     this.priorDsd = cfg.priorDsd || 0.15;
     this.priorBsd = cfg.priorBsd || 0.15;
     this.q = cfg.q == null ? 2e-4 : cfg.q;
+    this.adapt = cfg.adapt !== false;
     this.keys = []; this.idx = {}; this.mean = []; this.cov = []; this.n = 0;
     this.anchor = {};
+    // change watch: running mean of the normalised shot surprises
+    this.zm = 0; this.since = 0; this.events = [];
+    // learned noise scale: how big the shot surprises really are against
+    // what the model said (1 = honest); widens or narrows the stated doubt
+    this.k2 = 1;
     if (state) {
+      this.zm = state.zm || 0; this.k2 = state.k2 || 1; this.since = state.since || 0; this.events = (state.events || []).slice();
       this.keys = state.keys.slice(); this.mean = state.mean.slice();
       this.cov = state.cov.map(function (r) { return r.slice(); });
       this.n = state.n || 0; this.anchor = state.anchor || {};
@@ -166,8 +173,38 @@
     for (i = 0; i < n; i++) this.mean[i] += Ph[i] * innov / S;
     for (i = 0; i < n; i++) for (j = 0; j < n; j++) this.cov[i][j] -= Ph[i] * Ph[j] / S;
     this.n++;
-    return { innovation: innov, predicted: pred };
+    var z = innov / Math.sqrt(S), zs = z / Math.sqrt(this.k2);
+    this.k2 += Math.max(0.04, 1 / (this.n + 4)) * (Math.min(16, z * z) - this.k2);
+    this.k2 = Math.max(0.3, Math.min(9, this.k2));
+    var changed = this.adapt ? this._watch(zs) : false;
+    return { innovation: innov, predicted: pred, z: z, changed: changed };
   };
+  /*
+   * Conditions change (a meter gets knocked, the wind swings onto a new
+   * terrain feature, the zero shifts). The shots then keep landing off to
+   * the same side of the model's call. When the running mean of the
+   * normalised surprises (about the last 5 shots) passes 1 (3x its usual
+   * spread), the model widens its doubt on every multiplier and the offset
+   * so the next shots move it quickly, instead of slowly unlearning.
+   */
+  Learner.prototype._watch = function (z) {
+    this.since++;
+    this.zm += 0.2 * (Math.max(-4, Math.min(4, z)) - this.zm);
+    if (this.since < 8 || Math.abs(this.zm) < 1) return false;
+    for (var i = 0; i < this.keys.length; i++) {
+      var k = this.keys[i], sd = k === 'b' ? this.priorBsd : k.charAt(0) === 'm' ? this.priorMsd : this.priorDsd;
+      this.cov[i][i] += 0.5 * sd * sd;
+    }
+    this.events.push({ n: this.n, zm: Math.round(this.zm * 100) / 100 });
+    if (this.events.length > 20) this.events.shift();
+    this.zm = 0; this.since = 0;
+    return true;
+  };
+  // real shot surprises over stated ones (1 SD ratio); > 1 = the model's
+  // own doubt has been too small and the page widens it
+  Learner.prototype.noiseScale = function () { return Math.sqrt(this.k2); };
+  // the call's doubt from the model alone, for a set of features (mph, 1 SD)
+  Learner.prototype.doubt = function (feats, sector) { return this.predict(feats, sector).sd; };
   Learner.prototype.meter = function (lkey, sector) {
     var im = this.idx['m:' + lkey];
     if (im == null) return { mult: 1, sd: Math.hypot(this.priorMsd, this.priorDsd), base: 1, baseSd: this.priorMsd };
@@ -190,7 +227,7 @@
     var i = this.idx.b; return { mean: this.mean[i], sd: Math.sqrt(this.cov[i][i]) };
   };
   Learner.prototype.toJSON = function () {
-    return { keys: this.keys, mean: this.mean, cov: this.cov, n: this.n, anchor: this.anchor };
+    return { keys: this.keys, mean: this.mean, cov: this.cov, n: this.n, anchor: this.anchor, zm: this.zm, since: this.since, events: this.events, k2: this.k2 };
   };
 
   // ------------------------------------------------------------- relations
@@ -392,7 +429,7 @@
       pairs.push(row);
       if (p && p.significant && p.lagS >= 1 && p.skill > 0.05) {
         var cur = best[p.follow];
-        if (!cur || p.skill > cur.skill) best[p.follow] = { by: p.lead, lagS: p.lagS, r: p.r, skill: p.skill };
+        if (!cur || p.skill > cur.skill) best[p.follow] = { by: p.lead, lagS: p.lagS, r: p.r, skill: p.skill, ratio: p.ratio };
       }
     }
     var secs = sector === 'all' ? this.secs : this.sectorSecs[sector];
@@ -444,6 +481,131 @@
     function pack(o) { var r = {}; for (var k in o) { r[k] = {}; for (var f in o[k]) r[k][f] = o[k][f].map(round6); } return r; }
     var M = {}; for (var k in this.M) M[k] = this.M[k].map(round6);
     return { L: this.L, tau: this.tau, P: pack(this.P), A: pack(this.A), M: M, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
+  };
+
+  // ------------------------------------------------------------- forecaster
+  /*
+   * Short-range wind forecast for every meter, trained on the meters alone:
+   * each second that arrives is the answer to the forecasts made 2, 5, 10
+   * and 20 s earlier, so it learns all day without a single shot.
+   *
+   * Per meter, horizon h and wind component (east u, north v of the air's
+   * motion) a small recursive-least-squares model with forgetting:
+   *   u(t+h) = w0 + w1 u(t) + w2 mean60(t) + w3 (u(t) - u(t-5)) + w4 adv
+   * adv = the air the meter's best early warning (from Relations) saw that
+   * reaches this meter at t+h: the leader's reading from (lag - h) s before t
+   * (or its newest one when the lag is shorter than h), times the speed ratio.
+   * It starts as "the wind stays as it is" (w1 = 1) and moves off that only
+   * as far as the data earns. Each model also keeps its forecast error and
+   * the error of "stays as it is", so it reports its own skill.
+   *
+   * add(id, tSec, mph, fromDeg) with every timed 1 s reading as it arrives.
+   * predict(id, tSec) -> {x, y (mph, air moves-to), sd, h, n, skill}.
+   */
+  function Forecaster(state, cfg) {
+    cfg = cfg || {}; state = state || null;
+    this.H = (state && state.H) || cfg.horizons || [2, 5, 10, 20];
+    this.lam = (state && state.lam) || cfg.lambda || 0.998;      // memory ~ 500 s of readings
+    this.M = (state && state.M) || {};                          // 'id|h|u' -> {w, P, n, e2, p2}
+    this.rt = {};                                               // per meter: {s: {sec: {u,v,mu,mv}}, k, last}
+    this.leaderFn = cfg.leaderFn || null;                       // id -> {by, lagS, ratio} or null
+    this.useLeader = cfg.useLeader !== false;
+  }
+  function eye(d) { return d.map(function (v, i) { var r = new Array(d.length).fill(0); r[i] = v; return r; }); }
+  Forecaster.prototype._model = function (key) {
+    return this.M[key] || (this.M[key] = { w: [0, 1, 0, 0, 0], P: eye([1, 0.01, 0.01, 0.01, 0.01]), n: 0, e2: 0, p2: 0 });
+  };
+  Forecaster.prototype._at = function (id, sec) { var R = this.rt[id]; return R ? R.s[sec] || null : null; };
+  Forecaster.prototype._feats = function (id, s0, h) {
+    var cur = this._at(id, s0); if (!cur) return null;
+    var prev = this._at(id, s0 - 5) || this._at(id, s0 - 4) || this._at(id, s0 - 6) || cur;
+    var adv = { u: cur.u, v: cur.v };
+    var L = this.useLeader && this.leaderFn ? this.leaderFn(id) : null;
+    if (L && L.by !== id) {
+      var sl = Math.min(s0, s0 + h - Math.round(L.lagS)), lv = this._at(L.by, sl) || this._at(L.by, sl - 1) || this._at(L.by, sl + 1);
+      var ra = L.ratio > 0 ? L.ratio : 1;
+      if (lv) adv = { u: lv.u * ra, v: lv.v * ra };
+    }
+    return {
+      u: [1, cur.u, cur.mu, cur.u - prev.u, adv.u],
+      v: [1, cur.v, cur.mv, cur.v - prev.v, adv.v],
+      cur: cur
+    };
+  };
+  function rlsStep(m, x, y, lam) {
+    var n = x.length, Px = new Array(n), d = lam, i, j, e = y;
+    for (i = 0; i < n; i++) { e -= m.w[i] * x[i]; var s = 0; for (j = 0; j < n; j++) s += m.P[i][j] * x[j]; Px[i] = s; d += x[i] * s; }
+    for (i = 0; i < n; i++) m.w[i] += Px[i] * e / d;
+    var tr = 0;
+    for (i = 0; i < n; i++) { for (j = 0; j < n; j++) m.P[i][j] = (m.P[i][j] - Px[i] * Px[j] / d) / lam; tr += m.P[i][i]; }
+    if (tr > 20) for (i = 0; i < n; i++) for (j = 0; j < n; j++) m.P[i][j] *= 20 / tr;   // calm spells must not blow it up
+    return e;
+  }
+  Forecaster.prototype.add = function (id, t, mph, dir) {
+    var sec = Math.round(t); id = String(id);
+    if (!isFinite(mph) || !isFinite(dir)) return;
+    var R = this.rt[id] || (this.rt[id] = { s: {}, k: 0, mu: null, mv: null, last: -Infinity });
+    if (R.s[sec]) return;
+    var d = dir * Math.PI / 180, u = -Math.sin(d) * mph, v = -Math.cos(d) * mph;
+    if (R.mu == null) { R.mu = u; R.mv = v; }
+    R.k++; var a = 1 / Math.min(R.k, 60);
+    R.mu += a * (u - R.mu); R.mv += a * (v - R.mv);
+    R.s[sec] = { u: u, v: v, mu: R.mu, mv: R.mv };
+    if (sec > R.last) R.last = sec;
+    for (var k in R.s) if (+k < R.last - 90) delete R.s[k];
+    // this reading answers the forecasts made h seconds ago
+    for (var i = 0; i < this.H.length; i++) {
+      var h = this.H[i], F = this._feats(id, sec - h, h); if (!F) continue;
+      var tgt = { u: u, v: v };
+      for (var c in tgt) {
+        var m = this._model(id + '|' + h + '|' + c);
+        var e = rlsStep(m, F[c], tgt[c], this.lam), p = tgt[c] - F.cur[c];
+        m.n++; var al = Math.max(1 / m.n, 1 / 400);
+        m.e2 += al * (e * e - m.e2); m.p2 += al * (p * p - m.p2);
+      }
+    }
+  };
+  Forecaster.prototype.latest = function (id) { var R = this.rt[String(id)]; return R && isFinite(R.last) ? R.last : null; };
+  Forecaster.prototype._one = function (id, s0, h) {
+    var F = this._feats(id, s0, h); if (!F) return null;
+    var mu = this.M[id + '|' + h + '|u'], mv = this.M[id + '|' + h + '|v'];
+    function dot(m, x) { var r = 0; for (var i = 0; i < x.length; i++) r += m.w[i] * x[i]; return r; }
+    var ready = mu && mv && mu.n >= 60;
+    var x = ready ? dot(mu, F.u) : F.cur.u, y = ready ? dot(mv, F.v) : F.cur.v;
+    var e2 = ready ? (mu.e2 + mv.e2) / 2 : (mu && mu.n >= 10 ? (mu.p2 + mv.p2) / 2 : null);
+    var p2 = mu && mu.n >= 10 ? (mu.p2 + mv.p2) / 2 : null;
+    return { x: x, y: y, sd: e2 == null ? null : Math.sqrt(e2), sdStay: p2 == null ? null : Math.sqrt(p2), n: mu ? mu.n : 0, ready: !!ready };
+  };
+  // forecast for meter id at time t (s), from its newest reading
+  Forecaster.prototype.predict = function (id, t) {
+    id = String(id); var s0 = this.latest(id); if (s0 == null) return null;
+    var h = t - s0, H = this.H;
+    if (h <= 0.5) { var c = this._at(id, Math.min(s0, Math.round(t))) || this._at(id, s0); return { x: c.u, y: c.v, sd: 0, h: 0, n: 0, ready: true }; }
+    var lo = { h: 0, f: { x: this._at(id, s0).u, y: this._at(id, s0).v, sd: 0, ready: true, n: 0 } }, hi = null;
+    for (var i = 0; i < H.length; i++) {
+      var f = this._one(id, s0, H[i]); if (!f) break;
+      if (H[i] <= h) lo = { h: H[i], f: f }; else { hi = { h: H[i], f: f }; break; }
+    }
+    if (!hi) { var g = lo.f; return { x: g.x, y: g.y, sd: g.sd, h: h, n: g.n, ready: g.ready }; }
+    var a = (h - lo.h) / (hi.h - lo.h), A = lo.f, B = hi.f;
+    var sd = A.sd == null || B.sd == null ? null : A.sd + a * (B.sd - A.sd);
+    return { x: A.x + a * (B.x - A.x), y: A.y + a * (B.y - A.y), sd: sd, h: h, n: B.n, ready: A.ready && B.ready };
+  };
+  // how good each meter's forecasts are: rmse vs "the wind stays as it is"
+  Forecaster.prototype.stats = function (id) {
+    var self = this; id = String(id);
+    return this.H.map(function (h) {
+      var mu = self.M[id + '|' + h + '|u'], mv = self.M[id + '|' + h + '|v'];
+      if (!mu || !mv || !mu.n) return { h: h, n: 0 };
+      var e = Math.sqrt((mu.e2 + mv.e2) / 2), p = Math.sqrt((mu.p2 + mv.p2) / 2);
+      return { h: h, n: mu.n, rmse: e, rmseStay: p, skill: p > 0 ? 1 - e / p : 0, wLeader: (mu.w[4] + mv.w[4]) / 2, wNow: (mu.w[1] + mv.w[1]) / 2 };
+    });
+  };
+  Forecaster.prototype.meters = function () { return Object.keys(this.rt).sort(); };
+  Forecaster.prototype.toJSON = function () {
+    var M = {};
+    for (var k in this.M) { var m = this.M[k]; M[k] = { w: m.w.map(round6), P: m.P.map(function (r) { return r.map(round6); }), n: m.n, e2: round6(m.e2), p2: round6(m.p2) }; }
+    return { H: this.H, lam: this.lam, M: M };
   };
 
   /*
@@ -518,11 +680,23 @@
     };
   }
 
+  // chance a shot lands on a plate, from the windage doubt and the rifle's
+  // spread (mil, 1 SD) and the plate's half width / half height (mil)
+  function erf(x) { var t = 1 / (1 + 0.3275911 * Math.abs(x)), y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return x >= 0 ? y : -y; }
+  function hitChance(o) {
+    var sx = Math.max(1e-6, Math.sqrt(o.windSd * o.windSd + o.rifleSd * o.rifleSd)), sy = Math.max(1e-6, o.rifleSd * 1.1);
+    var off = o.offset || 0, hw = o.halfW, hh = o.halfH;
+    if (o.round) { hw = hh = o.halfW * 0.8862; }               // the square with the same area
+    var px = 0.5 * (erf((hw - off) / (sx * Math.SQRT2)) + erf((hw + off) / (sx * Math.SQRT2)));
+    return px * erf(hh / (sy * Math.SQRT2));
+  }
+
   root.WindLearner = {
     YD_PER_S_PER_MPH: YD_PER_S_PER_MPH, SECTORS: SECTORS, SECTOR_NAMES: SECTOR_NAMES,
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,
     Relations: Relations, relationKind: relationKind, expectedLag: expectedLag, upwindOk: upwindOk,
-    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel
+    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, Forecaster: Forecaster,
+    hitChance: hitChance
   };
 })(typeof window !== 'undefined' ? window : globalThis);

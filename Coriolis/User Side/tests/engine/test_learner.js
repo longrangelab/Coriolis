@@ -166,6 +166,63 @@ ok('live model: one row per wind sector for Wind Lab', () => {
   assert.strictEqual(lm.sectors[2].sent.length, 0);
 });
 
+// ---- forecasting each meter's wind a few seconds ahead
+function fcRun(useLeader) {
+  const rr = rng(21), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const F = new WL.Forecaster(null, { useLeader, leaderFn: id => id === 'B' ? { by: 'A', lagS: 15, ratio: 0.9 } : null });
+  const G = []; let x = 0; for (let t = 0; t < 1300; t++) { x = 0.95 * x + 0.6 * gg(); G.push(x); }
+  for (let t = 20; t < 1220; t++) { F.add('A', t, 10 + 3 * G[t] + 0.2 * gg(), 270); F.add('B', t, 0.9 * (10 + 3 * G[t - 15]) + 0.2 * gg(), 270); }
+  return F;
+}
+ok('forecaster: an upwind early warning makes the next 10 s predictable', () => {
+  const S = fcRun(true).stats('B'), N = fcRun(false).stats('B');
+  const s10 = S.find(s => s.h === 10), n10 = N.find(s => s.h === 10);
+  assert(s10.skill > 0.8, 'with the leader, 10 s skill ' + s10.skill);
+  assert(n10.skill < 0.3, 'without it, gusts are mostly a surprise ' + n10.skill);
+  assert(s10.wLeader > 0.4 && N.find(s => s.h === 10).wLeader < 0.1, 'leans on the leader (u carries all of a west wind) ' + s10.wLeader);
+  assert(S.find(s => s.h === 20).skill < s10.skill, 'past the 15 s warning the forecast fades');
+});
+ok('forecaster: predict interpolates, reports doubt and round-trips', () => {
+  const F = fcRun(true), t = F.latest('B');
+  const p0 = F.predict('B', t), p7 = F.predict('B', t + 7);
+  assert(p0.ready && p0.sd === 0 && p7.ready && p7.sd > 0 && p7.sd < 1, JSON.stringify(p7));
+  near(p7.h, 7, 1e-9);
+  const F2 = new WL.Forecaster(JSON.parse(JSON.stringify(F.toJSON())));
+  near(F2.stats('B')[2].rmse, F.stats('B')[2].rmse, 1e-4);
+});
+function chRun(adapt, change) {
+  const rr = rng(5), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const L = new WL.Learner(null, { adapt }), errs = [];
+  for (let i = 0; i < 300; i++) {
+    const a = 10 + 4 * gg(), c = 10 + 4 * gg(), cal = change && i >= 150 ? 0.6 : 1;   // P1 gets sheltered at shot 150
+    const f = [{ lkey: 'P1#0', x: 0.5 * a * cal }, { lkey: 'P2#0', x: 0.5 * c }], truth = 0.5 * a + 0.5 * c;
+    errs.push(L.predict(f, 6).mean - truth); L.update(f, 6, truth + 0.5 * gg(), 0.6);
+  }
+  const r = (a, b) => Math.sqrt(errs.slice(a, b).reduce((s, v) => s + v * v, 0) / (b - a));
+  return { ev: L.events, mid: r(165, 200), late: r(250, 300) };
+}
+ok('change watch: a meter that suddenly reads low is caught and relearned fast', () => {
+  assert.strictEqual(chRun(true, false).ev.length, 0, 'no false alarm in steady conditions');
+  const A = chRun(true, true), N = chRun(false, true);
+  assert(A.ev.length >= 1 && A.ev[0].n > 150 && A.ev[0].n <= 165, JSON.stringify(A.ev));
+  assert(A.mid < 0.75 * N.mid, 'relearns faster ' + A.mid + ' vs ' + N.mid);
+});
+ok('noise scale: the stated doubt learns its real size', () => {
+  const rr = rng(9), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const L = new WL.Learner(), H = new WL.Learner();
+  for (let i = 0; i < 120; i++) { const a = 10 + 3 * gg(), f = [{ lkey: 'A#0', x: a }]; L.update(f, 6, a + 1.2 * gg(), 0.6); H.update(f, 6, a + 0.6 * gg(), 0.6); }
+  near(L.noiseScale(), 2, 0.5, 'surprises twice the stated noise'); near(H.noiseScale(), 1, 0.3, 'honest noise');
+  assert(L.events.length === 0, 'a noisier rifle is not a change ' + JSON.stringify(L.events));
+  near(new WL.Learner(JSON.parse(JSON.stringify(L.toJSON()))).noiseScale(), L.noiseScale(), 1e-9);
+});
+ok('hit chance: plate size, spread and offset', () => {
+  near(WL.hitChance({ windSd: 0, rifleSd: 0.1, halfW: 10, halfH: 10 }), 1, 1e-6);
+  const c = WL.hitChance({ windSd: 0.3, rifleSd: 0.2, halfW: 0.3, halfH: 0.4 });
+  assert(c > 0.45 && c < 0.65, c);
+  assert(WL.hitChance({ windSd: 0.3, rifleSd: 0.2, halfW: 0.3, halfH: 0.4, offset: 0.3 }) < c);
+  assert(WL.hitChance({ windSd: 0, rifleSd: 0.2, halfW: 0.3, halfH: 0.3, round: true }) < WL.hitChance({ windSd: 0, rifleSd: 0.2, halfW: 0.3, halfH: 0.3 }));
+});
+
 // ---- the page: served like the base serves it, no internet, no console errors
 async function pageTest() {
   const { chromium } = require('playwright');
@@ -201,6 +258,12 @@ async function pageTest() {
   const n = await p.evaluate(() => ST.shots.filter(s => s.plotted).length);
   assert.strictEqual(n, 25, 'Fire 25 plots 25 shots');
   assert(await p.evaluate(() => RT.learner.n === 25), 'learner saw 25 shots');
+  assert(await p.evaluate(() => ST.shots.every(s => s.callSd > 0 && s.hitP > 0 && s.hitP <= 1)), 'each shot keeps the stated doubt and hit chance');
+  await p.waitForFunction(() => document.querySelectorAll('#outlook > div').length === 4, null, { timeout: 5000 });
+  assert(/hit chance/.test(await p.textContent('#callLearnS')), 'learned call shows its hit chance');
+  await p.click('#tab-learn');
+  assert(await p.evaluate(() => /×/.test(document.getElementById('kCal').textContent) && document.querySelectorAll('#fcTbl tbody tr').length >= 3 && !!document.querySelector('#chart polyline[stroke-dasharray]')), 'Learning tab: doubt check, forecast table, doubt line');
+  await p.click('#tab-shoot');
   assert(await p.evaluate(() => !!document.querySelector('a[href="/"]')), 'back link to Wind Lab');
   const wide = await p.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
   assert(!wide, 'page scrolls sideways at phone width');
@@ -229,6 +292,7 @@ async function pageTest() {
   await p.waitForFunction(() => RT.rel.secs > 112, null, { timeout: 20000 });
   const lp = await p.evaluate(() => RT.rel.pair('1', '2', 6, { minN: 80 }));
   assert(lp && lp.lead === '2' && lp.lagS === 6 && lp.r > 0.9, 'live: meter 2 warns meter 1 six seconds ahead ' + JSON.stringify(lp));
+  assert(await p.evaluate(() => RT.fc.stats('1')[0].n > 60), 'live: the forecaster trains on the 1 s readings');
   // reload: it comes back in live mode with the shot
   await p.evaluate(() => autosave());
   await p.reload();
