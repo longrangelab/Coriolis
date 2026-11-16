@@ -272,6 +272,17 @@ ok('hit chance: plate size, spread and offset', () => {
   assert(WL.hitChance({ windSd: 0, rifleSd: 0.2, halfW: 0.3, halfH: 0.3, round: true }) < WL.hitChance({ windSd: 0, rifleSd: 0.2, halfW: 0.3, halfH: 0.3 }));
 });
 
+ok('layout pairs: each meter gets the meter straight upwind, from GPS spots alone', () => {
+  const M = [{ id: 'P1', x: 0, y: 100 }, { id: 'P2', x: 10, y: 500 }, { id: 'S', x: -250, y: 480, role: 'sentinel' }, { id: 'F', x: -200, y: 120 }];
+  const W = WL.geometryPairs(M, { x: 10, y: 0 });                     // wind from the west
+  const by = {}; W.forEach(q => { by[q.nodeId] = q; });
+  assert.strictEqual(by.P2.sentId, 'S'); near(by.P2.lagS, 260 / (10 * WL.YD_PER_S_PER_MPH), 1); assert.strictEqual(by.P2.src, 'layout');
+  assert.strictEqual(by.P1.sentId, 'F', 'F is 200 yd upwind of P1: ' + JSON.stringify(by.P1));
+  assert(!by.S, 'a Sentinel-only meter warns, it is not warned');
+  assert.strictEqual(WL.geometryPairs(M, { x: -10, y: 0 }).filter(q => q.sentId === 'S').length, 0, 'east wind: S is downwind');
+  assert.strictEqual(WL.geometryPairs(M, { x: 0, y: 0 }).length, 0, 'no wind, no pairs');
+});
+
 // ---- the page: served like the base serves it, no internet, no console errors
 async function pageTest() {
   const { chromium } = require('playwright');
@@ -323,6 +334,7 @@ async function pageTest() {
   await p.evaluate(() => advance(600));
   await p.click('#tab-rel');
   assert(await p.evaluate(() => RT.rel.secs > 500 && document.querySelectorAll('#relTbl tbody tr').length === 10), 'relations table for 5 meters');
+  assert(await p.evaluate(() => RT.pairsNow.some(q => q.sentId === 'M5' && q.nodeId === 'M3') && /M5 → M3/.test(document.getElementById('relSent').textContent)), 'M5 warns M3 (layout or data), shown in the Sentinel table');
   await p.click('#relTbl tbody tr'); assert(await p.evaluate(() => document.querySelector('#relChart polyline') !== null), 'lag chart drawn');
   await p.click('#tab-model'); await p.click('#pushWL');
   const lm = await p.evaluate(() => JSON.parse(localStorage.getItem('learnedModel')));

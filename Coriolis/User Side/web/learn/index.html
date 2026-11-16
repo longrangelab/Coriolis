@@ -297,7 +297,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
       <div>
         <div class="lbl" style="margin-bottom:4px">Sentinel pairs this wind supports</div>
         <div class="tblwrap"><table id="relSent"></table></div>
-        <div class="note">The Sentinel's reading from <i>lag</i> seconds ago, times the speed ratio, is what the paired meter should read now. Tolerances are set from how far it normally strays. The Model tab sends these to Wind Lab.</div>
+        <div class="note">The Sentinel's reading from <i>lag</i> seconds ago, times the speed ratio, is what the paired meter should read now. <b>Layout</b> pairs come from the meters' spots alone (the meter straight upwind), so they work from the first minute, with wide tolerances; a <b>wind data</b> pair replaces one as soon as the 1 s readings back it, with tolerances from how far it normally strays. <b>Predicts</b>: the wind model has proven it. The Model tab sends these to Wind Lab.</div>
       </div>
       <div class="row"><button class="btn" id="relReset">Reset relationships</button><span class="note" id="relResetConfirm" hidden>Forget every learned relationship? <button class="btn" id="relResetYes">Forget</button> <button class="btn" id="relResetNo">Keep</button></span></div>
     </div>
@@ -675,6 +675,8 @@ function refreshLeaders() {
     var A = ST.meters.find(function (m) { return m.id === p.lead; }), B = ST.meters.find(function (m) { return m.id === p.follow; });
     if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: p.lagS });
   });
+  if (sec != null && RT.calls) WL.geometryPairs(ST.meters, RT.calls.avg).forEach(function (q) { var L = all[q.nodeId] || (all[q.nodeId] = []); if (!L.some(function (o) { return o.by === q.sentId; })) L.push({ by: q.sentId, lagS: q.lagS }); });
+  RT.pairsNow = sec != null ? pairsFor(sec, RT.calls ? RT.calls.avg : null) : [];
   RT.leadList = all;
   computeImportance();
 }
@@ -840,6 +842,16 @@ function drawMap(dtReal) {
   c.strokeStyle = COL.ink; c.lineWidth = 1.5; c.beginPath(); c.moveTo(sp.x, sp.y); c.lineTo(tp.x, tp.y); c.stroke();
   // yard ticks
   if (C) { c.fillStyle = COL.ink; c.font = '10px "IBM Plex Mono", monospace'; for (var yd = 100; yd < C.lof.R; yd += 100) { var tq = toPx(ST.shooter.x + C.lof.u.x * yd, ST.shooter.y + C.lof.u.y * yd); c.beginPath(); c.arc(tq.x, tq.y, 2, 0, 6.2832); c.fill(); if (yd % 200 === 0) c.fillText(yd, tq.x + 6, tq.y + 3); } }
+  // Sentinel pairs for the wind now: solid = backed by wind data, dashed = from the layout
+  (RT.pairsNow || []).forEach(function (q) {
+    var A = ST.meters.find(function (m) { return m.id === q.sentId; }), Bm = ST.meters.find(function (m) { return m.id === q.nodeId; }); if (!A || !Bm) return;
+    var pa = toPx(A.x, A.y), pb = toPx(Bm.x, Bm.y), dx = pb.x - pa.x, dy = pb.y - pa.y, L = Math.hypot(dx, dy); if (L < 30) return;
+    var ux = dx / L, uy = dy / L, sx = pa.x + ux * 13, sy = pa.y + uy * 13, ex = pb.x - ux * 14, ey = pb.y - uy * 14;
+    c.strokeStyle = COL.good; c.fillStyle = COL.good; c.lineWidth = q.src === 'data' ? 2.4 : 1.6; c.setLineDash(q.src === 'data' ? [] : [6, 5]); c.globalAlpha = 0.85;
+    c.beginPath(); c.moveTo(sx, sy); c.lineTo(ex, ey); c.stroke(); c.setLineDash([]);
+    var ah = Math.atan2(uy, ux); c.beginPath(); c.moveTo(ex, ey); c.lineTo(ex - 9 * Math.cos(ah - 0.45), ey - 9 * Math.sin(ah - 0.45)); c.lineTo(ex - 9 * Math.cos(ah + 0.45), ey - 9 * Math.sin(ah + 0.45)); c.closePath(); c.fill();
+    c.font = '600 11px "Barlow Condensed", sans-serif'; var lt = q.lagS + ' s' + (q.src === 'data' ? '' : ' layout'); c.fillText(lt, (sx + ex) / 2 - c.measureText(lt).width / 2, (sy + ey) / 2 + 16); c.globalAlpha = 1;
+  });
   // meters
   ST.meters.forEach(function (m) {
     var p = toPx(m.x, m.y), row = C && C.geo.rows.find(function (r) { return r.id === m.id; }), L = RT.base.latest[m.id];
@@ -1404,6 +1416,21 @@ function relSector() {
 }
 function fmtDur(s) { s = Math.round(s); if (s < 90) return s + ' s'; if (s < 5400) return Math.round(s / 60) + ' min'; return (s / 3600).toFixed(1) + ' h'; }
 function sectorWind(sec, mph) { var d = sec * 45 * Math.PI / 180; return { x: -Math.sin(d) * mph, y: -Math.cos(d) * mph }; }
+// Sentinel pairs for a wind: the ones the 1 s data supports (Relations) and,
+// for meters the data has not paired yet, the layout's choice (who is
+// straight upwind). windTo: the actual wind when known, else the sector's.
+function pairsFor(sec, windTo) {
+  if (sec == null || sec === 'all') return [];
+  windTo = windTo || sectorWind(sec, 10);
+  var proven = RT.fc.provenPairs(), out = [];
+  RT.rel.suggestSentinels(sec).forEach(function (q) {
+    var A = ST.meters.find(function (m) { return m.id === q.sentId; }), Bm = ST.meters.find(function (m) { return m.id === q.nodeId; });
+    if (WL.upwindOk(A, Bm, windTo)) out.push(Object.assign({ src: 'data' }, q));
+  });
+  WL.geometryPairs(ST.meters, windTo).forEach(function (q) { if (!out.some(function (o) { return o.nodeId === q.nodeId; })) out.push(q); });
+  out.forEach(function (q) { q.proven = proven.some(function (v) { return v.sentId === q.sentId && v.nodeId === q.nodeId && Math.abs(v.lagS - q.lagS) <= 8; }); });
+  return out;
+}
 function relRowHtml(row, sec) {
   var p = row.p, k = row.kind, pill, who = '–', geo = '–';
   if (k === 'learning') pill = '<span class="pill dim">Learning</span>';
@@ -1432,13 +1459,10 @@ function renderRel() {
   $('relTbl').innerHTML = h + (S.pairs.length ? '' : '<tr><td colspan="8" class="muted">Needs two or more meters reporting.</td></tr>') + '</tbody>';
   var pred = Object.keys(S.predictors).sort().map(function (f) { var b = S.predictors[f]; return '<b>' + esc(f) + '</b>: ' + esc(b.by) + ' sees its gusts ' + b.lagS + ' s earlier (r ' + b.r.toFixed(2) + ', ' + (b.skill >= 0 ? '+' : '') + b.skill.toFixed(2) + ' over its own past)'; });
   $('relPred').innerHTML = pred.length ? pred.join('<br>') : 'No meter gives a useful early warning for another in this wind yet.';
-  var sg = sec === 'all' ? [] : R.suggestSentinels(sec).filter(function (q) {
-    var A = ST.meters.find(function (m) { return m.id === q.sentId; }), Bm = ST.meters.find(function (m) { return m.id === q.nodeId; });
-    return WL.upwindOk(A, Bm, sectorWind(sec, 10));
-  });
-  var t = '<thead><tr><th>Sentinel → meter</th><th>Lag</th><th>Speed tol.</th><th>Dir tol.</th><th>Ratio</th><th>r</th></tr></thead><tbody>';
-  sg.forEach(function (p) { t += '<tr><td><b>' + esc(p.sentId) + ' → ' + esc(p.nodeId) + '</b></td><td class="n">' + p.lagS + ' s</td><td class="n">±' + p.spdPct + '%</td><td class="n">±' + p.dirDeg + '°</td><td class="n">' + p.ratio.toFixed(2) + '×</td><td class="n">' + p.r.toFixed(2) + '</td></tr>'; });
-  $('relSent').innerHTML = t + (sg.length ? '' : '<tr><td colspan="6" class="muted">' + (sec === 'all' ? 'Pick one wind direction: who is upwind depends on it.' : 'None yet for this wind.') + '</td></tr>') + '</tbody>';
+  var sg = pairsFor(sec, RT.calls && RT.calls.sector === sec ? RT.calls.avg : null);
+  var t = '<thead><tr><th>Sentinel → meter</th><th>From</th><th>Lag</th><th>Speed tol.</th><th>Dir tol.</th><th>Ratio</th><th>r</th></tr></thead><tbody>';
+  sg.forEach(function (p) { t += '<tr><td><b>' + esc(p.sentId) + ' → ' + esc(p.nodeId) + '</b></td><td>' + (p.src === 'data' ? '<span class="pill good">Wind data</span>' : '<span class="pill dim">Layout</span>') + (p.proven ? ' <span class="pill acc">Predicts</span>' : '') + '</td><td class="n">' + p.lagS + ' s</td><td class="n">±' + p.spdPct + '%</td><td class="n">±' + p.dirDeg + '°</td><td class="n">' + p.ratio.toFixed(2) + '×</td><td class="n">' + (p.r != null ? p.r.toFixed(2) : '–') + '</td></tr>'; });
+  $('relSent').innerHTML = t + (sg.length ? '' : '<tr><td colspan="7" class="muted">' + (sec === 'all' ? 'Pick one wind direction: who is upwind depends on it.' : 'None yet for this wind.') + '</td></tr>') + '</tbody>';
   drawRelChart(sec);
 }
 $('relTbl').addEventListener('click', function (e) { var tr = e.target.closest('tr'); if (!tr || !tr.dataset.ra) return; REL.pick = [tr.dataset.ra, tr.dataset.rb]; renderRel(); });

@@ -476,6 +476,34 @@
     var e = expectedLag(lead, follow, windTo);
     return !e || e.alongYd > -10;
   }
+  /*
+   * Sentinel pairs from the layout alone, for day one before any wind data:
+   * for each path meter, the meter whose air reaches it from upwind, close
+   * to straight down the wind (cross offset <= 30 yd or 30 % of the run),
+   * 3 to 60 s ahead, preferring about 15 s. Tolerances are wide (30 %, 20
+   * deg) because nothing has confirmed the pair yet. meters: [{id, x, y,
+   * role}], windTo: air motion (mph). Returns one pair per meter at most.
+   */
+  function geometryPairs(meters, windTo, opts) {
+    opts = opts || {};
+    var S = Math.hypot(windTo.x, windTo.y), out = [];
+    if (S < 1) return out;
+    meters.forEach(function (B) {
+      if (B.role === 'sentinel' || B.x == null) return;
+      var best = null;
+      meters.forEach(function (A) {
+        if (A === B || A.x == null) return;
+        var e = expectedLag(A, B, windTo); if (!e || e.alongYd < 20) return;
+        if (e.lagS < (opts.minLag || 3) || e.lagS > (opts.maxLag || 60)) return;
+        if (e.crossYd > Math.max(30, 0.3 * e.alongYd)) return;
+        var score = e.crossYd / e.alongYd + 0.3 * Math.abs(Math.log(e.lagS / 15));
+        if (!best || score < best.score) best = { score: score, A: A, e: e };
+      });
+      if (best) out.push({ sentId: best.A.id, nodeId: B.id, lagS: Math.round(best.e.lagS), alongYd: Math.round(best.e.alongYd), crossYd: Math.round(best.e.crossYd),
+                           spdPct: 30, dirDeg: 20, ratio: 1, dirOff: 0, src: 'layout' });
+    });
+    return out;
+  }
   function round6(v) { return Math.abs(v) < 1e-9 ? 0 : +v.toPrecision(6); }
   Relations.prototype.toJSON = function () {
     function pack(o) { var r = {}; for (var k in o) { r[k] = {}; for (var f in o[k]) r[k][f] = o[k][f].map(round6); } return r; }
@@ -1046,9 +1074,16 @@
       if (o.relations) {
         o.relations.suggestSentinels(s, o.relOpts).forEach(function (p) {
           var A = byId[p.sentId], B = byId[p.nodeId]; if (!A || !B || !upwindOk(A, B, wind)) return;
-          sec.sent.push({ sentId: A.nodeId, nodeId: B.nodeId, lagS: p.lagS, spdPct: p.spdPct, dirDeg: p.dirDeg, ratio: p.ratio, dirOff: p.dirOff, r: p.r });
+          var ex = expectedLag(A, B, wind);
+          sec.sent.push({ sentId: A.nodeId, nodeId: B.nodeId, lagS: p.lagS, spdPct: p.spdPct, dirDeg: p.dirDeg, ratio: p.ratio, dirOff: p.dirOff, r: p.r, src: 'data', alongYd: ex && ex.alongYd > 0 ? Math.round(ex.alongYd) : undefined });
         });
       }
+      // meters the data has not paired yet get a pair from the layout
+      if (o.layoutPairs !== false) geometryPairs(o.meters, wind).forEach(function (p) {
+        var A = byId[p.sentId], B = byId[p.nodeId];
+        if (sec.sent.some(function (q) { return q.nodeId === B.nodeId; })) return;
+        sec.sent.push(Object.assign({}, p, { sentId: A.nodeId, nodeId: B.nodeId }));
+      });
       sectors.push(sec);
     }
     var b = o.learner ? o.learner.bias() : { mean: 0, sd: 0 };
@@ -1079,7 +1114,7 @@
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,
     Relations: Relations, relationKind: relationKind, expectedLag: expectedLag, upwindOk: upwindOk,
-    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, Forecaster: Forecaster, ForecastLoop: ForecastLoop,
+    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, geometryPairs: geometryPairs, Forecaster: Forecaster, ForecastLoop: ForecastLoop,
     hitChance: hitChance
   };
 })(typeof window !== 'undefined' ? window : globalThis);

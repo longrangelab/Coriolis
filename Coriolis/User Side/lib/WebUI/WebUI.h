@@ -1303,6 +1303,8 @@ function setSentinelEnabled(v){localStorage.setItem('sentOn',v?'1':'0');sentPane
 // pairs[] = [{sentId, nodeId, spdPct, dirDeg}, ...]; a learned pair also has
 // lagS (s for the Sentinel's air to reach the node), ratio (node speed per
 // Sentinel speed in this wind) and dirOff (node minus Sentinel direction).
+// alongYd (yd from Sentinel to node along the wind) turns into the live lag at
+// the Sentinel's speed; src 'layout' = paired from the meter spots alone.
 function manualSentPairs(){try{return JSON.parse(localStorage.getItem('sentPairs')||'[]');}catch(e){return [];}}
 function sentPairs(){var lp=learnedPick('sentinels');if(lp)return (lp.row.sent||[]).map(function(p){return Object.assign({},p);});return manualSentPairs();}
 function storeSentPairs(p){localStorage.setItem('sentPairs',JSON.stringify(p));}
@@ -1346,7 +1348,7 @@ function evalSentinel(){
     var dd=dirDiff(expDir,n.dir);
     var agree=(sd<=p.spdPct)&&(dd<=p.dirDeg);
     live.push({sentId:p.sentId,nodeId:p.nodeId,spdPct:p.spdPct,dirDeg:p.dirDeg,
-               spdDelta:sd,dirDelta:dd,agree:agree,lagS:parseFloat(p.lagS)||0,comingMph:exp,comingDir:expDir});
+               spdDelta:sd,dirDelta:dd,agree:agree,lagS:(+p.alongYd>0&&s.speed>1)?(+p.alongYd)/(s.speed*0.48889):(parseFloat(p.lagS)||0),comingMph:exp,comingDir:expDir});
   });
   return {live:live, missing:missing};
 }
@@ -1429,7 +1431,7 @@ function renderSentPanel(force){
       h+='<div style="margin:8px 0;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:10px">'+
          '<div style="color:var(--ink);font-size:.9rem;font-weight:700">Sentinel '+p.sentId+' &rarr; Node '+p.nodeId+'</div>'+
          '<div style="color:var(--dim);font-size:.72rem;margin-top:4px">air takes ~'+Math.round(p.lagS||0)+' s &middot; speed &times;'+(+p.ratio||1).toFixed(2)+
-         ' &plusmn;'+p.spdPct+'% &middot; direction '+((+p.dirOff||0)>=0?'+':'')+Math.round(+p.dirOff||0)+'&deg; &plusmn;'+p.dirDeg+'&deg;'+(p.r?' &middot; r '+(+p.r).toFixed(2):'')+'</div>'+
+         ' &plusmn;'+p.spdPct+'% &middot; direction '+((+p.dirOff||0)>=0?'+':'')+Math.round(+p.dirOff||0)+'&deg; &plusmn;'+p.dirDeg+'&deg;'+(p.r?' &middot; r '+(+p.r).toFixed(2):'')+(p.src==='layout'?' &middot; from the meter layout, not yet backed by wind data':'')+'</div>'+
          '<div id="pair_readout_'+i+'" style="color:var(--dim);font-size:.72rem;margin-top:6px">--</div>'+
          '</div>';
     });
