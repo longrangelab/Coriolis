@@ -2873,7 +2873,10 @@ function startGear(){
   if(Gear.migrated)flash(Gear.migrated+' rifle profile(s) moved to the new gear store');
 }
 startGear();
-setSection(section);saveAz();drawWheel();poll();pollTimer=setInterval(poll,350);
+// setSection() starts the 350 ms live poll (and keeps it off in the Sandbox).
+// Starting a second one here doubled /data.json traffic to ~5.7 requests/s,
+// and the first timer could never be cleared again.
+setSection(section);saveAz();drawWheel();
 </script></body></html>
 )HTMLPAGE";
 
