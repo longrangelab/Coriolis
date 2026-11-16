@@ -30,6 +30,8 @@
 #include "Environment.h"          // BMP085Sensor (baro) + GPSModule (GPS)
 #include "telemetry.h"
 #include "AttinyFlasher.h"        // ATtiny85 firmware update over I2C
+#include "SoftI2CRead.h"          // ATtiny reads that can't stall the loop for 1 s
+#include "WindStamp.h"            // when each 1 s ATtiny publish appeared
 
 //#define USE_TSL2591            // uncomment when the TSL2591 is installed
 #ifdef USE_TSL2591
@@ -249,6 +251,30 @@ uint8_t    maxSlot = MIN_SLOTS;
 uint16_t   nodeMask = 0;      // v4: slot map from the last beacon (bit i => id i scheduled)
 uint8_t    mySlot = 0;        // v4: our compact slot this cycle (0 = not scheduled yet)
 bool       txThisCycle = false;
+uint32_t   txCycleStart = 0;  // local start time of the cycle our last slot TX belonged to
+
+// Missed-beacon flywheel. A node used to transmit only in a cycle whose beacon
+// it heard, so one missed beacon cost one reading even though the cycle timing
+// was already known. Bench logs (2026-11-15) put about half of all packet loss
+// there: the base sent the beacon (the other node answered it) but this node
+// didn't hear it. Now, for up to FLYWHEEL_CYCLES cycles after the last beacon
+// heard, the node still transmits in its slot at the predicted time, using the
+// last beacon's cycle length and slot. It only starts such a transmit within
+// FLYWHEEL_START_MS of the slot's start, so a late loop pass never runs into the
+// next node's slot. After that the old rule applies (3 cycles with no beacon ->
+// unsynced -> autonomous). The slot can only be stale if the base re-planned the
+// cycle in the very beacon that was missed, and then for at most these cycles.
+#define FLYWHEEL_CYCLES    2
+#define FLYWHEEL_START_MS  60
+uint32_t   flywheelTx = 0;    // transmits sent on a predicted (unheard) beacon, since boot
+uint32_t   lastFlywheelCycle = 0;  // predicted start of the cycle we last flywheel-transmitted in
+bool       flywheelEver = false;
+// Timed wind readings (WindExt.h): when the last beacon finished arriving, by
+// the radio interrupt, and the low byte of its seq, which goes back to the base
+// so it knows which of its beacons the times are counted from.
+uint32_t   beaconRxMs = 0;
+uint8_t    beaconSeqLow = 0;
+bool       beaconRef = false;
 
 // UI / display
 bool       displayOn = true, editMode = false;
@@ -268,15 +294,96 @@ const char* dirName(int deg) {
 }
 
 // Raw single-shot read of the ATtiny wind sensor. Returns false on any I2C
-// short-read (NACK / stuck bus). No recovery here -- that's readAttiny()'s job.
+// failure (NACK / stuck clock / busy bus). No escalation here -- that's
+// readAttiny()'s job.
+//
+// Bit-banged, not Wire: on this core (2.0.x, ESP-IDF 4.4 legacy driver) an
+// I2C transaction that never completes is only abandoned after a fixed
+// 1000 ms, whatever Wire.setTimeOut() says. Bench 2026-11-15: every failed
+// ATtiny read froze the loop for 1006-1007 ms and pushed transmits up to 1 s
+// past the TDMA slot (main 2 per 11 min; 10 Hz polling 21). SoftI2CRead gives
+// up within ~3 ms instead. Wire is released for the read and set up again
+// after, the same way i2cBusClear() does it.
+static SoftI2CRead attinyBus(I2C_SDA, I2C_SCL);
+static uint32_t attinySoftFail[4] = {0, 0, 0, 0};    // indexed by SoftI2CResult
 static bool readAttinyRaw(AttinyWind& w) {
-    if (Wire.requestFrom(ATTINY_ADDR, (uint8_t)ATTINY_BYTES) != ATTINY_BYTES) return false;
     uint8_t b[ATTINY_BYTES];
-    for (uint8_t i = 0; i < ATTINY_BYTES; i++) b[i] = Wire.read();
+    Wire.end();
+    si2cTakePins(I2C_SDA, I2C_SCL);
+    SoftI2CResult res = attinyBus.read(ATTINY_ADDR, b, ATTINY_BYTES);
+    Wire.begin(I2C_SDA, I2C_SCL);
+    if (res != SI2C_OK) { attinySoftFail[res & 3]++; return false; }
     w.speed_avg = b[0]|(b[1]<<8); w.speed_sd = b[2]|(b[3]<<8);
     w.dir_avg   = b[4]|(b[5]<<8); w.dir_sd   = b[6]|(b[7]<<8);
     w.gust      = b[8]|(b[9]<<8); w.rawADC   = b[10]|(b[11]<<8);
     return true;
+}
+
+// ============================================================================
+// TIMED 1 s WIND READINGS
+// ============================================================================
+// The ATtiny publishes a fresh 2 s average every second. We poll it every
+// 100 ms and WindStamper (lib/WindStamp) notes when each publish appeared:
+// halfway between two polls 100 ms apart, or, when the publish fell in a longer
+// gap (the guard before our slot plus our own ~400 ms transmit), where the
+// ATtiny's measured rhythm puts it. A failed poll is skipped, so it no longer
+// costs the next publish its time. The newest 1..3 consecutive publishes ride
+// along in every data packet. The stall detection and bus recovery stay in
+// readSensors() / readAttiny(), which run unchanged at each transmit (its read
+// also feeds the stamper, so the transmit path adds no I2C traffic).
+//
+// Bench 2026-11-15: a failed ATtiny read through Wire froze the loop for a
+// fixed ~1 s and pushed our transmit past its slot; polling 10x a second made
+// that 10x more frequent. readAttinyRaw() is now bit-banged and gives up in a
+// few ms. As a second line of defence the poll also stays off the bus in the
+// SEC_SLOT_GUARD_MS before our slot (the transmit's own read covers it).
+#define SEC_POLL_MS        100
+#define SEC_SLOT_GUARD_MS  250
+static WindStamper stamper;
+static uint32_t    secNextPollMs = 0;
+static uint8_t     secFailRun = 0;
+
+// True in the last SEC_SLOT_GUARD_MS before our TDMA slot starts.
+static bool nearMySlot(uint32_t now) {
+    if (!synced || mySlot < 1 || cycleMs == 0) return false;
+    uint32_t myOffset = (uint32_t)mySlot * slotMs;
+    uint32_t into  = (uint32_t)(now - beaconLocalMs) % cycleMs;
+    uint32_t until = (myOffset >= into) ? myOffset - into : myOffset + cycleMs - into;
+    return until < SEC_SLOT_GUARD_MS;
+}
+
+// Note a frame read at `now` (millis() just before the read started).
+static void secObserve(const AttinyWind& w, uint32_t now) {
+    stamper.observe((uint8_t)(w.rawADC >> 10), w.speed_avg, w.dir_avg, now);
+}
+
+static void pollWindSeconds() {
+    uint32_t now = millis();
+    if ((int32_t)(now - secNextPollMs) < 0) return;
+    if (nearMySlot(now)) return;           // our transmit's read covers this stretch
+    // A dead or stuck ATtiny fails every read. After a few misses, try only
+    // every 2 s; readSensors() owns the recovery.
+    secNextPollMs = now + (secFailRun >= 3 ? 2000 : SEC_POLL_MS);
+    AttinyWind w;
+    if (!readAttinyRaw(w)) {               // a failed soft read already freed the bus
+        if (secFailRun < 255) secFailRun++;
+        stamper.failedPoll();
+        return;
+    }
+    secFailRun = 0;
+    secObserve(w, now);
+}
+
+void readSensors(NodeReading& r);
+
+// Read the sensors and send one data packet, with the timed readings when we
+// have them. Every regular transmit goes through here.
+static NodeReading sendReading(bool ackSleep) {
+    NodeReading r; readSensors(r);         // its ATtiny read also feeds the history
+    WindExt e;
+    bool hasExt = stamper.build(e, millis(), r.windValid, synced && beaconRef, beaconRxMs, beaconSeqLow);
+    radio.sendData(r, nodeId, ackSleep, hasExt ? &e : nullptr);
+    return r;
 }
 
 // Clock a stuck I2C bus free. A slave that was interrupted mid-byte can hold
@@ -390,8 +497,10 @@ void noteAttinyWakeSeq() {
 // Read every sensor into r (called once per transmit cycle).
 void readSensors(NodeReading& r) {
     AttinyWind w;
+    uint32_t readAt = millis();
     attinyOk = readAttiny(w);
     if (attinyOk) {
+        secObserve(w, readAt);             // timed 1 s history (see pollWindSeconds)
         // Only count the read as FRESH if the ATtiny's publish sequence moved.
         // It publishes every 1 s, so two reads >= 1.5 s apart (or across a
         // deep sleep) with the same sequence mean its sampling loop is stuck.
@@ -967,14 +1076,42 @@ void loop() {
     // ---- 0c) serial commands (attiny-flash) ----
     serviceSerial();
 
+    // ---- 0d) note each new ATtiny publish and when it appeared ----
+    pollWindSeconds();
+
+    // At most one line a minute, and only when ATtiny reads failed (serial
+    // output costs packets on this hardware, so no per-failure lines).
+    static uint32_t lastI2cNote = 0, lastI2cFails = 0;
+    if ((uint32_t)(millis() - lastI2cNote) >= 60000UL) {
+        lastI2cNote = millis();
+        uint32_t tot = attinySoftFail[SI2C_BUS_BUSY] + attinySoftFail[SI2C_NACK] + attinySoftFail[SI2C_STRETCH];
+        if (tot != lastI2cFails) {
+            Serial.printf("[i2c] ATtiny read failures so far: %lu busy, %lu nack, %lu stuck clock\n",
+                          (unsigned long)attinySoftFail[SI2C_BUS_BUSY], (unsigned long)attinySoftFail[SI2C_NACK],
+                          (unsigned long)attinySoftFail[SI2C_STRETCH]);
+            lastI2cFails = tot;
+        }
+    }
+
     // ---- 1) beacon sync ----
     BeaconPacket b;
-    if (radio.pollBeacon(b)) {
+    uint32_t bRx = 0;
+    if (radio.pollBeacon(b, &bRx)) {
         beaconLocalMs = millis(); lastBeaconAnyMs = millis();
+        beaconRxMs = bRx; beaconSeqLow = (uint8_t)b.seq; beaconRef = true;
         slotMs = b.slot_ms; cycleMs = b.cycle_ms; maxSlot = b.max_slot;
         nodeMask = b.node_mask;                    // v4 compact slot map
         mySlot   = beaconSlotOf(nodeMask, nodeId); // our rank-based slot (0 = not scheduled)
         synced = true; txThisCycle = false;
+        // The base re-anchors its cycle on each beacon it actually sends, so a
+        // base that was busy can send a beacon late. If we already sent this
+        // cycle's reading on the predicted time (flywheel) and the late beacon
+        // turns up afterwards, don't send a second one into the shifted cycle.
+        // "This cycle" = the beacon came less than half a cycle after the start
+        // we predicted for the cycle we flywheel-transmitted in.
+        if (flywheelEver && (uint32_t)(beaconLocalMs - lastFlywheelCycle) < cycleMs / 2) {
+            txThisCycle = true; txCycleStart = beaconLocalMs;
+        }
         rtcCycleMs = b.cycle_ms;               // keep the wake listen window sized
 
         // Sleep command from the base. We don't sleep HERE -- we set a flag so
@@ -1002,10 +1139,27 @@ void loop() {
         uint32_t myOffset = (uint32_t)mySlot * slotMs;
         bool fits = (mySlot >= 1) && (myOffset + slotMs <= cycleMs);
         if (fits) {
-            if (!txThisCycle && (millis() - beaconLocalMs) >= myOffset) {
-                NodeReading r; readSensors(r);
-                radio.sendData(r, nodeId, pendingSleepAck);
+            // Which cycle are we in, counted from the last beacon we heard?
+            // k = 0: that beacon's own cycle (the old behaviour). k >= 1: a cycle
+            // whose beacon we missed; transmit at the predicted slot time
+            // (see FLYWHEEL_CYCLES above).
+            uint32_t since     = millis() - beaconLocalMs;
+            uint32_t k         = cycleMs ? since / cycleMs : 0;
+            uint32_t intoCycle = since - k * cycleMs;
+            uint32_t cycStart  = beaconLocalMs + k * cycleMs;
+            bool due = (k == 0) ? (intoCycle >= myOffset)
+                                : (k <= FLYWHEEL_CYCLES && intoCycle >= myOffset &&
+                                   intoCycle < myOffset + FLYWHEEL_START_MS);
+            bool sentThisCycle = txThisCycle && txCycleStart == cycStart;
+            if (due && !sentThisCycle) {
+                NodeReading r = sendReading(pendingSleepAck);
                 txThisCycle = true;
+                txCycleStart = cycStart;
+                if (k > 0) {
+                    flywheelTx++; lastFlywheelCycle = cycStart; flywheelEver = true;
+                    Serial.printf("[TDMA] beacon missed: sent in the predicted slot (%lu cycle(s) since the last beacon, %lu so far)\n",
+                                  (unsigned long)k, (unsigned long)flywheelTx);
+                }
                 printReading(r);
                 if (pendingSleepAck) {          // ack sent -> commit to sleep
                     rtcSleepMode = true;
@@ -1018,8 +1172,7 @@ void loop() {
             // not yet in the schedule -> jitter in so the base hears us and adds
             // our bit to node_mask; next beacon we get a real slot.
             if (millis() - lastAutoTx > (uint32_t)cycleMs + random(0, 400)) {
-                NodeReading r; readSensors(r);
-                radio.sendData(r, nodeId, pendingSleepAck); lastAutoTx = millis();
+                NodeReading r = sendReading(pendingSleepAck); lastAutoTx = millis();
                 if (pendingSleepAck) {
                     rtcSleepMode = true;
                     rtcSilentWakes = 0;
@@ -1032,8 +1185,7 @@ void loop() {
     } else {
         // ---- autonomous fallback (no beacon heard) ----
         if (millis() - lastAutoTx > AUTO_TX_MS + (uint32_t)random(0, AUTO_JITTER_MS)) {
-            NodeReading r; readSensors(r);
-            radio.sendData(r, nodeId); lastAutoTx = millis();
+            NodeReading r = sendReading(false); lastAutoTx = millis();
             printReading(r);
         }
     }
