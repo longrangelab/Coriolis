@@ -9,7 +9,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define LEARN_BUILD "e2ab257163"   // sent as X-Learn-Build on /windsec
+#define LEARN_BUILD "73d0d61974"   // sent as X-Learn-Build on /windsec
 
 static const char LEARN_HTML[] PROGMEM = R"LEARNHTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1389,7 +1389,7 @@ function sessNewLoad(forget) {
 // keeps its own history (the base holds about two minutes), learns from your
 // real shots and plots, and learns how the meters relate as the wind blows.
 // which build of this page this is ('__' + 'LEARN_BUILD__' when not served by a base)
-var PAGE_BUILD = 'e2ab257163';
+var PAGE_BUILD = '73d0d61974';
 var LIVE = { timer: null, since: null, baseNow: 0, at: 0, utc: null, data: null, ok: false, lastOk: 0, busy: false, unplaced: [], lastSave: 0 };
 var YD_PER_DEG = 111319.4908 * 1.0936133;
 function liveClock() { return LIVE.at ? (LIVE.baseNow + (Date.now() - LIVE.at)) / 1000 : 0; }
@@ -2186,7 +2186,8 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
         g = Math.max(-60, Math.min(60, ((r.dir - md + 540) % 360) - 180));
         R.kd++; R.dx += (sx1 - R.dx) / Math.min(R.kd, self.tau); R.dy += (sy1 - R.dy) / Math.min(R.kd, self.tau);
       }
-      R.ring.unshift({ f: f, g: g, spd: r.spd, dir: r.dir });
+      var drr = r.dir * Math.PI / 180;
+      R.ring.unshift({ f: f, g: g, spd: r.spd, dir: r.dir, s: Math.sin(drr), c: Math.cos(drr) });
       if (R.ring.length > REL_RING) R.ring.length = REL_RING;
       present[k] = true;
     });
@@ -2203,6 +2204,15 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     }
     if (!sectors.length) return;
     this.secs++;
+    // each meter's (and its rest-of-field's) samples at every bin of travel,
+    // worked out once per second for all the sectors that learn from it
+    var ups = Math.max(0.5, this.fu || 0) * YD_PER_S_PER_MPH, NBc = this.NB, LC = {};
+    for (id in this.rt) {
+      var Rc = this.rt[id], xr = [], xq = [];
+      for (var jc = 0; jc <= NBc; jc++) { var kfc = jc * REL_BIN / ups; if (kfc > REL_RING - 2) break; xr.push(ringAt(Rc.ring, kfc)); xq.push(ringAt(Rc.rest || [], kfc)); }
+      LC[id] = { r: xr, q: xq };
+    }
+    this._lc = LC;
     this._accumulate('all', present);
     for (var si = 0; si < sectors.length; si++) this._accumulate(sectors[si], present);
   };
@@ -2232,11 +2242,10 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
           var DA = self.FA[key + 'm'] || (self.FA[key + 'm'] = { n: zeros(L + 1), c: zeros(L + 1) });
           for (j = 0; j <= L && j < R.ring.length; j++) { o = R.ring[j]; if (!o) continue; DA.n[j]++; DA.c[j] += R.ring[0].g * (o.g || 0); }
         }
-        var F = self.F[key] || (self.F[key] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W) });
-        for (var jb = 0; jb <= NB; jb++) {
-          var kf = jb * REL_BIN / ups; if (kf > REL_RING - 2) break;
-          if (Fr[0]) { var xa = ringAt(R.ring, kf); if (xa) addF(F, NB + jb, xa[c] || 0, Fr[0][c]); }          // meter then, field now
-          if (jb > 0 && R.ring[0]) { var xf = ringAt(Fr, kf); if (xf) addF(F, NB - jb, R.ring[0][c] || 0, xf[c] || 0); }   // field then, meter now
+        var F = self.F[key] || (self.F[key] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W) }), lc = self._lc[k];
+        for (var jb = 0; jb < lc.r.length; jb++) {
+          if (Fr[0]) { var xa = lc.r[jb]; if (xa) addF(F, NB + jb, xa[c] || 0, Fr[0][c]); }          // meter then, field now
+          if (jb > 0 && R.ring[0]) { var xf = lc.q[jb]; if (xf) addF(F, NB - jb, R.ring[0][c] || 0, xf[c] || 0); }   // field then, meter now
         }
       });
     });
@@ -2247,12 +2256,12 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
       if (!Ra[0] && !Rb[0]) continue;
       var key2 = a + '|' + b + '|' + sector, W = 2 * NB + 1;
       var P = this.P[key2] || (this.P[key2] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W), ds: zeros(W), dc: zeros(W) });
-      for (var jb = 0; jb <= NB; jb++) {
-        var kf = jb * REL_BIN / ups; if (kf > REL_RING - 2) break;
+      var La = this._lc[a].r, Lb = this._lc[b].r;
+      for (var jb = 0; jb < La.length; jb++) {
         // +j: a as it was j bins of travel ago, with b now (a leads b)
-        if (Rb[0]) { var xa = ringAt(Ra, kf); if (xa) this._add(P, NB + jb, xa, Rb[0]); }
+        if (Rb[0]) { var xa = La[jb]; if (xa) this._add(P, NB + jb, xa, Rb[0]); }
         // -j: b as it was, with a now (b leads a)
-        if (jb > 0 && Ra[0]) { var xb = ringAt(Rb, kf); if (xb) this._add(P, NB - jb, Ra[0], xb); }
+        if (jb > 0 && Ra[0]) { var xb = Lb[jb]; if (xb) this._add(P, NB - jb, Ra[0], xb); }
       }
     }
   };
@@ -2262,12 +2271,14 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     var k0 = Math.floor(kf), w = kf - k0, o0 = R[k0], o1 = R[k0 + 1];
     if (w < 1e-6) return o0 || null;
     if (!o0 || !o1) return (w < 0.5 ? o0 : o1) || null;
-    return { f: o0.f + w * (o1.f - o0.f), g: (o0.g || 0) + w * ((o1.g || 0) - (o0.g || 0)), spd: o0.spd + w * ((o1.spd || 0) - (o0.spd || 0)), dir: w < 0.5 ? o0.dir : o1.dir };
+    var on = w < 0.5 ? o0 : o1;
+    return { f: o0.f + w * (o1.f - o0.f), g: (o0.g || 0) + w * ((o1.g || 0) - (o0.g || 0)), spd: o0.spd + w * ((o1.spd || 0) - (o0.spd || 0)), dir: on.dir, s: on.s, c: on.c };
   }
   // x = a's sample, y = b's sample; ds/dc hold direction(b) - direction(a)
   Relations.prototype._add = function (P, ix, x, y) {
     P.n[ix]++; P.ab[ix] += x.f * y.f; P.aa[ix] += x.f * x.f; P.bb[ix] += y.f * y.f;
-    var dd = (y.dir - x.dir) * Math.PI / 180; P.ds[ix] += Math.sin(dd); P.dc[ix] += Math.cos(dd);
+    if (x.s != null && y.s != null) { P.ds[ix] += y.s * x.c - y.c * x.s; P.dc[ix] += y.c * x.c + y.s * x.s; }   // sin/cos of dir(b) - dir(a)
+    else { var dd = (y.dir - x.dir) * Math.PI / 180; P.ds[ix] += Math.sin(dd); P.dc[ix] += Math.cos(dd); }
   };
   Relations.prototype.meters = function () {
     var seen = {};
