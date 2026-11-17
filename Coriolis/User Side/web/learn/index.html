@@ -247,6 +247,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <button class="btn" id="pTrain" style="align-self:flex-end">Train on 30 min of wind</button>
       </div>
       <label class="ck" style="font-size:.85rem;display:flex;gap:8px"><input id="pEvolve" type="checkbox"> Keep trying new models (retire the worst, try a new one every generation)</label>
+      <label class="ck" style="font-size:.85rem;display:flex;gap:8px"><input id="pNets" type="checkbox"> Also try neural nets (off: in tests they only matched the linear models, for more work and storage)</label>
       <div>
         <div class="lbl" style="margin-bottom:4px" id="pTraceLbl">Predicted 10 s ahead vs the wind that arrived</div>
         <svg class="chart" id="pTrace" viewBox="0 0 520 170" role="img" aria-label="Predicted against actual wind speed"></svg>
@@ -722,7 +723,7 @@ function computeCalls(delay) {
 function outlook() { return [0, 3, 6, 10].map(function (d) { var C = computeCalls((ST.settings.delay || 0) + d); return C ? { d: d, v: C.learned, sd: C.callSd, hit: C.hit } : null; }); }
 // best early-warning meter for each meter in the current wind (for the forecaster)
 // the wind model (no shots): an older save's plain forecaster starts over
-function newLoop(st) { return new WL.ForecastLoop(st && st.kind === 'loop' ? st : null, { evolve: ST.settings.evolve !== false, seed: (ST.seed % 100000) + 1, leadersFn: function (id) { return RT.leadList[id] || []; }, importanceFn: function (id) { return RT.imp ? RT.imp[id] || 0 : null; } }); }
+function newLoop(st) { return new WL.ForecastLoop(st && st.kind === 'loop' ? st : null, { evolve: ST.settings.evolve !== false, nets: ST.settings.nets === true, seed: (ST.seed % 100000) + 1, leadersFn: function (id) { return RT.leadList[id] || []; }, importanceFn: function (id) { return RT.imp ? RT.imp[id] || 0 : null; } }); }
 // each meter's share of the shot: its ballistic path weight (wind near the
 // muzzle counts most) times its learned multiplier; a meter that warns an
 // important one earns part of that meter's share
@@ -1210,6 +1211,7 @@ function renderPred() {
   var id = sel.value;
   $('pTrain').hidden = ST.mode === 'live';
   $('pEvolve').checked = ST.settings.evolve !== false;
+  $('pNets').checked = ST.settings.nets === true;
   var chk = 0, gen = 0, sk = [];
   ids.forEach(function (m) { var I = F.info(m); if (!I) return; chk += I.checked; gen = Math.max(gen, I.generation); var x = F.stats(m).find(function (q) { return q.h === h; }); if (x && x.n >= 60) sk.push(x.skill); });
   $('kPc').textContent = chk.toLocaleString();
@@ -1264,6 +1266,7 @@ function renderPred() {
 }
 $('pMeter').onchange = renderPred; $('pH').onchange = renderPred;
 $('pEvolve').onchange = function () { ST.settings.evolve = $('pEvolve').checked; RT.fc.evolve = ST.settings.evolve; };
+$('pNets').onchange = function () { ST.settings.nets = $('pNets').checked; RT.fc.nets = ST.settings.nets; };
 // 30 min of wind in 1 min slices, so the page keeps answering while it trains
 $('pTrain').onclick = function () {
   if (ST.mode === 'live') return; var b = $('pTrain'), left = 30, gen = RT; b.disabled = true;

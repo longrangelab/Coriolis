@@ -196,8 +196,8 @@ function loopRun(evolve, seconds) {
   const rr = rng(3), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const G = []; let x = 0; for (let t = 0; t < seconds + 100; t++) { x = 0.95 * x + 0.6 * gg(); G.push(x); }
   // no hints: it has to find the pair itself. The search is random: over 16
-  // runs (8 loop seeds x 2 winds) it had the pair in its top 3 in 14
-  const L = new WL.ForecastLoop(null, { seed: 3, evolve, regimes: false });
+  // runs (8 loop seeds x 2 winds) it had the pair in its top 3 and proven in 15
+  const L = new WL.ForecastLoop(null, { seed: 5, evolve, regimes: false });
   for (let t = 50; t < seconds + 50; t++) { L.add('S', t, 10 + 3 * G[t] + 0.2 * gg(), 270); L.add('N', t, 0.9 * (10 + 3 * G[t - 22]) + 0.2 * gg(), 270 + 3 * gg()); L.add('X', t, 10 + 2 * gg(), 270); }
   return L;
 }
@@ -240,10 +240,15 @@ ok('wind loop: a base restart (clock back to zero) does not stop the checking', 
   assert(L.info('A').generation > gen, 'generations carry on');
   assert(L.latest('A') === 399 && Object.keys(L.env.s).every(k => +k < 400), 'old seconds dropped');
 });
+ok('wind loop: no neural nets unless asked (they only broke even with linear)', () => {
+  assert(!LOOP.nets && LOOP.meters().every(id => LOOP.pool(id, 10).every(c => c.kind !== 'mlp')), 'no nets by default');
+  const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(new WL.ForecastLoop(null, { nets: true }).toJSON())), {});
+  assert(L2.nets === true, 'the choice is saved with the model');
+});
 ok('wind loop: a new neural net gets 30 min before it can be retired (unless worse than "stays"), two at a time at most', () => {
   const rr = rng(8), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const G = []; let x = 0; for (let t = 0; t < 14500; t++) { x = 0.95 * x + 0.6 * gg(); G.push(x); }
-  const L = new WL.ForecastLoop(null, { seed: 5, maxCandidates: 10, regimes: false }), born = {}, ages = [], scores = {};
+  const L = new WL.ForecastLoop(null, { seed: 5, maxCandidates: 10, regimes: false, nets: true }), born = {}, ages = [], scores = {};
   let young = 0;
   const orig = L._generation.bind(L);
   L._generation = function (id, p, sec) {
@@ -360,7 +365,7 @@ ok('wind loop: a Sentinel lead in yards follows the wind speed', () => {
   // S is 120 yd upwind of T; light wind drifts 4-7.5 mph, so the lead runs 33-61 s
   const rr = rng(3), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const T = 5400, G = []; let x = 0; for (let t = 0; t < T + 300; t++) { x = 0.96 * x + 0.35 * gg(); G.push(x); }
-  const R = new WL.Relations(), L = new WL.ForecastLoop(null, { seed: 11 });
+  const R = new WL.Relations(), L = new WL.ForecastLoop(null, { seed: 11, ydRate: 0.5 });   // yard leads are opt-in
   L.leadersFn = id => { const p = id === 'T' ? R.pair('S', 'T', 6) : null; return p && p.lead === 'S' && p.significant ? [{ by: 'S', lagS: Math.round(p.lagF), alongYd: p.alongYd }] : []; };
   for (let t = 150; t < T; t++) {
     const mph = 5.75 + 1.75 * Math.sin(2 * Math.PI * t / 1800), lag = 120 / (mph * WL.YD_PER_S_PER_MPH), k = Math.floor(lag), w = lag - k, sc = mph / 4;

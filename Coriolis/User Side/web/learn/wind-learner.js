@@ -924,6 +924,19 @@
     // gusty wind the slow speed it times yards by wanders, and that cost 9 % in
     // the two-cluster test; leads in yards still come from Relations' hints
     this.ydTwin = !!cfg.ydTwin;
+    // share of Relations' hinted leads tried timed by yards rather than seconds.
+    // Off by default: a yard lead is timed by the meter's 3 min mean speed,
+    // which wanders with the gusts. 10-meter range, 6 seeds, 10 s ahead:
+    // seconds 77 % better than "stays", half and half 72 %, yards only 51 %;
+    // with the mean speed swinging 5-15 mph, 21.7 / 21.7 / 20.0 %. Yards win
+    // only when the gusts' travel time follows a smooth speed drift (2 meters,
+    // light wind 4-7.5 mph: 39 vs 35 %); timing them by the whole field's
+    // 10 min mean speed instead did no better. The speed bands of the
+    // per-wind memory re-time leads when the wind speeds up.
+    this.ydRate = cfg.ydRate != null ? cfg.ydRate : 0;
+    // neural nets in the pool. Off by default: across the 10-meter tests (and
+    // the tablet bench) they only broke even with linear, for more CPU and storage
+    this.nets = cfg.nets != null ? !!cfg.nets : !!state.nets;
     this.allRate = cfg.allRate != null ? cfg.allRate : 0.5;   // chance a new model is one on every meter at once, when the pool has none
     this.cutN = cfg.cutN || 1e9;   // scores carry over a switch as they are (tested: cutting them back did worse)
     this.reg = { cur: state.regCur || null, cand: null, candN: 0, last: -Infinity };
@@ -1017,7 +1030,7 @@
     var p = { list: [], next: 1, g: 0, k: 0, checked: 0, B: {}, W: {}, hist: [], log: [], champ: null, pend: {}, trace: [] };
     this.H.forEach(function (h) { p.B[h] = { e2: 0, p2: 0, n: 0 }; p.W[h] = { se: 0, sp: 0, n: 0 }; });
     var me = this;
-    [{ kind: 'stay' }, { kind: 'rls', lam: 0.998 }, { kind: 'rls', lam: 0.99 }, { kind: 'mlp', hidden: 6, lr: 0.03 }]
+    [{ kind: 'stay' }, { kind: 'rls', lam: 0.998 }, { kind: 'rls', lam: 0.99 }].concat(this.nets ? [{ kind: 'mlp', hidden: 6, lr: 0.03 }] : [])
       .forEach(function (c) { me._addCand(p, c, 'start'); });
     return p;
   };
@@ -1333,14 +1346,14 @@
     var r = this.rnd, others = Object.keys(this.rt).filter(function (k) { return k !== id; });
     var sug = (this.leadersFn ? this.leadersFn(id) || [] : []).filter(function (l) { return l && l.by !== id; });
     var have = {}; p.list.forEach(function (c) { c.leaders.forEach(function (l) { have[l.by + '@' + l.lag] = 1; if (l.yd) have[l.by + '@' + Math.round(l.yd / 6) + 'b'] = 1; }); });
-    var fresh = sug.filter(function (l) { return !have[l.by + '@' + Math.round(l.lagS)] || (l.alongYd > 0 && !have[l.by + '@' + Math.round(l.alongYd / 6) + 'b']); });
+    var ydOn = this.ydRate > 0, fresh = sug.filter(function (l) { return !have[l.by + '@' + Math.round(l.lagS)] || (ydOn && l.alongYd > 0 && !have[l.by + '@' + Math.round(l.alongYd / 6) + 'b']); });
     // a model on every meter at once, whenever the pool has none for the meters now reporting
     if (others.length >= 2) {
       var allNow = others.slice().sort(), hasAll = p.list.some(function (c) { return c.all && c.all.join(',') === allNow.join(','); });
       if (!hasAll && r() < this.allRate) return { kind: 'rls', lam: r() < 0.5 ? 0.998 : 0.995, leaders: [], inputs: [], all: allNow, origin: 'collective' };
     }
     var x = r();
-    if (fresh.length && x < 0.4) { var l = fresh[Math.floor(r() * fresh.length)]; return { kind: 'rls', lam: 0.998, leaders: [l.alongYd > 0 && r() < 0.5 ? { by: l.by, lag: l.lagS, yd: l.alongYd } : { by: l.by, lag: l.lagS }], origin: 'relation' }; }
+    if (fresh.length && x < 0.4) { var l = fresh[Math.floor(r() * fresh.length)]; return { kind: 'rls', lam: 0.998, leaders: [l.alongYd > 0 && r() < this.ydRate ? { by: l.by, lag: l.lagS, yd: l.alongYd } : { by: l.by, lag: l.lagS }], origin: 'relation' }; }
     var Rme = this.rt[id], now = Rme && Rme.s[Rme.last], mphNow = now ? Math.max(1.5, now.ms != null ? now.ms : Math.hypot(now.mu, now.mv)) : 10;
     if (best && best.kind !== 'stay' && x < 0.8) {
       var s = { kind: best.kind, lam: best.lam, hidden: best.hidden, lr: best.lr, leaders: best.leaders.map(function (l) { return l.yd ? { by: l.by, lag: l.lag, yd: l.yd } : { by: l.by, lag: l.lag }; }), inputs: (best.inputs || []).map(function (q) { return { k: q.k, lag: q.lag }; }), all: best.all ? best.all.slice() : null, origin: 'mutation', from: best.id, parent: best };
@@ -1357,10 +1370,10 @@
         L[key] = pickd == null ? Math.max(unit, base + unit * (r() < 0.5 ? -1 : 1) * (1 + Math.floor(r() * 6))) : pickd;
       }
       else if (chans.length && m < 0.5) { var ck = chans[Math.floor(r() * chans.length)], ix = s.inputs.findIndex(function (q) { return q.k === ck; }); if (ix >= 0) s.inputs.splice(ix, 1); else s.inputs.push({ k: ck, lag: r() < 0.5 ? 0 : 2 + Math.floor(r() * 38) }); }
-      else if (m < 0.55 && s.leaders.length < 2 && others.length) { var pick = sug.length && r() < 0.6 ? sug[Math.floor(r() * sug.length)] : null; s.leaders.push(pick ? (pick.alongYd > 0 && r() < 0.5 ? { by: pick.by, lag: pick.lagS, yd: pick.alongYd } : { by: pick.by, lag: pick.lagS }) : { by: others[Math.floor(r() * others.length)], lag: 2 + Math.floor(r() * 38) }); }
+      else if (m < 0.55 && s.leaders.length < 2 && others.length) { var pick = sug.length && r() < 0.6 ? sug[Math.floor(r() * sug.length)] : null; s.leaders.push(pick ? (pick.alongYd > 0 && r() < this.ydRate ? { by: pick.by, lag: pick.lagS, yd: pick.alongYd } : { by: pick.by, lag: pick.lagS }) : { by: others[Math.floor(r() * others.length)], lag: 2 + Math.floor(r() * 38) }); }
       else if (m < 0.65 && s.leaders.length) s.leaders.splice(Math.floor(r() * s.leaders.length), 1);
       else if (m < 0.82) s.lam = [0.99, 0.995, 0.998, 0.999][Math.floor(r() * 4)];
-      else if (s.kind === 'rls') { s.kind = 'mlp'; s.hidden = 6; } else { s.kind = 'rls'; }
+      else if (s.kind === 'rls' && this.nets) { s.kind = 'mlp'; s.hidden = 6; } else if (s.kind === 'mlp') { s.kind = 'rls'; } else s.lam = s.lam === 0.998 ? 0.995 : 0.998;
       return s;
     }
     var cs = this.channels();
@@ -1425,14 +1438,25 @@
     });
     return out;
   };
-  function packModel(m, noCov) {
-    // the covariance P to 4 figures (it only sets how fast weights move), weights to 6
-    var o = {}; for (var k in m) { if (noCov && k === 'P') { o.P = null; continue; } var v = m[k], rf = k === 'P' ? round4 : round6; o[k] = Array.isArray(v) ? v.map(function (x) { return Array.isArray(x) ? x.map(rf) : rf(x); }) : rf(v); }
+  // cov: 'full' keeps the covariance P (to 4 figures; it only sets how fast
+  // weights move), 'diag' its diagonal only (k numbers, not k x k), 'none'
+  // drops it. Weights to 6 figures.
+  function packModel(m, cov) {
+    var o = {};
+    for (var k in m) {
+      var v = m[k];
+      if (k === 'P' && cov !== 'full') { if (cov === 'diag' && Array.isArray(v)) o.Pd = v.map(function (r, i) { return round4(r[i]); }); else o.P = null; continue; }
+      var rf = k === 'P' ? round4 : round6;
+      o[k] = Array.isArray(v) ? v.map(function (x) { return Array.isArray(x) ? x.map(rf) : rf(x); }) : rf(v);
+    }
+    if (o.Pd && o.P === undefined) o.P = null;
     return o;
   }
   // a pool as saved data. compact (a wind not blowing now): the best few
   // models only, linear models without their covariance (it rebuilds in a
-  // few minutes of that wind), short history
+  // few minutes of that wind), short history. The wind blowing now: the
+  // leading and own-history models keep their whole covariance, the
+  // challengers its diagonal (most of a 10-meter save was covariance)
   ForecastLoop.prototype._packPool = function (p, compact) {
     var me = this, list = p.list;
     if (compact) {
@@ -1442,7 +1466,7 @@
     }
     return { next: p.next, g: p.g, k: p.k, checked: p.checked, champ: p.champ, B: p.B, hist: compact ? p.hist.slice(-60) : p.hist, log: compact ? p.log.slice(-20) : p.log, tabu: p.tabu || {},
       list: list.map(function (c) {
-        var M = {}; for (var h in c.M) M[h] = { u: packModel(c.M[h].u, compact), v: packModel(c.M[h].v, compact) };
+        var cov = compact ? 'none' : c.id === p.champ || isBase(c) ? 'full' : 'diag', M = {}; for (var h in c.M) M[h] = { u: packModel(c.M[h].u, cov), v: packModel(c.M[h].v, cov) };
         return { id: c.id, kind: c.kind, lam: c.lam, hidden: c.hidden, lr: c.lr, leaders: c.leaders, inputs: c.inputs || [], all: c.all || null, born: c.born, origin: c.origin, from: c.from, S: c.S, M: M };
       }) };
   };
@@ -1451,14 +1475,14 @@
     for (var id in this.P) P[id] = this._packPool(this.P[id], false);
     for (var rk in this.A) { A[rk] = {}; for (var id2 in this.A[rk]) A[rk][id2] = this.A[rk][id2]; }
     return { kind: 'loop', v: 1, H: this.H, maxC: this.maxC, genS: this.genS, seed: this.seed, channels: this.channels(), P: P, A: A,
-      regimes: this.regimes, noSpeedBands: this.noSpeedBands, regCur: this.reg.cur, regSecs: this.regSecs, RB: this.RB };
+      regimes: this.regimes, noSpeedBands: this.noSpeedBands, nets: this.nets, regCur: this.reg.cur, regSecs: this.regSecs, RB: this.RB };
   };
   ForecastLoop.prototype._restorePool = function (o) {
     var p = this._newPool(), H = this.H;
     p.list = o.list.map(function (c) {
       var d = JSON.parse(JSON.stringify(c)); H.forEach(function (h) { d.S[h] = d.S[h] || { e2: 0, n: 0 }; });
       // put away without its covariance: start it modest, it grows back in that wind
-      for (var h in d.M) ['u', 'v'].forEach(function (q) { var m = d.M[h][q]; if (m && m.w && m.P == null) m.P = eye(m.w.map(function () { return 0.05; })); });
+      for (var h in d.M) ['u', 'v'].forEach(function (q) { var m = d.M[h][q]; if (m && m.w && m.P == null) { m.P = eye(m.Pd && m.Pd.length === m.w.length ? m.Pd : m.w.map(function () { return 0.05; })); } if (m) delete m.Pd; });
       return d;
     });
     p.list.forEach(function (c) { c.inputs = (c.inputs || []).map(function (q) { return typeof q === 'string' ? { k: q, lag: 0 } : q; }); });
