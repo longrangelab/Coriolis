@@ -291,7 +291,10 @@ async function pageTest() {
   const t0 = Date.now() - 120000, YDD = 111319.4908 * 1.0936133;
   const gust = t => 8 + 2 * Math.sin(2 * Math.PI * t / 37) + 1.3 * Math.sin(2 * Math.PI * t / 13 + 1);
   const spd = { 1: t => gust(t - 6), 2: t => gust(t), 3: t => 8 + 1.5 * Math.sin(2 * Math.PI * t / 23 + 2) };
-  const node = (id, yd) => ({ id, speed: spd[id]((Date.now() - t0) / 1000), speedSd: 1, dir: 270, dirSd: 5, lat: 45 + yd / YDD, lon: -93, gps: true, windOk: true });
+  // meter sensors: 1 has none (old fields read 0 / -1), 2 sends the env object
+  // newer firmware adds, 3 only the older tempF / presInHg / lux fields
+  const sens = { 1: { tempF: 32, presInHg: 0, lux: -1 }, 2: { tempF: 55.2, presInHg: 29.89, lux: 20000, env: { pressure: 1012.34, temp: 55.2, light: 20000 } }, 3: { tempF: 54, presInHg: 29.9, lux: 300 } };
+  const node = (id, yd) => Object.assign({ id, speed: spd[id]((Date.now() - t0) / 1000), speedSd: 1, dir: 270, dirSd: 5, lat: 45 + yd / YDD, lon: -93, gps: true, windOk: true, age: 1 }, sens[id]);
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x'), json = o => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
     if (u.pathname === '/learn') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); }
@@ -325,6 +328,14 @@ async function pageTest() {
   assert(await p.evaluate(() => /×/.test(document.getElementById('kCal').textContent) && document.querySelectorAll('#fcTbl tbody tr').length >= 3 && !!document.querySelector('#chart polyline[stroke-dasharray]')), 'Learning tab: doubt check, forecast table, doubt line');
   await p.click('#tab-pred'); await p.click('#pTrain');
   await p.waitForFunction(() => !document.getElementById('pTrain').disabled && RT.fc.info('M3').generation >= 20, null, { timeout: 60000 });
+  // practice meters carry pressure / temp / light; pressure reads the air
+  // ~15 s ahead, so the loop should pick it up on its own
+  await p.click('#pTrain'); await p.waitForFunction(() => !document.getElementById('pTrain').disabled, null, { timeout: 60000 });
+  const sc = await p.evaluate(() => ({ ch: RT.fc.channels().join(','), top: RT.fc.meters().map(id => RT.fc.pool(id, 10).filter(c => c.n >= 120).slice(0, 3).map(c => c.inputs)), champs: RT.fc.meters().map(id => (RT.fc.pool(id, 10).find(c => c.champ) || { inputs: [] }).inputs),
+    note: RT.fc.meters().filter(id => (RT.fc.pool(id, 10).find(c => c.champ) || { inputs: [] }).inputs.some(q => q.k === 'pressure')).map(id => sensorVerdict(RT.fc, id)).join('') }));
+  assert.strictEqual(sc.ch, 'light,pressure,temp', 'practice: simulated sensors reach the wind model');
+  assert(sc.top.some(L => L.some(I => I.some(q => q.k === 'pressure'))), 'practice: the leading pressure is found on its own ' + JSON.stringify(sc.top));
+  assert(!sc.note || /10 s ahead than its best without|no sensor helps yet|checked enough/.test(sc.note), 'Predict tab says what the sensors are worth: ' + sc.note);
   assert(await p.evaluate(() => document.querySelectorAll('#pPool tbody tr').length >= 4 && !!document.querySelector('#pHist polyline') && !!document.querySelector('#pTrace polyline') && +document.getElementById('kPc').textContent.replace(/,/g, '') > 10000), 'Predict tab: pool, skill by generation, predicted vs actual');
   await p.click('#tab-shoot');
   assert(await p.evaluate(() => !!document.querySelector('a[href="/"]')), 'back link to Wind Lab');
@@ -357,7 +368,10 @@ async function pageTest() {
   const lp = await p.evaluate(() => RT.rel.pair('1', '2', 6, { minN: 80 }));
   assert(lp && lp.lead === '2' && lp.lagS === 6 && lp.r > 0.9, 'live: meter 2 warns meter 1 six seconds ahead ' + JSON.stringify(lp));
   assert(await p.evaluate(() => RT.fc.stats('1')[0].n > 60), 'live: the forecaster trains on the 1 s readings');
-  assert.strictEqual(await p.evaluate(() => RT.fc.channels().join(',')), 'pressure,temp', 'live: extra sensors from the base and a meter reach the wind model');
+  assert.strictEqual(await p.evaluate(() => RT.fc.channels().join(',')), 'light,pressure,temp', 'live: extra sensors from the base and the meters reach the wind model');
+  const ne = await p.evaluate(() => RT.nodeEnv);
+  assert(!ne['1'] && ne['2'].x.pressure === 1012.34 && Math.abs(ne['2'].x.light - Math.log10(20001)) < 1e-3 && Math.abs(ne['3'].x.pressure - 29.9 * 33.86389) < 0.01 && ne['3'].x.temp === 54,
+    'live: meter sensors from the env object and from the older fields, none for a meter without them ' + JSON.stringify(ne));
   // reload: it comes back in live mode with the shot
   await p.evaluate(() => autosave());
   await p.reload();

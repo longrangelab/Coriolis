@@ -361,6 +361,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <label class="f">Packet loss (%)<input id="rLoss" type="number" step="0.5"></label>
         <label class="f">Unmeasured wind allowance (mph)<input id="lU" type="number" step="0.1"></label>
         <label class="ck"><input id="rMissed" type="checkbox"> Each packet carries the missed 1-second readings</label>
+        <label class="ck"><input id="wSens" type="checkbox"> Meters carry pressure, temperature and light sensors (sim: pressure rises about 15 s ahead of a gust, gusts run a little cooler, cloud shadows change the light but not the wind)</label>
         <label class="ck"><input id="lLead" type="checkbox"> Use upwind lead time (read each meter when its air crosses the path)</label>
       </fieldset>
       <div>
@@ -455,7 +456,7 @@ function defaultState() {
   return {
     v: 1, seed: (Math.random() * 1e9) | 0,
     settings: { mv: 2710, bc: 0.326, rifleSd: 0.10, plateShape: 'rect', plateW: 18, plateH: 24, windSpeed: 10, windFrom: 270, gust: 2.5, wobble: 12, gustSize: 'medium', drift: true,
-      radio: 'sf9', loss: 3.5, sendMissed: true, useLead: true, unmeasured: 0.8, useForecast: true, delay: 2, evolve: true },
+      radio: 'sf9', loss: 3.5, sendMissed: true, useLead: true, unmeasured: 0.8, useForecast: true, delay: 2, evolve: true, sensors: true },
     shooter: { x: 0, y: 0 }, target: { x: 0, y: 800 },
     meters: [
       { id: 'M1', type: 'inspeed', x: -14, y: 45, cal: 1.0, epoch: 0 },
@@ -559,8 +560,11 @@ function deliver(m, N) {
     N.sec.slice(-3).forEach(function (r) { if (r.t > lastT + 0.01) { H.push(r); fresh.push(r); } });
   } else { H.push(live); fresh.push(a); }
   while (H.length && H[0].t < RT.t - 120) H.shift();
-  // the same timed 1 s readings the base serves on /windsec feed the relationships
-  fresh.forEach(function (r) { var sp = Math.hypot(r.x, r.y), dg = WL.fromDeg(r); RT.align.add(m.id, r.t, sp, dg); RT.fc.add(m.id, r.t, sp, dg); });
+  // the same timed 1 s readings the base serves on /windsec feed the
+  // relationships; the meter's sensors ride along, read once per packet as
+  // the base gets them in live
+  var env = ST.settings.sensors ? sensorRead(m.id, m.x, m.y, true) : null;
+  fresh.forEach(function (r) { var sp = Math.hypot(r.x, r.y), dg = WL.fromDeg(r); RT.align.add(m.id, r.t, sp, dg); RT.fc.add(m.id, r.t, sp, dg, env); });
 }
 function ingestRel(t, readings) { RT.rel.ingest(t, readings); RT.relDirty = true; }
 function valueAt(id, tq) {
@@ -581,9 +585,36 @@ function tickField(dt) {
   } else { F.S = s.windSpeed; F.D = s.windFrom; }
   var U = meanVec(F); F.X.x += U.x * YDS * dt; F.X.y += U.y * YDS * dt;
 }
+// ------------------------------------------------------- other sensors
+// Practice meters carry what real nodes have (BMP180 pressure + temperature,
+// TSL2591 light), with made-up physics so there is something to find:
+// pressure reads the air that arrives about 15 s later (rises ahead of a
+// gust), gusts bring slightly cooler air, and cloud shadows move the light
+// without touching the wind. Units as the base sends them: pressure hPa to
+// 0.01, temp degF to 0.1, light as log10(1 + lux). Own RNG, so turning the
+// sensors on or off leaves the wind and the shots exactly the same.
+var SENS_LEAD = 15;
+function lightCh(lux) { return Math.round(Math.log10(1 + Math.max(0, lux)) * 1000) / 1000; }
+function sensorRead(key, px, py, light) {
+  var F = RT.field, A = RT.atm || (RT.atm = { p: 1013.25, T: 58, r: mulberry((ST.seed || 1) * 7 + 3), off: {} });
+  var r = A.r, off = A.off[key] || (A.off[key] = { p: (r() - 0.5) * 1.2, T: (r() - 0.5) * 2 });
+  var U = meanVec(F), L = SENS_LEAD;
+  var ahead = windAt(px, py, RT.t + L, { x: F.X.x + U.x * YDS * L, y: F.X.y + U.y * YDS * L }), now = windAt(px, py, RT.t);
+  var dA = Math.hypot(ahead.x, ahead.y) - F.S, dN = Math.hypot(now.x, now.y) - F.S;
+  var o = { pressure: Math.round((A.p + off.p + 0.06 * dA + gauss(r) * 0.03) * 100) / 100, temp: Math.round((A.T + off.T - 0.12 * dN + gauss(r) * 0.05) * 10) / 10 };
+  if (light) {
+    var c = 0.5 + 0.5 * Math.sin((px - F.X.x * 0.8) / 260 + RT.t / 400) * Math.cos((py - F.X.y * 0.8) / 310 + 1.3);
+    c = c * c * (3 - 2 * c); o.light = lightCh(70000 * (1 - 0.75 * c) * (1 + gauss(r) * 0.01));
+  }
+  return o;
+}
+function tickAtm(dt) { var A = RT.atm; if (!A) return; A.p += gauss(A.r) * 0.004 * Math.sqrt(dt); A.T += gauss(A.r) * 0.01 * Math.sqrt(dt); }
 function step(dt) {
-  RT.t += dt; tickField(dt); tickMeters(dt);
-  if (RT.t >= RT.relNext) { RT.relNext = Math.floor(RT.t) + 1; RT.align.release(RT.t, ingestRel); }
+  RT.t += dt; tickField(dt); tickAtm(dt); tickMeters(dt);
+  if (RT.t >= RT.relNext) {
+    RT.relNext = Math.floor(RT.t) + 1; RT.align.release(RT.t, ingestRel);
+    if (ST.settings.sensors) RT.fc.addEnv(RT.t, sensorRead('base', ST.shooter.x, ST.shooter.y, false));
+  }
   if (RT.t >= RT.leadNext) { RT.leadNext = RT.t + 10; if (!RT.calls) RT.calls = computeCalls(); refreshLeaders(); }
   for (var i = RT.pending.length - 1; i >= 0; i--) {
     var p = RT.pending[i];
@@ -1089,6 +1120,19 @@ function lineChart(svg, series, o) {
   svg.innerHTML = g;
 }
 function pct(v) { return v == null ? '–' : Math.round(v * 100) + '%'; }
+function chanName(k) { return { pressure: 'pressure', temp: 'temperature', light: 'light' }[k] || k; }
+// does a sensor earn its place for this meter? Its best model using one
+// against its best model using none, both checked on at least 120
+// predictions 10 s ahead (the pool keeps both kinds: the loop adds and drops
+// sensors the way it adds and drops Sentinels)
+function sensorVerdict(F, id) {
+  var L = F.pool(id, 10).filter(function (c) { return c.n >= 120 && c.rmse != null; });
+  var w = L.filter(function (c) { return c.inputs.length; })[0], o = L.filter(function (c) { return !c.inputs.length; })[0];
+  if (!w || !o) return ' ' + id + ': ' + (o ? 'none of its models using them has been checked enough yet to say whether they help.' : 'not enough checked predictions yet to say whether they help.');
+  var g = 1 - w.rmse / o.rmse, what = w.inputs.map(function (I) { return chanName(I.k) + (I.lag ? ' ' + I.lag + ' s ahead' : ''); }).join(' + ');
+  return g >= 0.03 ? ' ' + id + ': its best model with ' + what + ' is ' + Math.round(g * 100) + '% more accurate 10 s ahead than its best without sensors.'
+    : ' ' + id + ': no sensor helps yet (best with ' + what + ': ' + (g >= 0 ? Math.round(g * 100) + '% better' : Math.round(-g * 100) + '% worse') + ' than the best without).';
+}
 function renderPred() {
   var F = RT.fc, ids = F.meters(), sel = $('pMeter'), h = +$('pH').value || 10;
   if (sel.options.length !== ids.length || ids.some(function (id, i) { return sel.options[i].value !== id; })) {
@@ -1106,7 +1150,7 @@ function renderPred() {
   $('kPg').textContent = gen;
   var pairs = F.provenPairs(); $('kPp').textContent = pairs.length;
   var ch = F.channels();
-  $('pChan').textContent = ch.length ? 'Other sensors it is trying as inputs: ' + ch.join(', ') + '.' : 'Other sensors: none reporting. Light, pressure, temperature or any other reading the base sends are tried as inputs automatically, and kept only if they improve the predictions.';
+  $('pChan').textContent = ch.length ? 'Other sensors it is trying as inputs: ' + ch.map(chanName).join(', ') + '.' + (id ? sensorVerdict(F, id) : '') : 'Other sensors: none reporting. Light, pressure, temperature or any other reading the base sends are tried as inputs automatically, and kept only if they improve the predictions.';
   if (!id) { $('pPool').innerHTML = ''; lineChart($('pTrace'), [], { empty: 'Waiting for the first meter readings' }); lineChart($('pHist'), [], { empty: 'The first generation takes 90 s of wind' }); return; }
   var I = F.info(id) || { models: 0 };
   $('kPgN').textContent = I.models + ' models in ' + id + "'s pool";
@@ -1198,7 +1242,7 @@ function renderSetup() {
   bindNum('wS', 'windSpeed', function () { RT.field.S = ST.settings.windSpeed; }); bindNum('wD', 'windFrom', function () { RT.field.D = ST.settings.windFrom; }); bindNum('wG', 'gust'); bindNum('wW', 'wobble'); bindCk('wDrift', 'drift');
   var ws = $('wSize'); ws.value = ST.settings.gustSize; ws.onchange = function () { ST.settings.gustSize = ws.value; var F = makeField(ST.seed); F.X = RT.field.X; F.S = RT.field.S; F.D = RT.field.D; RT.field = F; };
   var rm = $('rMode'); rm.value = ST.settings.radio; rm.onchange = function () { ST.settings.radio = rm.value; resetRadio(); };
-  bindNum('rLoss', 'loss'); bindNum('lU', 'unmeasured'); bindCk('rMissed', 'sendMissed'); bindCk('lLead', 'useLead');
+  bindNum('rLoss', 'loss'); bindNum('lU', 'unmeasured'); bindCk('rMissed', 'sendMissed'); bindCk('wSens', 'sensors'); bindCk('lLead', 'useLead');
   var mh = '<thead><tr><th>Meter</th><th>Type</th><th>Use as</th><th>Sim truth: reads</th><th>Spot (yd E, N)</th><th></th></tr></thead><tbody>';
   ST.meters.forEach(function (m, i) {
     mh += '<tr class="mini"><td><b>' + m.id + '</b></td><td><select data-mt="' + i + '" aria-label="' + m.id + ' type"><option value="inspeed"' + (m.type === 'inspeed' ? ' selected' : '') + '>Inspeed (cups + vane)</option><option value="sparkfun"' + (m.type === 'sparkfun' ? ' selected' : '') + '>SparkFun (16-step vane)</option></select></td><td><select data-mrole="' + i + '" aria-label="' + m.id + ' role"><option value="path"' + (isPath(m) ? ' selected' : '') + '>Path meter</option><option value="sentinel"' + (!isPath(m) ? ' selected' : '') + '>Sentinel only</option></select></td><td><input type="number" step="1" data-mc="' + i + '" value="' + Math.round(m.cal * 100) + '" aria-label="' + m.id + ' reads percent"></td><td class="n">' + m.x + ', ' + m.y + '</td><td><button class="btn" data-mr="' + i + '">Remove</button></td></tr>';
@@ -1309,18 +1353,41 @@ function ingestWindSec(j) {
       H.push(v); B.latest[id] = v;
       // a 4th element, when firmware sends one, carries other sensors on that
       // meter for that second, e.g. {light: lux, pressure: hPa, temp: degF}
-      RT.align.add(id, t, mph, deg); RT.fc.add(id, t, mph, deg, q[3] && typeof q[3] === 'object' ? q[3] : null);
+      var ex = q[3] && typeof q[3] === 'object' ? q[3] : null;
+      if (!ex) { var E = (RT.nodeEnv || {})[id]; if (E && Math.abs(t - E.t) <= 30) ex = E.x; }
+      RT.align.add(id, t, mph, deg); RT.fc.add(id, t, mph, deg, ex);
       ST.windLog.push([Math.round(q[0]), id, mph, deg]);
     });
     while (H.length && H[0].t < nowS - 300) H.shift();
     if (H.length && H[H.length - 1].t > nowS - 30) newest.push(H[H.length - 1].t);
   });
   if (newest.length) LIVE.since = Math.floor(Math.min.apply(0, newest) * 1000) - 1;
-  // sensors at the base, when firmware sends them: /data.json base.env = {pressure: .., temp: .., light: ..}
-  var env = LIVE.data && LIVE.data.base && LIVE.data.base.env;
-  if (env && typeof env === 'object') RT.fc.addEnv(nowS, env);
+  // sensors at the base (BMP180): /data.json base.env = {pressure: hPa, temp: degF}
+  var env = LIVE.data && liveEnv(LIVE.data.base);
+  if (env) RT.fc.addEnv(nowS, env);
   if (ST.windLog.length > 120000) ST.windLog.splice(0, ST.windLog.length - 100000);
   RT.align.release(nowS, ingestRel);
+}
+// A meter's or the base's own sensors from /data.json, in the units the
+// model uses: pressure hPa, temp degF, light log10(1 + lux). Reads the env
+// object newer firmware sends, else the older tempF / presInHg / lux fields
+// (0 or -1 there means no sensor).
+function liveEnv(o) {
+  if (!o || typeof o !== 'object') return null;
+  var x = {}, e = o.env && typeof o.env === 'object' ? o.env : null;
+  if (e) {
+    if (isFinite(e.pressure) && e.pressure > 300 && e.pressure < 1200) { x.pressure = +e.pressure; if (isFinite(e.temp)) x.temp = +e.temp; }
+    if (isFinite(e.light) && e.light >= 0) x.light = lightCh(e.light);
+  } else {
+    if (isFinite(o.presInHg) && o.presInHg > 15 && o.presInHg < 35) { x.pressure = Math.round(o.presInHg * 3386.389) / 100; if (isFinite(o.tempF)) x.temp = +o.tempF; }
+    if (isFinite(o.lux) && o.lux >= 0) x.light = lightCh(o.lux);
+  }
+  return Object.keys(x).length ? x : null;
+}
+// each meter's sensors as of its last packet, on the base clock
+function syncNodeEnv(d, baseNowS) {
+  RT.nodeEnv = RT.nodeEnv || {};
+  (d.nodes || []).forEach(function (n) { var x = liveEnv(n); if (x) RT.nodeEnv[String(n.id)] = { x: x, t: baseNowS - (+n.age || 0) }; });
 }
 async function livePoll() {
   if (LIVE.busy || ST.mode !== 'live') return; LIVE.busy = true;
@@ -1334,7 +1401,7 @@ async function livePoll() {
       if (LIVE.since == null) { var r3 = await fetch('/windsec', { cache: 'no-store' }); j = await r3.json(); }
     }
     LIVE.baseNow = j.now; LIVE.at = Date.now(); LIVE.utc = j.utc; LIVE.ok = true; LIVE.lastOk = Date.now();
-    ingestWindSec(j);
+    syncNodeEnv(LIVE.data, j.now / 1000); ingestWindSec(j);
   } catch (e) { LIVE.ok = false; }
   if (LIVE.ok && Date.now() - (LIVE.leadAt || 0) > 10000) { LIVE.leadAt = Date.now(); refreshLeaders(); }
   LIVE.busy = false; renderLiveStat();
