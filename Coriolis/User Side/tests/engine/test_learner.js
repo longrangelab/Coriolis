@@ -202,7 +202,8 @@ function loopRun(evolve, seconds) {
 const LOOP = loopRun(true, 2700);
 ok('wind loop: finds a hidden Sentinel pair by trying, and proves it', () => {
   const best = LOOP.pool('N', 10).find(c => c.champ);
-  assert(best.leaders.some(l => l.by === 'S' && Math.abs(l.lag - 22) <= 2), 'best model leans on S about 22 s back: ' + best.desc);
+  // (a lead in yards counts at the 10 mph it blows; one that also reads every meter now may sit a few seconds early)
+  assert(best.leaders.some(l => l.by === 'S' && Math.abs((l.yd ? l.yd / (10 * WL.YD_PER_S_PER_MPH) : l.lag) - 22) <= (best.all ? 3 : 2)), 'best model leans on S about 22 s back: ' + best.desc);
   const pp = LOOP.provenPairs().filter(q => q.nodeId === 'N');
   assert(pp.length && pp[0].sentId === 'S' && pp[0].gain > 0.5, JSON.stringify(pp));
   assert(!LOOP.provenPairs().some(q => q.nodeId === 'X'), 'unrelated air proves nothing');
@@ -344,6 +345,22 @@ ok('wind loop: a model on every meter at once learns field-wide patterns', () =>
   assert(all[0].rmse < own.rmse * 0.85, 'beats own history: ' + all[0].rmse + ' vs ' + own.rmse);
   const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(L.toJSON())));
   assert(L2.pool('F5', 10).some(c => c.all && c.all.length === 5), 'round-trips');
+});
+ok('wind loop: a Sentinel lead in yards follows the wind speed', () => {
+  // S is 120 yd upwind of T; light wind drifts 4-7.5 mph, so the lead runs 33-61 s
+  const rr = rng(3), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const T = 5400, G = []; let x = 0; for (let t = 0; t < T + 300; t++) { x = 0.96 * x + 0.35 * gg(); G.push(x); }
+  const R = new WL.Relations(), L = new WL.ForecastLoop(null, { seed: 11 });
+  L.leadersFn = id => { const p = id === 'T' ? R.pair('S', 'T', 6) : null; return p && p.lead === 'S' && p.significant ? [{ by: 'S', lagS: Math.round(p.lagF), alongYd: p.alongYd }] : []; };
+  for (let t = 150; t < T; t++) {
+    const mph = 5.75 + 1.75 * Math.sin(2 * Math.PI * t / 1800), lag = 120 / (mph * WL.YD_PER_S_PER_MPH), k = Math.floor(lag), w = lag - k, sc = mph / 4;
+    const r = { S: { spd: mph + sc * G[t + 250], dir: 270 + 4 * gg() }, T: { spd: mph + sc * ((1 - w) * G[t + 250 - k] + w * G[t + 249 - k]) + 0.3 * gg(), dir: 270 + 4 * gg() } };
+    R.ingest(t, r); for (const id in r) L.add(id, t, r[id].spd, r[id].dir);
+  }
+  const yd = L.pool('T', 10).filter(c => c.n >= 300 && c.leaders.some(l => l.yd));
+  assert(yd.length && yd.some(c => c.leaders.some(l => l.yd && Math.abs(l.yd - 120) <= 15)) && /yd upwind/.test(yd[0].desc), 'a model holds S about 120 yd upwind: ' + L.pool('T', 10).map(c => c.desc).join(' | '));
+  const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(L.toJSON())));
+  assert(L2.pool('T', 10).some(c => c.leaders.some(l => l.yd)), 'round-trips');
 });
 ok('proven pairs: a Sentinel that only rides along gets no credit, and each counts once', () => {
   const L = new WL.ForecastLoop(null, { seed: 1, regimes: false });
@@ -499,7 +516,10 @@ async function pageTest() {
   await p.evaluate(() => $('sessNew').click());
   const after = await p.evaluate(() => ({ mode: ST.mode, shots: ST.shots.length, rel: RT.rel.secs, fc: RT.fc.stats('1')[0].n, pair: !!RT.rel.pair('1', '2', 6, { minN: 80 }) }));
   assert(after.mode === 'live' && after.shots === 0 && after.rel >= kept.rel && after.fc >= kept.fc && after.pair, 'new live session keeps the learning ' + JSON.stringify([kept, after]));
-  assert(await p.evaluate(() => document.querySelectorAll('#relField tbody tr').length === 3 || (renderRel(), document.querySelectorAll('#relField tbody tr').length === 3)), 'Relations lists each meter against the field');
+  const rf = await p.evaluate(() => { try { renderRel(); } catch (e) { return 'err ' + e.message; } return document.querySelectorAll('#relField tbody tr').length + ' ' + document.getElementById('relField').textContent.slice(0, 200); });
+  assert(/^3 /.test(rf), 'Relations lists each meter against the field: ' + rf);
+  const gone = await p.evaluate(() => { const s = ST.mode; $('sessForget').click(); const shown = !$('sessForgetConfirm').hidden; $('sessForgetYes').click(); return { shown, mode: ST.mode, rel: RT.rel.secs, fc: RT.fc.stats('1')[0].n, sameMode: s === ST.mode }; });
+  assert(gone.shown && gone.mode === 'live' && gone.rel < 5 && gone.fc < 5, 'Forget asks first, then clears what it learned ' + JSON.stringify(gone));
   await p.click('#modeSim');
   assert(await p.evaluate(() => ST.mode === 'sim' && ST.shots.length === 25), 'practice range comes back with its shots');
   // a live poll still in flight when you switch to Practice must not land there

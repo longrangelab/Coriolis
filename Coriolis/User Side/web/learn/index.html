@@ -395,7 +395,8 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="lbl" style="margin-bottom:4px">Move a session between devices</div>
         <div class="row"><button class="btn" id="sessDownload">Download session file</button><button class="btn" id="sessCopy">Copy current session as text</button><label class="btn" for="sessFile">Open a session file</label><input id="sessFile" type="file" accept=".json,application/json,text/plain" hidden></div>
         <textarea id="sessText" placeholder="Session text appears here, or paste one and press Load"></textarea>
-        <div class="row" style="margin-top:6px"><button class="btn" id="sessLoadText">Load pasted session</button><button class="btn" id="sessNew">Start a fresh range</button></div>
+        <div class="row" style="margin-top:6px"><button class="btn" id="sessLoadText">Load pasted session</button><button class="btn" id="sessNew">Start a fresh range</button><button class="btn" id="sessForget">Forget what it learned</button></div>
+        <div class="row" id="sessForgetConfirm" hidden><span class="note">Forget every shot multiplier, meter relationship and wind model learned here? Saved sessions are kept.</span> <button class="btn" id="sessForgetYes">Forget</button> <button class="btn" id="sessForgetNo">Keep</button></div>
       </div>
     </div>
   </section>
@@ -720,9 +721,9 @@ function refreshLeaders() {
   if (sec != null) RT.rel.summary(sec).pairs.forEach(function (x) {
     var p = x.p; if (!p || !p.significant || p.lagS < 2 || WL.relationKind(p) !== 'leads') return;
     var A = ST.meters.find(function (m) { return m.id === p.lead; }), B = ST.meters.find(function (m) { return m.id === p.follow; });
-    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: lagNow(p) });
+    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: lagNow(p), alongYd: p.alongYd });
   });
-  if (sec != null && RT.calls) WL.geometryPairs(ST.meters, RT.calls.avg).forEach(function (q) { var L = all[q.nodeId] || (all[q.nodeId] = []); if (!L.some(function (o) { return o.by === q.sentId; })) L.push({ by: q.sentId, lagS: q.lagS }); });
+  if (sec != null && RT.calls) WL.geometryPairs(ST.meters, RT.calls.avg).forEach(function (q) { var L = all[q.nodeId] || (all[q.nodeId] = []); if (!L.some(function (o) { return o.by === q.sentId; })) L.push({ by: q.sentId, lagS: q.lagS, alongYd: q.alongYd }); });
   RT.pairsNow = sec != null ? pairsFor(sec, RT.calls ? RT.calls.avg : null) : [];
   RT.leadList = all;
   computeImportance();
@@ -1349,7 +1350,10 @@ $('sessNew').onclick = function () {
   ST.drive = Object.assign(ST.drive, keep.drive); ST.autoPush = keep.autoPush; renderModel();
   if (wl) toast(ST.autoPush ? 'Fresh range. Wind Lab will get this new model at the next update.' : 'Fresh range. Wind Lab is still running the model you sent before: send this one or stop it on the Model tab.');
 };
-function sessNewLoad() {
+$('sessForget').onclick = function () { $('sessForgetConfirm').hidden = false; };
+$('sessForgetNo').onclick = function () { $('sessForgetConfirm').hidden = true; };
+$('sessForgetYes').onclick = function () { $('sessForgetConfirm').hidden = true; var keep = { drive: Object.assign({}, ST.drive), autoPush: ST.autoPush }; sessNewLoad(true); ST.drive = Object.assign(ST.drive, keep.drive); ST.autoPush = keep.autoPush; renderModel(); };
+function sessNewLoad(forget) {
   // live: a new day of shooting on the same range. Shots and the day's wind
   // log start empty; what it learned about these meters and this range
   // (shot multipliers, how the meters relate, the wind model) carries on.
@@ -1357,8 +1361,9 @@ function sessNewLoad() {
   if (ST.mode === 'live') {
     var o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual';
     o.live = Object.assign(o.live, { rangeYd: ST.live.rangeYd, az: ST.live.az, roles: ST.live.roles, pos: ST.live.pos, anchors: ST.live.anchors });
-    o.settings = ST.settings; o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.forecaster = RT.fc.toJSON();
-    load(o); toast('New live session: no shots yet. Everything it learned about these meters and this range is kept.');
+    o.settings = ST.settings;
+    if (!forget) { o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.forecaster = RT.fc.toJSON(); }
+    load(o); toast(forget ? 'Forgotten: no shots, nothing learned yet. It starts learning again from now.' : 'New live session: no shots yet. Everything it learned about these meters and this range is kept.');
   }
   else { load(defaultState()); toast('Fresh range with the example layout.'); }
 }

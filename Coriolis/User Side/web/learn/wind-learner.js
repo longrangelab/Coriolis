@@ -818,6 +818,11 @@
     // and the ones for the new wind come back, learned weights and all.
     this.regimes = cfg.regimes != null ? cfg.regimes !== false : state.regimes !== false;
     this.noSpeedBands = cfg.speedBands != null ? cfg.speedBands === false : !!state.noSpeedBands;
+    this.msWin = cfg.msWin || 180;
+    // also turn a winning Sentinel's lead into yards (or back) by mutation. Off: in
+    // gusty wind the slow speed it times yards by wanders, and that cost 9 % in
+    // the two-cluster test; leads in yards still come from Relations' hints
+    this.ydTwin = !!cfg.ydTwin;
     this.allRate = cfg.allRate != null ? cfg.allRate : 0.5;   // chance a new model is one on every meter at once, when the pool has none
     this.cutN = cfg.cutN || 1e9;   // scores carry over a switch as they are (tested: cutting them back did worse)
     this.reg = { cur: state.regCur || null, cand: null, candN: 0, last: -Infinity };
@@ -919,7 +924,11 @@
   // the starting linear model on the meter's own history is never retired:
   // it is the fair yardstick a Sentinel or a sensor has to beat
   function isBase(c) { return c.origin === 'start' && c.kind === 'rls' && c.lam === 0.998 && !c.leaders.length && !(c.inputs || []).length; }
-  function lsig(c) { return c.kind + '|' + (c.lam || '') + '|' + (c.hidden || '') + '|' + (c.leaders || []).map(function (l) { return l.by + '@' + l.lag; }).sort().join(',') + '|' + (c.inputs || []).map(function (q) { return q.k + '@' + q.lag; }).sort().join(',') + (c.all ? '|A:' + c.all.join(',') : ''); }
+  // a Sentinel's lead is seconds, or yards of air travel (then the seconds
+  // follow this meter's running wind speed, so one model fits every speed)
+  function lagOf(L, cur) { return L.yd ? Math.max(1, Math.min(190, Math.round(L.yd / (Math.max(1.5, cur.ms != null ? cur.ms : Math.hypot(cur.mu, cur.mv)) * YD_PER_S_PER_MPH)))) : L.lag; }
+  function lkey(l) { return l.by + '@' + (l.yd ? l.yd + 'yd' : l.lag); }
+  function lsig(c) { return c.kind + '|' + (c.lam || '') + '|' + (c.hidden || '') + '|' + (c.leaders || []).map(lkey).sort().join(',') + '|' + (c.inputs || []).map(function (q) { return q.k + '@' + q.lag; }).sort().join(',') + (c.all ? '|A:' + c.all.join(',') : ''); }
   // names of a model's inputs, so a child can start from its parent's weights
   function fnames(c) {
     var n = ['1', 'cur', 'mean', 'trend'];
@@ -942,8 +951,8 @@
   }
   ForecastLoop.prototype._addCand = function (p, spec, origin) {
     var c = { id: p.next++, kind: spec.kind, lam: spec.lam || 0.998, hidden: spec.hidden || 6, lr: spec.lr || 0.03,
-      leaders: (spec.leaders || []).map(function (l) { return { by: String(l.by), lag: Math.max(1, Math.round(l.lag)) }; })
-        .filter(function (l, i, A) { return A.findIndex(function (o) { return o.by === l.by && Math.abs(o.lag - l.lag) < 2; }) === i; }),
+      leaders: (spec.leaders || []).map(function (l) { var o = { by: String(l.by), lag: Math.max(1, Math.round(l.lag)) }; if (l.yd > 0) o.yd = Math.round(l.yd); return o; })
+        .filter(function (l, i, A) { return A.findIndex(function (o) { return o.by === l.by && !o.yd === !l.yd && (l.yd ? Math.abs(o.yd - l.yd) < 6 : Math.abs(o.lag - l.lag) < 2); }) === i; }),
       inputs: (spec.inputs || []).map(function (q) { return typeof q === 'string' ? { k: q, lag: 0 } : { k: String(q.k), lag: Math.max(0, Math.round(q.lag || 0)) }; })
         .filter(function (q, i, A) { return A.findIndex(function (o) { return o.k === q.k; }) === i; }),
       all: spec.all && spec.all.length ? spec.all.map(String) : null,
@@ -1014,7 +1023,7 @@
     var prev = this._at(id, s0 - 5) || this._at(id, s0 - 4) || this._at(id, s0 - 6) || cur;
     var xu = [1, cur.u, cur.mu, cur.u - prev.u], xv = [1, cur.v, cur.mv, cur.v - prev.v];
     for (var i = 0; i < c.leaders.length; i++) {
-      var L = c.leaders[i], lv = this._near(L.by, Math.min(s0, s0 + h - L.lag));
+      var L = c.leaders[i], lv = this._near(L.by, Math.min(s0, s0 + h - lagOf(L, cur)));
       if (!lv) { var R = this.rt[L.by]; lv = R && isFinite(R.last) && R.last <= s0 && R.last > s0 - 10 ? R.s[R.last] : null; }
       xu.push(lv ? lv.u : cur.u); xv.push(lv ? lv.v : cur.v);
     }
@@ -1082,7 +1091,9 @@
     if (R.mu == null) { R.mu = u; R.mv = v; }
     R.k++; var al = 1 / Math.min(R.k, 60);
     R.mu += al * (u - R.mu); R.mv += al * (v - R.mv);
-    var cur = R.s[sec] = { u: u, v: v, mu: R.mu, mv: R.mv };
+    // the speed gusts ride at: a slow (3 min) mean, so one gust doesn't move a Sentinel's lead
+    R.ms = R.ms == null ? mph : R.ms + (mph - R.ms) / Math.min(R.k, +(this.msWin || 180));
+    var cur = R.s[sec] = { u: u, v: v, mu: R.mu, mv: R.mv, ms: R.ms };
     if (extra) { cur.x = extra; chanStats(R.cs, extra); for (var ck in extra) this.chan[ck] = true; }
     var newest = sec > R.last; if (newest) R.last = sec;
     for (var k in R.s) if (+k < R.last - 200) delete R.s[k];
@@ -1130,7 +1141,7 @@
   };
   function cdesc(c) {
     var k = c.kind === 'stay' ? 'Stays as it is' : c.kind === 'mlp' ? 'Neural net (' + c.hidden + ')' : 'Linear' + (c.lam < 0.995 ? ', fast memory' : '');
-    if (c.kind !== 'stay') k += c.leaders.length ? ' + ' + c.leaders.map(function (l) { return l.by + ' ' + l.lag + ' s ahead'; }).join(' + ') : (c.inputs && c.inputs.length ? '' : ', own history');
+    if (c.kind !== 'stay') k += c.leaders.length ? ' + ' + c.leaders.map(function (l) { return l.yd ? l.by + ' ' + l.yd + ' yd upwind' : l.by + ' ' + l.lag + ' s ahead'; }).join(' + ') : (c.inputs && c.inputs.length ? '' : ', own history');
     if (c.inputs && c.inputs.length) k += ' + ' + c.inputs.map(function (q) { return q.k + (q.lag ? ' ' + q.lag + ' s ahead' : ''); }).join(' + ');
     if (c.all) k = k.replace(', own history', '') + ' + every meter now';
     return k;
@@ -1191,26 +1202,32 @@
   ForecastLoop.prototype._spawn = function (id, p, best) {
     var r = this.rnd, others = Object.keys(this.rt).filter(function (k) { return k !== id; });
     var sug = (this.leadersFn ? this.leadersFn(id) || [] : []).filter(function (l) { return l && l.by !== id; });
-    var have = {}; p.list.forEach(function (c) { c.leaders.forEach(function (l) { have[l.by + '@' + l.lag] = 1; }); });
-    var fresh = sug.filter(function (l) { return !have[l.by + '@' + Math.round(l.lagS)]; });
+    var have = {}; p.list.forEach(function (c) { c.leaders.forEach(function (l) { have[l.by + '@' + l.lag] = 1; if (l.yd) have[l.by + '@' + Math.round(l.yd / 6) + 'b'] = 1; }); });
+    var fresh = sug.filter(function (l) { return !have[l.by + '@' + Math.round(l.lagS)] || (l.alongYd > 0 && !have[l.by + '@' + Math.round(l.alongYd / 6) + 'b']); });
     // a model on every meter at once, whenever the pool has none for the meters now reporting
     if (others.length >= 2) {
       var allNow = others.slice().sort(), hasAll = p.list.some(function (c) { return c.all && c.all.join(',') === allNow.join(','); });
       if (!hasAll && r() < this.allRate) return { kind: 'rls', lam: r() < 0.5 ? 0.998 : 0.995, leaders: [], inputs: [], all: allNow, origin: 'collective' };
     }
     var x = r();
-    if (fresh.length && x < 0.4) { var l = fresh[Math.floor(r() * fresh.length)]; return { kind: 'rls', lam: 0.998, leaders: [{ by: l.by, lag: l.lagS }], origin: 'relation' }; }
+    if (fresh.length && x < 0.4) { var l = fresh[Math.floor(r() * fresh.length)]; return { kind: 'rls', lam: 0.998, leaders: [l.alongYd > 0 && r() < 0.5 ? { by: l.by, lag: l.lagS, yd: l.alongYd } : { by: l.by, lag: l.lagS }], origin: 'relation' }; }
+    var Rme = this.rt[id], now = Rme && Rme.s[Rme.last], mphNow = now ? Math.max(1.5, now.ms != null ? now.ms : Math.hypot(now.mu, now.mv)) : 10;
     if (best && best.kind !== 'stay' && x < 0.8) {
-      var s = { kind: best.kind, lam: best.lam, hidden: best.hidden, lr: best.lr, leaders: best.leaders.map(function (l) { return { by: l.by, lag: l.lag }; }), inputs: (best.inputs || []).map(function (q) { return { k: q.k, lag: q.lag }; }), all: best.all ? best.all.slice() : null, origin: 'mutation', from: best.id, parent: best };
+      var s = { kind: best.kind, lam: best.lam, hidden: best.hidden, lr: best.lr, leaders: best.leaders.map(function (l) { return l.yd ? { by: l.by, lag: l.lag, yd: l.yd } : { by: l.by, lag: l.lag }; }), inputs: (best.inputs || []).map(function (q) { return { k: q.k, lag: q.lag }; }), all: best.all ? best.all.slice() : null, origin: 'mutation', from: best.id, parent: best };
       var m = r(), chans = this.channels(), lagged = s.leaders.concat(s.inputs);
-      if (lagged.length && m < 0.4) {                  // walk a Sentinel's (or sensor's) lag: next door first, then further
-        var L = lagged[Math.floor(r() * lagged.length)], sigs = p.list.map(lsig), tabu = p.tabu || {}, base = L.lag;
+      var Lt = s.leaders.length ? s.leaders[Math.floor(s.leaders.length * ((m * 97) % 1))] : null;
+      // the same Sentinel, its lead as yards instead of seconds (or back), when the pool has no such twin yet: the better form wins
+      if (Lt && m < 0.1 && this.ydTwin && !p.list.some(function (c) { return c.leaders.some(function (o) { return o.by === Lt.by && !o.yd !== !Lt.yd; }); })) {
+        if (Lt.yd) { Lt.lag = Math.max(1, Math.round(Lt.yd / (mphNow * YD_PER_S_PER_MPH))); delete Lt.yd; } else Lt.yd = Math.max(6, Math.round(Lt.lag * mphNow * YD_PER_S_PER_MPH));
+      }
+      else if (lagged.length && m < 0.4) {             // walk a Sentinel's (or sensor's) lag: next door first, then further
+        var L = lagged[Math.floor(r() * lagged.length)], sigs = p.list.map(lsig), tabu = p.tabu || {}, yd = !!L.yd, key = yd ? 'yd' : 'lag', base = L[key], unit = yd ? 6 : 1;
         var steps = r() < 0.7 ? [1, -1, 2, -2, 3, -3, 4, -4] : [8, -8, 6, -6, 12, -12], pickd = null;
-        for (var q = 0; q < steps.length && pickd == null; q++) { L.lag = Math.max(L.k ? 0 : 1, base + steps[q]); var g = lsig(s); if (sigs.indexOf(g) < 0 && !(tabu[g] != null && p.g - tabu[g] < 15)) pickd = L.lag; }
-        L.lag = pickd == null ? Math.max(1, base + (r() < 0.5 ? -1 : 1) * (1 + Math.floor(r() * 6))) : pickd;
+        for (var q = 0; q < steps.length && pickd == null; q++) { L[key] = Math.max(L.k ? 0 : unit, base + unit * steps[q]); var g = lsig(s); if (sigs.indexOf(g) < 0 && !(tabu[g] != null && p.g - tabu[g] < 15)) pickd = L[key]; }
+        L[key] = pickd == null ? Math.max(unit, base + unit * (r() < 0.5 ? -1 : 1) * (1 + Math.floor(r() * 6))) : pickd;
       }
       else if (chans.length && m < 0.5) { var ck = chans[Math.floor(r() * chans.length)], ix = s.inputs.findIndex(function (q) { return q.k === ck; }); if (ix >= 0) s.inputs.splice(ix, 1); else s.inputs.push({ k: ck, lag: r() < 0.5 ? 0 : 2 + Math.floor(r() * 38) }); }
-      else if (m < 0.55 && s.leaders.length < 2 && others.length) { var pick = sug.length && r() < 0.6 ? sug[Math.floor(r() * sug.length)] : null; s.leaders.push(pick ? { by: pick.by, lag: pick.lagS } : { by: others[Math.floor(r() * others.length)], lag: 2 + Math.floor(r() * 38) }); }
+      else if (m < 0.55 && s.leaders.length < 2 && others.length) { var pick = sug.length && r() < 0.6 ? sug[Math.floor(r() * sug.length)] : null; s.leaders.push(pick ? (pick.alongYd > 0 && r() < 0.5 ? { by: pick.by, lag: pick.lagS, yd: pick.alongYd } : { by: pick.by, lag: pick.lagS }) : { by: others[Math.floor(r() * others.length)], lag: 2 + Math.floor(r() * 38) }); }
       else if (m < 0.65 && s.leaders.length) s.leaders.splice(Math.floor(r() * s.leaders.length), 1);
       else if (m < 0.82) s.lam = [0.99, 0.995, 0.998, 0.999][Math.floor(r() * 4)];
       else if (s.kind === 'rls') { s.kind = 'mlp'; s.hidden = 6; } else { s.kind = 'rls'; }
@@ -1271,7 +1288,8 @@
         if (seen[l.by]) return; seen[l.by] = 1;
         var wo = L.filter(function (c) { return c.kind !== 'stay' && !c.leaders.some(function (o) { return o.by === l.by; }) && !(c.all && c.all.indexOf(l.by) >= 0); })[0] || own;
         if (withL.leaders.length > 1 && withL.rmse > wo.rmse * 0.97) return;
-        out.push({ sentId: l.by, nodeId: id, lagS: l.lag, gain: 1 - withL.rmse / own.rmse, model: withL.id });
+        var Rf = me.rt[id], cf = Rf && Rf.s[Rf.last];
+        out.push({ sentId: l.by, nodeId: id, lagS: l.yd && cf ? lagOf(l, cf) : l.lag, alongYd: l.yd || null, gain: 1 - withL.rmse / own.rmse, model: withL.id });
       });
     });
     return out;
