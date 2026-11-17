@@ -42,6 +42,7 @@
 #include "EngineJs.h"
 #include "GearJs.h"
 #include "SkyUiJs.h"
+#include "LearnJs.h"
 
 // Largest gear file we accept. The old file stays on flash until the new one is
 // complete, so two copies must fit in the 896 KB partition with room to spare.
@@ -211,7 +212,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
     border-top:1px solid var(--line);padding:10px 0 calc(12px + env(safe-area-inset-bottom))}
   .sec{display:flex;flex-direction:column;align-items:center;gap:4px;padding:0;border:0;border-radius:0;background:transparent;
     color:var(--dim);font-weight:500;letter-spacing:0;font-size:13px;cursor:pointer}
-  .sec .ind{width:60px;height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center;transition:background .18s}
+  .sec .ind{width:min(60px,14vw);height:32px;border-radius:16px;display:flex;align-items:center;justify-content:center;transition:background .18s}
   .sec .ind svg{width:26px;height:26px;max-width:none;margin:0;fill:currentColor}
   .sec.on{background:transparent;color:var(--ink);font-weight:700;border:0}
   .sec.on .ind{background:var(--cyan);color:#01274A}
@@ -243,6 +244,7 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
   <div id="secSand" class="sec" onclick="setSection('sandbox')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.8,18.4L14,10.67V6.5l1.35,-1.69C15.61,4.48 15.38,4 14.96,4H9.04C8.62,4 8.39,4.48 8.65,4.81L10,6.5v4.17L4.2,18.4C3.71,19.06 4.18,20 5,20h14c0.82,0 1.29,-0.94 0.8,-1.6z"/></svg></span>Sandbox</div>
   <div id="secLog" class="sec" onclick="setSection('log')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,13h2v-2H3v2zm0,4h2v-2H3v2zm0,-8h2V7H3v2zm4,4h14v-2H7v2zm0,4h14v-2H7v2zM7,7v2h14V7H7z"/></svg></span>Log</div>
   <div id="secSolver" class="sec" onclick="setView('solver')"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM13,19.93V17h-2v2.93C7.38,19.48 4.52,16.62 4.07,13H7v-2H4.07C4.52,7.38 7.38,4.52 11,4.07V7h2V4.07c3.62,0.45 6.48,3.31 6.93,6.93H17v2h2.93c-0.45,3.620 -3.31,6.48 -6.93,6.93zM12,10.5c-0.83,0 -1.5,0.67 -1.5,1.5s0.67,1.5 1.5,1.5 1.5,-0.67 1.5,-1.5 -0.67,-1.5 -1.5,-1.5z"/></svg></span>Solver</div>
+  <div id="secLearn" class="sec" onclick="goLearn()"><span class="ind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12,8c-2.21,0 -4,1.79 -4,4s1.79,4 4,4 4,-1.79 4,-4 -1.79,-4 -4,-4zM20.94,11c-0.46,-4.17 -3.77,-7.48 -7.94,-7.94V1h-2v2.06C6.83,3.52 3.52,6.83 3.06,11H1v2h2.06c0.46,4.17 3.77,7.48 7.94,7.94V23h2v-2.06c4.17,-0.46 7.48,-3.77 7.94,-7.94H23v-2h-2.06zM12,19c-3.87,0 -7,-3.13 -7,-7s3.13,-7 7,-7 7,3.13 7,7 -3.13,7 -7,7z"/></svg></span>Learn</div>
 </div>
 <div id="tabs" class="tabs"></div>
 
@@ -699,6 +701,46 @@ function saveAz(){localStorage.setItem('fireAz',fireAz);document.getElementById(
 // to add up to exactly 100 - a node with no stored weight gets an equal share.
 // Stored per node id in localStorage, separate from rifle profiles (this
 // describes meter placement for the range session, not the rifle).
+// ---- Learned model (sent from the Learn page, /learn) -----------------------
+// 'learnedModel' holds one row per wind sector (N, NE, ... NW): a speed
+// multiplier and a path weight (%) per node and the Sentinel pairs, each with
+// the learned lag, speed ratio and tolerances. While 'learnedOn' is '1', the
+// row for the wind the meters see right now replaces the manual multipliers,
+// weights and Sentinel pairs it was told to drive. The manual values stay
+// stored untouched underneath, so turning it off puts them straight back.
+var lmCache={raw:null,m:null},lmSector=-1,LM_SECT=['N','NE','E','SE','S','SW','W','NW'];
+function learnedModel(){
+  var raw=localStorage.getItem('learnedModel');
+  if(raw!==lmCache.raw){lmCache.raw=raw;lmCache.m=null;
+    try{var m=JSON.parse(raw||'null');
+      if(m&&m.kind==='coriolis-live-model'&&Array.isArray(m.sectors)&&m.sectors.length===8)lmCache.m=m;}catch(e){}}
+  return lmCache.m;
+}
+function learnedOn(){return localStorage.getItem('learnedOn')==='1'&&!!learnedModel();}
+function setLearnedOn(v){localStorage.setItem('learnedOn',v?'1':'0');lmSector=-1;sentPanelBuilt=false;renderWeightsPanel(true);render();}
+// Field wind from the live meters as a plain vector mean (so it does not depend
+// on the weights it is about to choose). The sector holds until the wind is
+// 30 deg from its centre, so a wind on a sector edge does not flicker.
+function learnedSectorNow(){
+  var ns=((data&&data.nodes)||[]).filter(function(n){return n.windOk!==false;});
+  var sx=0,sy=0;ns.forEach(function(n){var r=n.dir*Math.PI/180;sx+=n.speed*Math.sin(r);sy+=n.speed*Math.cos(r);});
+  if(!ns.length||Math.sqrt(sx*sx+sy*sy)/ns.length<0.5)return lmSector;
+  var d=(Math.atan2(sx,sy)*180/Math.PI+360)%360;
+  if(lmSector>=0&&dirDiff(d,lmSector*45)<=30)return lmSector;
+  lmSector=Math.floor(((d+22.5)%360)/45)%8;return lmSector;
+}
+// what: 'mult' | 'weights' | 'sentinels'. null when the model is off, does
+// not drive that, or there is no wind yet to pick a row with.
+function learnedPick(what){
+  if(!learnedOn())return null;var m=learnedModel();
+  if(what&&m.drive&&m.drive[what]===false)return null;
+  var s=learnedSectorNow();if(s<0||!m.sectors[s])return null;
+  return {m:m,s:s,row:m.sectors[s]};
+}
+function learnedWeights(lp){
+  var w={};((data&&data.nodes)||[]).forEach(function(n){var v=lp.row.wPct?lp.row.wPct[n.id]:undefined;w[n.id]=(v===undefined||v===null)?0:+v;});
+  return w;
+}
 function nodeWeights(){try{var w=JSON.parse(localStorage.getItem('nodeWeights')||'{}');return w&&typeof w==='object'&&!Array.isArray(w)?w:{};}catch(e){return {};}}
 function storeWeights(w){localStorage.setItem('nodeWeights',JSON.stringify(w));}
 function configuredNodeWeight(w,id,count){
@@ -711,7 +753,7 @@ function configuredNodeWeight(w,id,count){
 // supplies 100%. An all-zero configuration falls back to equal shares.
 function effectiveNodeWeights(){
   var ns=((data&&data.nodes)||[]).filter(function(n){return n.windOk!==false;});
-  var w=nodeWeights(),pct={},total=0;
+  var lw=learnedPick('weights'),w=lw?learnedWeights(lw):nodeWeights(),pct={},total=0;
   ns.forEach(function(n){total+=configuredNodeWeight(w,n.id,ns.length);});
   ns.forEach(function(n){pct[n.id]=(ns.length===1||total<=0)?100/ns.length:
     configuredNodeWeight(w,n.id,ns.length)/total*100;});
@@ -720,9 +762,12 @@ function effectiveNodeWeights(){
 // per-node speed multiplier (e.g. a meter at max ordinate sped up for winds aloft)
 function nodeMults(){try{return JSON.parse(localStorage.getItem('nodeMult')||'{}');}catch(e){return {};}}
 function storeMults(m){localStorage.setItem('nodeMult',JSON.stringify(m));}
-function getMult(id){var m=nodeMults();var v=(m[id]!==undefined)?parseFloat(m[id]):1;return (isFinite(v)&&v>0)?v:1;}
+function getMult(id){
+  var lp=learnedPick('mult');
+  if(lp&&lp.row.mult&&lp.row.mult[id]!==undefined){var lv=parseFloat(lp.row.mult[id]);if(isFinite(lv)&&lv>0)return lv;}
+  var m=nodeMults();var v=(m[id]!==undefined)?parseFloat(m[id]):1;return (isFinite(v)&&v>0)?v:1;}
 function setNodeMult(id,v){var m=nodeMults();var f=parseFloat(v);m[id]=(isFinite(f)&&f>0)?f:1;storeMults(m);render();}
-function resetMultsOne(){var ns=(data&&data.nodes)||[];var m={};ns.forEach(function(n){m[n.id]=1;});storeMults(m);renderWeightsPanel(true);render();}
+function resetMultsOne(){if(learnedPick('mult'))return;var ns=(data&&data.nodes)||[];var m={};ns.forEach(function(n){m[n.id]=1;});storeMults(m);renderWeightsPanel(true);render();}
 function weightedAvgWind(){
   var all=(data&&data.nodes&&!liveStale())?data.nodes:[];
   // Drop nodes whose anemometer is dead or whose reading is too old (both arrive
@@ -759,6 +804,7 @@ function weightedAvgWind(){
 }
 function setNodeWeight(id,v){var w=nodeWeights();w[id]=Math.max(0,parseFloat(v)||0);storeWeights(w);updateWeightTotal();render();}
 function resetWeightsEqual(){
+  if(learnedPick('weights'))return;
   var ns=(data&&data.nodes)||[];if(!ns.length)return;
   var each=Math.round((100/ns.length)*10)/10,w={};
   ns.forEach(function(n){w[n.id]=each;});
@@ -785,6 +831,7 @@ function sensReadout(id){
   return dy+' \u00b7 '+r.src+' \u00b7 '+tag;
 }
 async function autoWeights(tries){
+  if(learnedPick('weights'))return;
   if(!data){flash('no data yet');return;}
   var usable=effectiveNodeWeights().nodes.length;
   if(usable<2){renderWeightsPanel(true);flash(usable?'Only one valid wind node: 100% weight':'No valid wind readings');return;}
@@ -851,10 +898,11 @@ function renderWeightsPanel(force){
   if((view!=='avg'&&view!=='pred')||!ns.length){panel.className='wheelWrap hide';return;}
   panel.className='wheelWrap';
   var weights=effectiveNodeWeights(),single=weights.nodes.length===1;
-  var sig=ns.map(function(n){return n.id+':'+(n.windOk!==false);}).sort().join(',');
+  var lpW=learnedPick('weights'),lpM=learnedPick('mult'),lpAny=learnedOn()?(learnedPick()||{m:learnedModel(),s:-1}):null;
+  var sig=ns.map(function(n){return n.id+':'+(n.windOk!==false);}).sort().join(',')+'|'+(lpAny?lpAny.s+':'+(lmCache.raw||'').length:'off');
   if(force||sig!==weightsBuiltFor){
     weightsBuiltFor=sig;
-    var w=nodeWeights(),m=nodeMults(),dman=nodeDownManual();
+    var w=lpW?learnedWeights(lpW):nodeWeights(),m=nodeMults(),dman=nodeDownManual();
     var istyle="width:100%;margin-top:4px;padding:8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:.95rem";
     var h='<h2 style="margin:0 0 10px">Meter weights &amp; multipliers</h2>'+
       '<div style="color:var(--dim);font-size:.78rem;margin-bottom:10px">'+
@@ -862,17 +910,29 @@ function renderWeightsPanel(force){
       '(wind near the muzzle counts ~6&times; more than near the target). Position is GPS by '+
       'default; type a <b>Downrange (yd)</b> to override that meter. '+
       '<b>Multiplier &times;</b> scales this meter\'s wind speed (e.g. a meter at max ordinate for winds aloft).</div>';
+    if(lpAny){var lm=lpAny.m,dr=lm.drive||{};
+      h+='<div style="margin:0 0 10px;padding:10px;border:1px solid var(--accent,#3cc0dd);border-radius:10px;font-size:.8rem">'+
+        '<b>Learned model: '+escHtml(lm.name)+'</b><br><span style="color:var(--dim)">'+
+        (lpAny.s>=0?'Wind from '+LM_SECT[lpAny.s]+': ':'Waiting for wind: ')+'driving '+
+        [dr.mult!==false?'multipliers':'',dr.weights!==false?'weights':'',dr.sentinels!==false?'Sentinel pairs':''].filter(Boolean).join(', ')+
+        '. Built from '+(lm.shots||0)+' shots for '+lm.rangeYd+' yd. Your own settings are kept underneath.</span>'+
+        '<div class="stepRow" style="margin-top:8px"><button class="step" onclick="setLearnedOn(false)">Use my settings</button>'+
+        '<button class="step" onclick="location.href=\'/learn\'">Open Learn</button></div></div>';
+    }else if(learnedModel()){
+      h+='<div style="margin:0 0 10px;color:var(--dim);font-size:.78rem">Learned model <b>'+escHtml(learnedModel().name)+'</b> is saved but off. '+
+        '<button class="step" style="padding:2px 8px;font-size:.75rem" onclick="setLearnedOn(true)">Use it</button></div>';
+    }
     ns.forEach(function(n){
       var valid=n.windOk!==false;
-      var locked=single||!valid;
+      var locked=single||!valid||!!lpW;
       var v=!valid?0:single?100:configuredNodeWeight(w,n.id,weights.nodes.length);
-      var mv=(m[n.id]!==undefined)?m[n.id]:1;
+      var mv=lpM?getMult(n.id):(m[n.id]!==undefined)?m[n.id]:1;
       var dv=(dman[n.id]!==undefined)?dman[n.id]:'';
       h+='<div style="margin:10px 0;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:10px">'+
          '<div style="color:var(--dim);font-size:.85rem;margin-bottom:8px">Node '+n.id+' <span id="wlbl_'+n.id+'">('+n.speed.toFixed(1)+' mph)</span></div>'+
          '<div style="display:flex;gap:10px">'+
          '<label style="flex:1;color:var(--dim);font-size:.72rem">Weight %<input type="number" step="any" min="0" '+(locked?'disabled ':'')+'style="'+istyle+'" value="'+v+'" onchange="setNodeWeight('+n.id+',this.value)"></label>'+
-         '<label style="flex:1;color:var(--dim);font-size:.72rem">Multiplier &times;<input type="number" step="0.05" min="0" style="'+istyle+'" value="'+mv+'" onchange="setNodeMult('+n.id+',this.value)"></label>'+
+         '<label style="flex:1;color:var(--dim);font-size:.72rem">Multiplier &times;<input type="number" step="0.05" min="0" '+(lpM?'disabled ':'')+'style="'+istyle+'" value="'+mv+'" onchange="setNodeMult('+n.id+',this.value)"></label>'+
          '</div>'+
          ((!valid)?'<div style="color:var(--dim);font-size:.72rem;margin-top:6px">No valid wind data; excluded from the average.</div>':
           single?'<div style="color:var(--dim);font-size:.72rem;margin-top:6px">Only valid wind node: 100% weight. Speed multiplier remains adjustable.</div>':'')+
@@ -881,10 +941,13 @@ function renderWeightsPanel(force){
          '<div id="slbl_'+n.id+'" style="color:var(--dim);font-size:.72rem;margin-top:6px">'+sensReadout(n.id)+'</div>'+
          '</div>';
     });
-    h+='<div class="stepRow"><button class="step" '+(weights.nodes.length<2?'disabled ':'')+'onclick="autoWeights()">Auto from ballistics</button>'+
-       '<button class="step" onclick="resetWeightsEqual()">Equal split</button></div>'+
+    // while the learned model drives weights / multipliers these buttons would
+    // rewrite your own settings kept underneath, unseen: off until "Use my settings"
+    h+='<div class="stepRow"><button class="step" '+(weights.nodes.length<2||lpW?'disabled ':'')+'onclick="autoWeights()">Auto from ballistics</button>'+
+       '<button class="step" '+(lpW?'disabled ':'')+'onclick="resetWeightsEqual()">Equal split</button></div>'+
        '<div class="stepRow"><button class="step" onclick="clearManualDown()">Clear manual downrange</button>'+
-       '<button class="step" onclick="resetMultsOne()">Reset &times;1</button></div>'+
+       '<button class="step" '+(lpM?'disabled ':'')+'onclick="resetMultsOne()">Reset &times;1</button></div>'+
+       ((lpW||lpM)?'<div style="color:var(--dim);font-size:.72rem;margin-top:6px;text-align:center">The learned model is setting '+(lpW&&lpM?'weights and multipliers':lpW?'weights':'multipliers')+'. Tap Use my settings to change your own.</div>':'')+
        '<div id="wTotal" style="color:var(--dim);font-size:.78rem;margin-top:8px;text-align:center"></div>';
     panel.innerHTML=h;
   }else{
@@ -1239,14 +1302,19 @@ function renderStability(){
 var SENTINEL_PAIR_DEFAULT = {spdPct:20, dirDeg:15};   // your chosen looser default
 var SENTINEL_AGG_DEFAULT  = {g:0.75, y:0.50};         // >=75% green, >=50% yellow
 
-function sentinelEnabled(){return localStorage.getItem('sentOn')==='1';}
+function sentinelEnabled(){return localStorage.getItem('sentOn')==='1'||!!learnedPick('sentinels');}
 function setSentinelEnabled(v){localStorage.setItem('sentOn',v?'1':'0');sentPanelBuilt=false;renderStability();}
 
-// pairs[] = [{sentId, nodeId, spdPct, dirDeg}, ...]
-function sentPairs(){try{return JSON.parse(localStorage.getItem('sentPairs')||'[]');}catch(e){return [];}}
+// pairs[] = [{sentId, nodeId, spdPct, dirDeg}, ...]; a learned pair also has
+// lagS (s for the Sentinel's air to reach the node), ratio (node speed per
+// Sentinel speed in this wind) and dirOff (node minus Sentinel direction).
+// alongYd (yd from Sentinel to node along the wind) turns into the live lag at
+// the Sentinel's speed; src 'layout' = paired from the meter spots alone.
+function manualSentPairs(){try{return JSON.parse(localStorage.getItem('sentPairs')||'[]');}catch(e){return [];}}
+function sentPairs(){var lp=learnedPick('sentinels');if(lp)return (lp.row.sent||[]).map(function(p){return Object.assign({},p);});return manualSentPairs();}
 function storeSentPairs(p){localStorage.setItem('sentPairs',JSON.stringify(p));}
 function addSentPair(sentId,nodeId){
-  var p=sentPairs();
+  var p=manualSentPairs();
   // reject self-pair, duplicate pair
   if(sentId==nodeId){flash('sentinel and node must differ');return;}
   if(p.some(function(x){return x.sentId==sentId&&x.nodeId==nodeId;})){flash('pair already exists');return;}
@@ -1254,8 +1322,8 @@ function addSentPair(sentId,nodeId){
           spdPct:SENTINEL_PAIR_DEFAULT.spdPct,dirDeg:SENTINEL_PAIR_DEFAULT.dirDeg});
   storeSentPairs(p);sentPanelBuilt=false;renderStability();
 }
-function removeSentPair(i){var p=sentPairs();p.splice(i,1);storeSentPairs(p);sentPanelBuilt=false;renderStability();}
-function setPairTh(i,field,v){var p=sentPairs();if(!p[i])return;
+function removeSentPair(i){var p=manualSentPairs();p.splice(i,1);storeSentPairs(p);sentPanelBuilt=false;renderStability();}
+function setPairTh(i,field,v){var p=manualSentPairs();if(!p[i])return;
   p[i][field]=parseFloat(v)||0;storeSentPairs(p);renderStability();}
 
 function sentAggTh(){try{var t=JSON.parse(localStorage.getItem('sentAggTh'));return t||SENTINEL_AGG_DEFAULT;}catch(e){return SENTINEL_AGG_DEFAULT;}}
@@ -1276,11 +1344,16 @@ function evalSentinel(){
     var s=byId[p.sentId], n=byId[p.nodeId];
     if(!s||!n){missing++;return;}       // dropped from receiver -> excluded
     if(s.windOk===false||n.windOk===false){missing++;return;}   // dead meter can't 'agree'
-    var sd=(s.speed>0.1)?Math.abs(s.speed-n.speed)/s.speed*100:Math.abs(s.speed-n.speed)*100;
-    var dd=dirDiff(s.dir,n.dir);
+    // A learned pair compares the node with what the Sentinel says is on its
+    // way (Sentinel speed x ratio, direction + offset): agreement means the air
+    // arriving over the next lagS seconds matches the air there now.
+    var ratio=(parseFloat(p.ratio)>0)?parseFloat(p.ratio):1,off=parseFloat(p.dirOff)||0;
+    var exp=s.speed*ratio,expDir=((s.dir+off)%360+360)%360;
+    var sd=(exp>0.1)?Math.abs(exp-n.speed)/exp*100:Math.abs(exp-n.speed)*100;
+    var dd=dirDiff(expDir,n.dir);
     var agree=(sd<=p.spdPct)&&(dd<=p.dirDeg);
     live.push({sentId:p.sentId,nodeId:p.nodeId,spdPct:p.spdPct,dirDeg:p.dirDeg,
-               spdDelta:sd,dirDelta:dd,agree:agree});
+               spdDelta:sd,dirDelta:dd,agree:agree,lagS:(+p.alongYd>0&&s.speed>1)?(+p.alongYd)/(s.speed*0.48889):(parseFloat(p.lagS)||0),comingMph:exp,comingDir:expDir});
   });
   return {live:live, missing:missing};
 }
@@ -1315,11 +1388,13 @@ function renderSentBadge(){
 
 // The config panel: rebuild-once pattern like the other threshold panels so a
 // mid-poll rebuild can't dismiss the mobile keyboard.
-var sentPanelBuilt=false;
+var sentPanelBuilt=false,sentPanelSig='';
 function renderSentPanel(force){
   var el=document.getElementById('sentPanel');if(!el)return;
-  if(!force&&sentPanelBuilt){updateSentReadouts();return;}
-  sentPanelBuilt=true;
+  // a learned model swaps the pair list when the wind changes sector
+  var lpS=learnedPick('sentinels'),sig=lpS?(lpS.s+':'+(lmCache.raw||'').length):'manual';
+  if(!force&&sentPanelBuilt&&sig===sentPanelSig){updateSentReadouts();return;}
+  sentPanelBuilt=true;sentPanelSig=sig;
 
   var is="width:100%;margin-top:4px;padding:8px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:.9rem";
   var on=sentinelEnabled();
@@ -1329,10 +1404,14 @@ function renderSentPanel(force){
         'Pair an upwind Sentinel meter with one or more downwind nodes. When their '+
         'wind readings agree within the per-pair tolerances, that pair counts toward '+
         'the Sentinel Agreement banner above WIND HOLD. Both banners green = ideal shot moment.</div>'+
+        (lpS?'<div style="margin-bottom:12px;padding:10px;border:1px solid var(--accent,#3cc0dd);border-radius:10px;font-size:.8rem">'+
+          '<b>Pairs from learned model: '+escHtml(lpS.m.name)+'</b><br><span style="color:var(--dim)">Wind from '+LM_SECT[lpS.s]+
+          '. Each pair compares the node with what its Sentinel says is arriving (learned lag, speed ratio and tolerances). Your own pairs are kept.</span>'+
+          '<div class="stepRow" style="margin-top:8px"><button class="step" onclick="setLearnedOn(false)">Use my settings</button></div></div>':
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'+
         '<span style="color:var(--dim);font-size:.85rem">Enable Sentinel</span>'+
         '<button class="step" onclick="setSentinelEnabled('+(on?'false':'true')+')">'+(on?'ON':'OFF')+'</button>'+
-        '</div>';
+        '</div>');
 
   if(!on){el.innerHTML=h;return;}
 
@@ -1351,7 +1430,16 @@ function renderSentPanel(force){
   var pairs=sentPairs();
   h+='<h2 style="margin:14px 0 8px">Pairs</h2>';
   if(pairs.length===0){
-    h+='<div style="color:var(--dim);font-size:.78rem;margin-bottom:10px">No pairs yet. Add one below.</div>';
+    h+='<div style="color:var(--dim);font-size:.78rem;margin-bottom:10px">'+(lpS?'The model has no Sentinel pair for this wind.':'No pairs yet. Add one below.')+'</div>';
+  }else if(lpS){
+    pairs.forEach(function(p,i){
+      h+='<div style="margin:8px 0;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:10px">'+
+         '<div style="color:var(--ink);font-size:.9rem;font-weight:700">Sentinel '+p.sentId+' &rarr; Node '+p.nodeId+'</div>'+
+         '<div style="color:var(--dim);font-size:.72rem;margin-top:4px">air takes ~'+Math.round(p.lagS||0)+' s &middot; speed &times;'+(+p.ratio||1).toFixed(2)+
+         ' &plusmn;'+p.spdPct+'% &middot; direction '+((+p.dirOff||0)>=0?'+':'')+Math.round(+p.dirOff||0)+'&deg; &plusmn;'+p.dirDeg+'&deg;'+(p.r?' &middot; r '+(+p.r).toFixed(2):'')+(p.src==='layout'?' &middot; from the meter layout, not yet backed by wind data':'')+'</div>'+
+         '<div id="pair_readout_'+i+'" style="color:var(--dim);font-size:.72rem;margin-top:6px">--</div>'+
+         '</div>';
+    });
   }else{
     pairs.forEach(function(p,i){
       h+='<div style="margin:8px 0;padding:10px;background:var(--bg);border:1px solid var(--line);border-radius:10px">'+
@@ -1368,6 +1456,7 @@ function renderSentPanel(force){
     });
   }
 
+  if(lpS){el.innerHTML=h;updateSentReadouts();return;}
   // ---- Add-pair widget ----
   var ns=(data&&data.nodes)||[];
   var opts='<option value="">select node</option>';
@@ -1398,7 +1487,8 @@ function updateSentReadouts(){
     var el=document.getElementById('pair_readout_'+i);if(!el)return;
     var color=r.agree?'var(--good)':'var(--warn)';
     el.innerHTML='<span style="color:'+color+'">'+(r.agree?'AGREE':'DISAGREE')+'</span>'+
-      ' &middot; &Delta;speed '+r.spdDelta.toFixed(1)+'% &middot; &Delta;dir '+Math.round(r.dirDelta)+'&deg;';
+      ' &middot; &Delta;speed '+r.spdDelta.toFixed(1)+'% &middot; &Delta;dir '+Math.round(r.dirDelta)+'&deg;'+
+      (r.lagS>0?'<br>arriving in ~'+Math.round(r.lagS)+' s: '+r.comingMph.toFixed(1)+' mph from '+Math.round(r.comingDir)+'&deg;':'');
   });
   // mark dropped pairs
   pairs.forEach(function(p,i){
@@ -1536,6 +1626,7 @@ function logSample(hold){
         curSpdSd:st?st.cur.spdSd:null,curDirSd:st?st.cur.dirSd:null,
         w60SpdSd:st?st.w60.spdSd:null,w60DirSd:st?st.w60.dirSd:null};})(),
     sent:sent, hold:hold,
+    lm:learnedOn()?{name:learnedModel().name,sector:learnedSectorNow()}:null,
     nodes: ns.map(function(n){var nv=nodeVar(n);return {id:n.id,spd:n.speed,dir:n.dir,gust:n.gust,spdSd:n.speedSd,dirSd:n.dirSd,
       xwMph:nv.wob,gf:nv.gf,drift60Mph:nv.drift60,
       tempF:n.tempF,presInHg:n.presInHg,battV:n.battV,rssi:n.rssi,age:n.age,lat:n.lat,lon:n.lon};})
@@ -2118,6 +2209,12 @@ function tabs(){
 // classic one-page form is still here: More -> Classic Coriolis solver, or if
 // sky.js failed to load.
 var skyClassic=false;
+// LEARN opens the Wind Learning Range (/learn, LearnJs.h): a separate page,
+// so leaving Wind Lab stops a running session log. Ask first in that case.
+function goLearn(){
+  if(typeof logState!=='undefined'&&logState.recording&&!confirm('A session log is recording. Opening Learn stops it. Open Learn anyway?'))return;
+  location.href='/learn';
+}
 function openClassicSolver(){skyClassic=true;try{setView('solver');}finally{skyClassic=false;}}
 function setView(v){
   if(v==='solver'&&!skyClassic&&window.SkyUI&&SkyUI.open()){tabs();return;}
@@ -3105,6 +3202,14 @@ public:
             server.sendHeader("Cache-Control", "no-store");
             server.send_P(200, "application/javascript", SKY_JS);
         });
+        server.on("/learn", [this]() {
+            server.sendHeader("Cache-Control", "no-store");
+            server.send_P(200, "text/html", LEARN_HTML);
+        });
+        server.on("/wind-learner.js", [this]() {
+            server.sendHeader("Cache-Control", "no-store");
+            server.send_P(200, "application/javascript", LEARN_LIB_JS);
+        });
         server.on("/gear", HTTP_GET, [this]() { sendGear(); });
         server.on("/gear", HTTP_POST, [this]() { finishGearUpload(); }, [this]() { onGearUpload(); });
         server.on("/gear/info", HTTP_GET, [this]() {
@@ -3133,6 +3238,7 @@ public:
         });
         server.on("/windsec", [this]() {
             server.sendHeader("Cache-Control","no-store");
+            server.sendHeader("X-Learn-Build", LEARN_BUILD);   // an open Learn page reloads when this changes
             server.send(200, "application/json", windSecProvider ? windSecProvider(server) : "{\"nodes\":{}}");
         });
         server.onNotFound([this]() { server.send_P(200, "text/html", WEBUI_PAGE); });

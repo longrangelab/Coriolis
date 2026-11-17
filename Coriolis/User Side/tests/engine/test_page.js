@@ -373,6 +373,36 @@ const skyFile = JSON.stringify({
     const L1 = { rifles: [], loads: [], bullets: [Object.assign({}, a)], cards: [], shots: [], deleted: [] }, L2 = { rifles: [], loads: [], bullets: [Object.assign({}, b)], cards: [], shots: [], deleted: [] };
     Gear.mergeInto(L1, { bullets: [b] }); Gear.mergeInto(L2, { bullets: [a] }); return [L1.bullets[0].name, L2.bullets[0].name]; });
   check('Gear: same-millisecond edits settle the same way everywhere', tie[0] === tie[1], tie);
+  // ---- learned model from /learn drives multipliers, weights and Sentinels ----
+  const lmRes = await A.evaluate(() => {
+    const row = (mult, w, sent) => ({ mult: mult, wPct: w, sent: sent || [] });
+    const other = row({ 1: 1, 2: 1, 3: 1 }, { 1: 34, 2: 33, 3: 33 });
+    const west = row({ 1: 1.5, 2: 1, 3: 1 }, { 1: 100, 2: 0, 3: 0 }, [{ sentId: 2, nodeId: 1, lagS: 12, spdPct: 20, dirDeg: 15, ratio: 0.5, dirOff: 0 }]);
+    const m = { kind: 'coriolis-live-model', v: 1, name: 'Test model', rangeYd: 600, azDeg: 0, shots: 30,
+      drive: { mult: true, weights: true, sentinels: true }, sectors: [other, other, other, other, other, other, west, other] };
+    localStorage.setItem('sentPairs', JSON.stringify([{ sentId: 3, nodeId: 2, spdPct: 20, dirDeg: 15 }]));
+    const before = weightedAvgWind().speed;
+    localStorage.setItem('learnedModel', JSON.stringify(m)); localStorage.setItem('learnedOn', '1');
+    setView('avg'); renderWeightsPanel(true);
+    const on = { speed: weightedAvgWind().speed, sector: learnedSectorNow(), pairs: sentPairs(), ev: evalSentinel(), enabled: sentinelEnabled(),
+      panel: document.getElementById('weightsPanel').textContent, mult1: getMult(1) };
+    // the weight buttons can't rewrite the own settings hidden underneath
+    const btn = t => [...document.querySelectorAll('#weightsPanel button')].find(b => b.textContent === t);
+    on.locked = ['Auto from ballistics', 'Equal split', 'Reset ×1'].every(t => btn(t) && btn(t).disabled);
+    const ownBefore = JSON.stringify([nodeMults(), nodeWeights()]); resetMultsOne(); resetWeightsEqual(); on.ownKept = JSON.stringify([nodeMults(), nodeWeights()]) === ownBefore;
+    setLearnedOn(false);
+    on.unlocked = !btn('Equal split').disabled && !btn('Reset ×1').disabled;
+    const off = { speed: weightedAvgWind().speed, pairs: sentPairs(), mult1: getMult(1), stored: localStorage.getItem('learnedModel') !== null };
+    return { before, on, off };
+  });
+  check('Learned model: picks the W row from the live wind', lmRes.on.sector === 6, lmRes.on.sector);
+  check('Learned model: multiplier and weight drive the wind call (node 1 only, x1.5)', Math.abs(lmRes.on.speed - 12) < 0.01 && lmRes.on.mult1 === 1.5, lmRes.on);
+  check('Learned model: Sentinel pairs come from the model, with lag and ratio', lmRes.on.enabled && lmRes.on.pairs.length === 1 && lmRes.on.pairs[0].sentId === 2 && lmRes.on.ev.live[0].lagS === 12 && Math.abs(lmRes.on.ev.live[0].comingMph - 4) < 0.01 && lmRes.on.ev.live[0].agree === false, lmRes.on.ev);
+  check('Learned model: Wind Lab says it is driving', /Learned model: Test model/.test(lmRes.on.panel) && /Wind from W/.test(lmRes.on.panel), lmRes.on.panel.slice(0, 300));
+  check('Learned model: Auto / Equal split / Reset x1 are off while it drives, and on again after', lmRes.on.locked && lmRes.on.ownKept && lmRes.on.unlocked, lmRes.on);
+  check('Learned model: turning it off puts the own settings back', Math.abs(lmRes.off.speed - lmRes.before) < 1e-9 && lmRes.off.mult1 === 1 && lmRes.off.pairs.length === 1 && lmRes.off.pairs[0].sentId === 3 && lmRes.off.stored, lmRes);
+  await A.evaluate(() => { localStorage.removeItem('learnedModel'); localStorage.removeItem('learnedOn'); localStorage.removeItem('sentPairs'); });
+
   // the phone loses the base station: the last reading is not live wind any more
   await A.evaluate(() => { setView('avg'); localStorage.setItem('skyTab', 'calc'); setView('solver'); });
   await new Promise(r => setTimeout(r, 1500));

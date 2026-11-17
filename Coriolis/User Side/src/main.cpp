@@ -666,6 +666,12 @@ String buildDataJson() {
     j += "\"lat\":" + String(rxLat,6) + ",\"lon\":" + String(rxLon,6);
     j += ",\"tempF\":" + String(baseTempF,1) + ",\"presInHg\":" + String(basePresInHg,2);
     j += ",\"battPct\":" + String(rxBatteryPct) + ",\"battV\":" + String(rxBatteryV,2);
+    // env: the same atmosphere in finer units for the learning page, and only
+    // when the BMP180 is really there (tempF/presInHg above read 0 without it).
+    // pressure in hPa to 0.01 (1 Pa): presInHg's 0.01 inHg is 34 Pa, too coarse
+    // to see the few-Pa pressure jumps that can run ahead of a gust.
+    if (baroOk && basePresInHg > 0)
+        j += ",\"env\":{\"pressure\":" + String(basePresInHg*33.86389f,2) + ",\"temp\":" + String(baseTempF,1) + "}";
     j += ",\"gps\":" + String(baseFix ? "true":"false") + "},";
     j += "\"avg\":{\"count\":" + String(nw) + ",\"seen\":" + String(n) + ",\"speed\":" + String(avgSpeed,2);
     j += ",\"speedSd\":" + String(avgSpdSd,2) + ",\"dir\":" + String(avgDir);
@@ -694,6 +700,15 @@ String buildDataJson() {
         j += ",\"tempF\":" + String(nv.temperatureC*9.0f/5.0f+32.0f,1);
         j += ",\"presInHg\":" + String(nv.pressurePa/3386.389f,2);
         j += ",\"lux\":" + String(nv.lightValid ? nv.lightLux : -1.0f, 1);
+        {   // env: this meter's own sensors for the learning page, valid ones only
+            bool baroV = nv.pressurePa > 30000.0f && nv.pressurePa < 120000.0f;
+            if (baroV || nv.lightValid) {
+                j += ",\"env\":{";
+                if (baroV) j += "\"pressure\":" + String(nv.pressurePa/100.0f,2) + ",\"temp\":" + String(nv.temperatureC*9.0f/5.0f+32.0f,1);
+                if (nv.lightValid) j += String(baroV ? "," : "") + "\"light\":" + String(nv.lightLux,1);
+                j += "}";
+            }
+        }
         j += ",\"battV\":" + String(nv.batteryV,2) + ",\"battPct\":" + String(battPctFromVolts(nv.batteryV));
         j += ",\"lat\":" + String(nv.lat,6) + ",\"lon\":" + String(nv.lon,6);
         j += ",\"gps\":" + String(nv.gpsValid ? "true" : "false");   // phone-side meter weighting needs the fix flag
