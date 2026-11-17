@@ -507,7 +507,10 @@ void readSensors(NodeReading& r) {
         uint8_t seq = (uint8_t)(w.rawADC >> 10);
         bool fresh = true;
         if (seq == 0) {
-            fresh = !rtcSeqSeen;               // seq-aware ATtiny, no data yet (just reset)
+            // Seq-aware ATtiny with no data yet: it just reset, or it just woke
+            // from the power-down we sent before deep sleep (its first publish
+            // comes 1 s after the wake). Not a stall, but nothing to use either.
+            fresh = !rtcSeqSeen;
         } else {
             if (rtcSeqSeen && seq == rtcLastSeq) {
                 if (!firstAttinyRead) {
@@ -698,6 +701,24 @@ uint16_t chooseDutySec(float battV, float tempC, bool tempValid) {
     return duty;
 }
 
+// Tell the ATtiny wind sensor to power down until we wake. It sits on the
+// 3.3 V rail that stays on through deep sleep, and running flat out with its
+// LED blinking it drew more than the rest of the sleeping board. Powered down
+// it takes about 1 uA, and the first I2C start condition on the bus wakes it,
+// which is power.init() in setup() on our next boot, so nothing here has to
+// wake it again. Any I2C transaction would also wake it, so this must be the
+// LAST one before esp_deep_sleep_start(). An ATtiny sketch older than this
+// command ignores it and stays awake, as before.
+#define ATTINY_CMD_SLEEP  0x02
+static void attinyPowerDown() {
+    Wire.beginTransmission(ATTINY_ADDR);
+    Wire.write(ATTINY_CMD_SLEEP);
+    Wire.write(0x00);
+    uint8_t err = Wire.endTransmission();
+    Serial.printf("[sleep] ATtiny power-down %s\n", err == 0 ? "sent" : "NOT acked");
+    Serial.flush();
+}
+
 // Enter deep sleep for `sec` seconds. Wakes on the timer OR the center button
 // (GPIO 38, active low) so a human can always bring a node up by hand.
 void enterDeepSleep(uint16_t sec) {
@@ -707,6 +728,7 @@ void enterDeepSleep(uint16_t sec) {
     if (screen) { screen->powerOff(); }
     radio.sleepRadio();                    // SX1276 -> ~1 uA sleep mode
     power.gpsPower(false);                 // GPS rail off (fix is in RTC memory)
+    attinyPowerDown();                     // last I2C transaction (see above)
     esp_sleep_enable_timer_wakeup((uint64_t)sec * 1000000ULL);
     // Button = manual wake. If the line is already low (stuck button, water in
     // the switch), arming a level wake would wake us instantly forever, so

@@ -1,0 +1,61 @@
+# Builds the ATtiny85 wind sensor sketch for every wind meter with avr-gcc
+# (same recipe and library commits as the release .hex files), checks it still
+# fits below the I2C bootloader, and runs both simulator tests on simavr:
+#   attiny85_wind_sensor/test/sim_power.cpp  sleep on the node's command,
+#                                            wake on I2C, wind after a wake
+#   attiny85_bootloader/test/sim_test.cpp    firmware update over I2C
+name: ATtiny
+
+on:
+  push:
+    paths: ['Coriolis/attiny85_wind_sensor/**', 'Coriolis/attiny85_bootloader/**', 'Coriolis/Node/lib/AttinyFlasher/**', '.github/workflows/attiny.yml']
+  pull_request:
+    paths: ['Coriolis/attiny85_wind_sensor/**', 'Coriolis/attiny85_bootloader/**', 'Coriolis/Node/lib/AttinyFlasher/**', '.github/workflows/attiny.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-simulate:
+    # 24.04 ships avr-gcc 7.3, the version in the Arduino IDE's AVR toolchain and
+    # the one the release .hex files are built with. ubuntu-latest (26.04) has
+    # avr-gcc 14, which rejects TinyWireS.h (curly quotes in an #error line) and
+    # would also change the code size against the 7168-byte limit.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install avr-gcc and simavr
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-avr avr-libc binutils-avr libsimavr-dev libelf-dev
+
+      - name: Fetch the pinned ATtiny core and I2C library
+        run: |
+          git clone -q https://github.com/SpenceKonde/ATTinyCore "$RUNNER_TEMP/ATTinyCore"
+          git -C "$RUNNER_TEMP/ATTinyCore" checkout -q 9e70249
+          git clone -q https://github.com/nadavmatalon/TinyWireS "$RUNNER_TEMP/TinyWireS"
+          git -C "$RUNNER_TEMP/TinyWireS" checkout -q 9c08201
+
+      - name: Build all four wind meter variants
+        working-directory: Coriolis/attiny85_wind_sensor/test
+        run: |
+          B="./build_sketch.sh $RUNNER_TEMP/ATTinyCore $RUNNER_TEMP/TinyWireS"
+          $B out/sparkfun        -DWIND_METER_SPARKFUN
+          $B out/ws2_plastic     -DWIND_METER_INSPEED -DINSPEED_WS2_PLASTIC_CUPS
+          $B out/ws2_metal       -DWIND_METER_INSPEED -DINSPEED_WS2_METAL_CUPS
+          $B out/classic_plastic -DWIND_METER_INSPEED -DINSPEED_CLASSIC_PLASTIC
+
+      - name: Sleep / wake simulation
+        working-directory: Coriolis/attiny85_wind_sensor/test
+        run: |
+          make sim_power
+          ./sim_power out/sparkfun/sketch.hex 1.492
+          ./sim_power out/ws2_plastic/sketch.hex 2.7
+
+      - name: I2C firmware update simulation
+        working-directory: Coriolis/attiny85_bootloader/test
+        run: |
+          make sim_test
+          ./sim_test ../twiboot.hex ../../attiny85_wind_sensor/test/out/sparkfun/sketch.hex ../../attiny85_wind_sensor/test/out/ws2_plastic/sketch.hex
