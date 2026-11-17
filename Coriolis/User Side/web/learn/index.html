@@ -302,7 +302,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
       <div>
         <div class="lbl" style="margin-bottom:4px">Who warns the whole field</div>
         <div class="tblwrap"><table id="relField"></table></div>
-        <div class="note">Each meter against the rest of the field (the average gust of every other meter). A meter that <b>warns the field</b> sees a gust before the rest get it, so a change there tells you what most of the range is about to do. <b>Moves with the field</b>: it reads what the field reads, at the same moment. <b>On its own</b>: its gusts are its own. The wind model also tries a model on every meter at once for each meter, so these field-wide patterns feed its predictions.</div>
+        <div class="note">Each meter against the rest of the field (the average gust of every other meter). A meter that <b>warns the field</b> sees a gust before the rest get it, so a change there tells you what most of the range is about to do. <b>Moves with the field</b>: it reads what the field reads, at the same moment. <b>On its own</b>: its gusts are its own. <b>Direction shifts</b>: the same question for the wind turning, so a meter that turns first tells you where the rest are about to swing. The wind model also tries a model on every meter at once for each meter, so these field-wide patterns feed its predictions.</div>
       </div>
       <div>
         <div class="lbl" style="margin-bottom:4px">Sentinel pairs this wind supports</div>
@@ -1608,7 +1608,7 @@ function renderRel() {
   $('relTbl').innerHTML = h + (S.pairs.length ? '' : '<tr><td colspan="8" class="muted">Needs two or more meters reporting.</td></tr>') + '</tbody>';
   var pred = Object.keys(S.predictors).sort().map(function (f) { var b = S.predictors[f]; return '<b>' + esc(f) + '</b>: ' + esc(b.by) + ' sees its gusts ' + b.lagS + ' s earlier (r ' + b.r.toFixed(2) + ', ' + (b.skill >= 0 ? '+' : '') + b.skill.toFixed(2) + ' over its own past)'; });
   $('relPred').innerHTML = pred.length ? pred.join('<br>') : 'No meter gives a useful early warning for another in this wind yet.';
-  var fl = R.fieldLeads(sec), ft = '<thead><tr><th>Meter</th><th>Pattern</th><th>Ahead of the rest</th><th>Match r</th><th>Matches the field now</th><th>Beats the field\'s own past</th></tr></thead><tbody>';
+  var fl = R.fieldLeads(sec), ft = '<thead><tr><th>Meter</th><th>Pattern</th><th>Ahead of the rest</th><th>Match r</th><th>Matches the field now</th><th>Beats the field\'s own past</th><th>Direction shifts</th></tr></thead><tbody>';
   fl.forEach(function (row) {
     var q = row.q, k = row.kind, pill;
     if (k === 'learning') pill = '<span class="pill dim">Learning</span>';
@@ -1618,9 +1618,13 @@ function renderRel() {
     else if (k === 'on its own') pill = '<span class="pill dim">On its own</span>';
     else pill = '<span class="pill warn">Shared slow swings</span>';
     var ahead = !q || k === 'on its own' ? '–' : Math.abs(q.lagS) < 1 ? 'together' : (q.lagS > 0 ? q.lagS + ' s ahead' : -q.lagS + ' s behind') + ' <span class="muted">(' + Math.abs(q.alongYd) + ' yd)</span>';
-    ft += '<tr><td><b>' + esc(row.id) + '</b></td><td>' + pill + '</td><td>' + ahead + '</td><td class="n">' + (q ? q.r.toFixed(2) : '–') + '</td><td class="n">' + (q && q.rNow != null ? q.rNow.toFixed(2) : '–') + '</td><td class="n">' + (q && q.lagS >= 2 ? (q.skill >= 0 ? '+' : '') + q.skill.toFixed(2) : '–') + '</td></tr>';
+    // the same for direction: does this meter turn before the rest of the field?
+    var d = R.fieldLead(row.id, sec, { dir: true }), turn = '–';
+    if (d && d.significant && d.r >= 0.3) turn = d.lagS >= 2 && d.skill > 0.05 ? '<b>turns ' + d.lagS + ' s before the rest</b>' : d.lagS <= -2 ? 'turns ' + (-d.lagS) + ' s after' : 'turns with the field';
+    else if (d) turn = '<span class="muted">its own</span>';
+    ft += '<tr><td><b>' + esc(row.id) + '</b></td><td>' + pill + '</td><td>' + ahead + '</td><td class="n">' + (q ? q.r.toFixed(2) : '–') + '</td><td class="n">' + (q && q.rNow != null ? q.rNow.toFixed(2) : '–') + '</td><td class="n">' + (q && q.lagS >= 2 ? (q.skill >= 0 ? '+' : '') + q.skill.toFixed(2) : '–') + '</td><td>' + turn + (d && d.significant && d.r >= 0.3 ? ' <span class="muted">(r ' + d.r.toFixed(2) + ')</span>' : '') + '</td></tr>';
   });
-  $('relField').innerHTML = ft + (fl.length >= 3 ? '' : '<tr><td colspan="6" class="muted">Needs three or more meters reporting.</td></tr>') + '</tbody>';
+  $('relField').innerHTML = ft + (fl.length >= 3 ? '' : '<tr><td colspan="7" class="muted">Needs three or more meters reporting.</td></tr>') + '</tbody>';
   var sg = pairsFor(sec, RT.calls && RT.calls.sector === sec ? RT.calls.avg : null);
   var t = '<thead><tr><th>Sentinel → meter</th><th>From</th><th>Lag</th><th>Speed tol.</th><th>Dir tol.</th><th>Ratio</th><th>r</th></tr></thead><tbody>';
   sg.forEach(function (p) { t += '<tr><td><b>' + esc(p.sentId) + ' → ' + esc(p.nodeId) + '</b></td><td>' + (p.src === 'data' ? '<span class="pill good">Wind data</span>' : '<span class="pill dim">Layout</span>') + (p.proven ? ' <span class="pill acc">Predicts</span>' : '') + '</td><td class="n">' + p.lagS + ' s</td><td class="n">±' + p.spdPct + '%</td><td class="n">±' + p.dirDeg + '°</td><td class="n">' + p.ratio.toFixed(2) + '×</td><td class="n">' + (p.r != null ? p.r.toFixed(2) : '–') + '</td></tr>'; });

@@ -333,8 +333,14 @@ ok('relations: finds the meter that warns the whole field, and the one on its ow
   assert(by.F1.kind === 'warns the field' && by.F1.q.lagS >= 7 && by.F1.q.lagS <= 15 && by.F1.q.skill > 0.05, 'F1 warns the field ' + JSON.stringify(by.F1.q));
   assert.strictEqual(by.Q.kind, 'on its own', 'Q ' + JSON.stringify(by.Q.q));
   assert(by.F5.q.lagS <= 0, 'the last meter gets it after (or with) the rest ' + JSON.stringify(by.F5.q));
+  // direction swings sweep the field the same way: F1 turns first, Q turns on its own
+  const d1 = R.fieldLead('F1', 6, { dir: true }), dQ = R.fieldLead('Q', 6, { dir: true }), d5 = R.fieldLead('F5', 6, { dir: true });
+  assert(d1.significant && d1.lagS >= 7 && d1.lagS <= 15 && d1.skill > 0.05, 'F1 turns before the rest ' + JSON.stringify(d1));
+  assert(!(dQ.significant && dQ.r >= 0.3), 'Q turns on its own ' + JSON.stringify(dQ));
+  assert(d5.lagS <= 0, 'F5 turns after the rest ' + JSON.stringify(d5));
   const R2 = new WL.Relations(JSON.parse(JSON.stringify(R.toJSON())));
   assert.strictEqual(R2.fieldLead('F1', 6).alongYd, by.F1.q.alongYd, 'round-trips');
+  assert.strictEqual(R2.fieldLead('F1', 6, { dir: true }).alongYd, d1.alongYd, 'direction round-trips');
 });
 ok('wind loop: a model on every meter at once learns field-wide patterns', () => {
   const L = new WL.ForecastLoop(null, { seed: 9, regimes: false });
@@ -470,7 +476,9 @@ async function pageTest() {
   await p.evaluate(() => advance(600));
   await p.click('#tab-rel');
   assert(await p.evaluate(() => RT.rel.secs > 500 && document.querySelectorAll('#relTbl tbody tr').length === 10), 'relations table for 5 meters');
-  assert(await p.evaluate(() => RT.pairsNow.some(q => q.sentId === 'M5' && q.nodeId === 'M3') && /M5 → M3/.test(document.getElementById('relSent').textContent)), 'M5 warns M3 (layout or data), shown in the Sentinel table');
+  // (pairs refresh every 10 s on the page clock; refresh now rather than race it)
+  const m5 = await p.waitForFunction(() => { refreshLeaders(); renderRel(); return RT.pairsNow.some(q => q.sentId === 'M5' && q.nodeId === 'M3') && /M5 → M3/.test(document.getElementById('relSent').textContent); }, null, { timeout: 10000, polling: 500 }).then(() => true, () => false);
+  assert(m5, 'M5 warns M3 (layout or data), shown in the Sentinel table: ' + await p.evaluate(() => JSON.stringify([RT.calls && RT.calls.sector, RT.pairsNow])));
   await p.click('#relTbl tbody tr'); assert(await p.evaluate(() => document.querySelector('#relChart polyline') !== null), 'lag chart drawn');
   await p.click('#tab-model'); await p.click('#pushWL');
   const lm = await p.evaluate(() => JSON.parse(localStorage.getItem('learnedModel')));

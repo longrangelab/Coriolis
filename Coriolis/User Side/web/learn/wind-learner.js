@@ -326,19 +326,28 @@
       var f = r.spd - R.ema;
       R.k = (R.k || 0) + 1;
       R.ema += (r.spd - R.ema) / Math.min(R.k, self.tau);
-      R.ring.unshift({ f: f, spd: r.spd, dir: r.dir });
+      // direction shift: degrees off its own running mean direction (clipped, so a calm spin doesn't swamp it)
+      var g = 0;
+      if (isFinite(r.dir) && r.spd >= 1) {
+        var dr = r.dir * Math.PI / 180, sx1 = Math.sin(dr), sy1 = Math.cos(dr);
+        if (R.dx == null) { R.dx = sx1; R.dy = sy1; R.kd = 0; }
+        var md = Math.atan2(R.dx, R.dy) * 180 / Math.PI;
+        g = Math.max(-60, Math.min(60, ((r.dir - md + 540) % 360) - 180));
+        R.kd++; R.dx += (sx1 - R.dx) / Math.min(R.kd, self.tau); R.dy += (sy1 - R.dy) / Math.min(R.kd, self.tau);
+      }
+      R.ring.unshift({ f: f, g: g, spd: r.spd, dir: r.dir });
       if (R.ring.length > REL_RING) R.ring.length = REL_RING;
       present[k] = true;
     });
     for (id in present) if (!present[id]) { var R0 = this.rt[id]; R0.ring.unshift(null); if (R0.ring.length > REL_RING) R0.ring.length = REL_RING; }
     // the rest of the field for each meter: the mean gust of the others
     // reporting this second (two at least, or it is just another pair)
-    var liveIds = Object.keys(present).filter(function (k) { return present[k]; }), sumF = 0;
-    liveIds.forEach(function (k) { sumF += self.rt[k].ring[0].f; });
+    var liveIds = Object.keys(present).filter(function (k) { return present[k]; }), sumF = 0, sumG = 0;
+    liveIds.forEach(function (k) { sumF += self.rt[k].ring[0].f; sumG += self.rt[k].ring[0].g || 0; });
     for (id in this.rt) {
       var Rr = this.rt[id], nO = liveIds.length - (present[id] ? 1 : 0);
       Rr.rest = Rr.rest || [];
-      Rr.rest.unshift(nO >= 2 ? { f: (sumF - (present[id] ? Rr.ring[0].f : 0)) / nO } : null);
+      Rr.rest.unshift(nO >= 2 ? { f: (sumF - (present[id] ? Rr.ring[0].f : 0)) / nO, g: (sumG - (present[id] ? Rr.ring[0].g || 0 : 0)) / nO } : null);
       if (Rr.rest.length > REL_RING) Rr.rest.length = REL_RING;
     }
     if (!sectors.length) return;
@@ -357,20 +366,28 @@
       var A = self.A[key] || (self.A[key] = { n: zeros(L + 1), c: zeros(L + 1) });
       for (var j = 0; j <= L && j < R.ring.length; j++) { var o = R.ring[j]; if (!o) continue; A.n[j]++; A.c[j] += cur.f * o.f; }
     });
-    // each meter against the rest of the field, by the same yards of travel
+    // each meter against the rest of the field, by the same yards of travel:
+    // speed gusts (f) and direction shifts (g, keys ending '|d')
     Object.keys(this.rt).forEach(function (k) {
-      var R = self.rt[k], Fr = R.rest || [], key = k + '|' + sector, W = 2 * NB + 1;
+      var R = self.rt[k], Fr = R.rest || [], W = 2 * NB + 1;
       if (!R.ring[0] && !Fr[0]) return;
-      if (Fr[0]) {
-        var FA = self.FA[key] || (self.FA[key] = { n: zeros(L + 1), c: zeros(L + 1) });
-        for (var j = 0; j <= L && j < Fr.length; j++) { var o = Fr[j]; if (!o) continue; FA.n[j]++; FA.c[j] += Fr[0].f * o.f; }
-      }
-      var F = self.F[key] || (self.F[key] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W) });
-      for (var jb = 0; jb <= NB; jb++) {
-        var kf = jb * REL_BIN / ups; if (kf > REL_RING - 2) break;
-        if (Fr[0]) { var xa = ringAt(R.ring, kf); if (xa) addF(F, NB + jb, xa.f, Fr[0].f); }          // meter then, field now
-        if (jb > 0 && R.ring[0]) { var xf = ringAt(Fr, kf); if (xf) addF(F, NB - jb, R.ring[0].f, xf.f); }   // field then, meter now
-      }
+      [['', 'f'], ['|d', 'g']].forEach(function (cv) {
+        var key = k + '|' + sector + cv[0], c = cv[1], j, o;
+        if (Fr[0]) {
+          var FA = self.FA[key] || (self.FA[key] = { n: zeros(L + 1), c: zeros(L + 1) });
+          for (j = 0; j <= L && j < Fr.length; j++) { o = Fr[j]; if (!o) continue; FA.n[j]++; FA.c[j] += Fr[0][c] * (o[c] || 0); }
+        }
+        if (c === 'g' && R.ring[0]) {                    // the meter's own direction persistence (its speed one is in A)
+          var DA = self.FA[key + 'm'] || (self.FA[key + 'm'] = { n: zeros(L + 1), c: zeros(L + 1) });
+          for (j = 0; j <= L && j < R.ring.length; j++) { o = R.ring[j]; if (!o) continue; DA.n[j]++; DA.c[j] += R.ring[0].g * (o.g || 0); }
+        }
+        var F = self.F[key] || (self.F[key] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W) });
+        for (var jb = 0; jb <= NB; jb++) {
+          var kf = jb * REL_BIN / ups; if (kf > REL_RING - 2) break;
+          if (Fr[0]) { var xa = ringAt(R.ring, kf); if (xa) addF(F, NB + jb, xa[c] || 0, Fr[0][c]); }          // meter then, field now
+          if (jb > 0 && R.ring[0]) { var xf = ringAt(Fr, kf); if (xf) addF(F, NB - jb, R.ring[0][c] || 0, xf[c] || 0); }   // field then, meter now
+        }
+      });
     });
     var all = Object.keys(this.rt);
     for (var i = 0; i < all.length; i++) for (var j2 = i + 1; j2 < all.length; j2++) {
@@ -394,7 +411,7 @@
     var k0 = Math.floor(kf), w = kf - k0, o0 = R[k0], o1 = R[k0 + 1];
     if (w < 1e-6) return o0 || null;
     if (!o0 || !o1) return (w < 0.5 ? o0 : o1) || null;
-    return { f: o0.f + w * (o1.f - o0.f), spd: o0.spd + w * ((o1.spd || 0) - (o0.spd || 0)), dir: w < 0.5 ? o0.dir : o1.dir };
+    return { f: o0.f + w * (o1.f - o0.f), g: (o0.g || 0) + w * ((o1.g || 0) - (o0.g || 0)), spd: o0.spd + w * ((o1.spd || 0) - (o0.spd || 0)), dir: w < 0.5 ? o0.dir : o1.dir };
   }
   // x = a's sample, y = b's sample; ds/dc hold direction(b) - direction(a)
   Relations.prototype._add = function (P, ix, x, y) {
@@ -494,7 +511,8 @@
    */
   Relations.prototype.fieldLead = function (id, sector, opts) {
     opts = opts || {};
-    var minN = opts.minN || 120, NB = this.NB, L = this.L, F = this.F[id + '|' + sector]; if (!F) return null;
+    // opts.dir: direction shifts instead of speed gusts
+    var ch = opts.dir ? '|d' : '', minN = opts.minN || 120, NB = this.NB, L = this.L, F = this.F[id + '|' + sector + ch]; if (!F) return null;
     var rAt = function (i) { var d = Math.sqrt(F.aa[i] * F.bb[i]); return F.n[i] && d > 0 ? F.ab[i] / d : 0; };
     var best = -1, bestR = -2;
     for (var i = 0; i <= 2 * NB; i++) {
@@ -509,10 +527,11 @@
       if (den < -1e-9) dj = Math.max(-0.5, Math.min(0.5, 0.5 * (r0 - r2) / den));
     }
     var yd = (best - NB + dj) * REL_BIN, mph = Math.max(0.5, this.speed(sector) || 10), lagF = yd / (mph * YD_PER_S_PER_MPH);
-    var FA = this.FA[id + '|' + sector], fac = function (j) { if (!FA || !FA.n[0] || !FA.n[j]) return 0; var c0 = FA.c[0] / FA.n[0]; return c0 > 0 ? (FA.c[j] / FA.n[j]) / c0 : 0; };
-    var T = 1; for (var j = 1; j <= L; j++) T += 2 * this.autoCorr(id, sector, j) * fac(j);
+    var acOf = function (X) { return function (j) { if (!X || !X.n[0] || !X.n[j]) return 0; var c0 = X.c[0] / X.n[0]; return c0 > 0 ? (X.c[j] / X.n[j]) / c0 : 0; }; };
+    var fac = acOf(this.FA[id + '|' + sector + ch]), me = this, own = opts.dir ? acOf(this.FA[id + '|' + sector + '|dm']) : function (j) { return me.autoCorr(id, sector, j); };
+    var T = 1; for (var j = 1; j <= L; j++) T += 2 * own(j) * fac(j);
     var n = F.n[best], neff = Math.max(4, n / Math.max(1, T)), se = 1 / Math.sqrt(Math.max(1, neff - 3));
-    var lag = Math.round(Math.abs(lagF)), rPers = yd > 0 ? fac(Math.min(L, lag)) : this.autoCorr(id, sector, Math.min(L, lag));
+    var lag = Math.round(Math.abs(lagF)), rPers = yd > 0 ? fac(Math.min(L, lag)) : own(Math.min(L, lag));
     return { id: id, alongYd: Math.round(yd), lagS: Math.round(lagF), lagF: lagF, atMph: mph, r: bestR, rNow: F.n[NB] ? rAt(NB) : null, n: n, neff: neff, se: se,
              significant: bestR > 3 * se, rPersist: rPers, skill: bestR - Math.max(0, rPers), gain: F.aa[best] > 0 ? F.ab[best] / F.aa[best] : 0 };
   };
