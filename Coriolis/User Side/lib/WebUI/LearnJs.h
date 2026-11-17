@@ -9,7 +9,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define LEARN_BUILD "dba2833e91"   // sent as X-Learn-Build on /windsec
+#define LEARN_BUILD "7f853b0740"   // sent as X-Learn-Build on /windsec
 
 static const char LEARN_HTML[] PROGMEM = R"LEARNHTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1331,29 +1331,55 @@ $('tH').onchange = function () { var v = parseFloat($('tH').value); if (v > 0) S
 $('follow').onchange = function () { ST.follow = $('follow').checked; };
 
 // -------------------------------------------------------------- sessions
-var LSK = 'windLearningRange.sessions';
-function lsGet() { try { return JSON.parse(localStorage.getItem(LSK) || '{}'); } catch (e) { return {}; } }
-function lsSet(o) { try { localStorage.setItem(LSK, JSON.stringify(o)); return true; } catch (e) { return false; } }
+// Each saved session is its own packed key (WL.zpack, about 1/5 the size of
+// its JSON) plus a small index, so a save writes one session, not all of them.
+// Sessions saved by older pages (all in one key) move over on first use.
+var LSK = 'windLearningRange.sessions', LSI = 'windLearningRange.sessIndex', LSP = 'windLearningRange.s:';
+function sessIndex() {
+  sessMigrate();
+  try { return JSON.parse(lsRead(LSI) || '{}') || {}; } catch (e) { return {}; }
+}
+function sessGet(n) { var z = lsRead(LSP + n); if (z == null) return null; try { return JSON.parse(WL.zunpack(z)); } catch (e) { return null; } }
+function sessPut(n, o, idx) {
+  var z; try { z = WL.zpack(JSON.stringify(o)); } catch (e) { return false; }
+  idx = idx || sessIndex();
+  if (!lsWrite(LSP + n, z)) return false;
+  idx[n] = { savedAt: o.savedAt || '', shots: (o.shots || []).length, mode: o.mode || 'sim' };
+  if (lsWrite(LSI, JSON.stringify(idx))) return true;
+  lsWrite(LSP + n, null); return false;
+}
+function sessDel(n) { var idx = sessIndex(); delete idx[n]; lsWrite(LSP + n, null); lsWrite(LSI, JSON.stringify(idx)); }
+function sessMigrate() {
+  var raw = lsRead(LSK); if (raw == null) return;
+  var old; try { old = JSON.parse(raw) || {}; } catch (e) { old = {}; }
+  var idx; try { idx = JSON.parse(lsRead(LSI) || '{}') || {}; } catch (e) { idx = {}; }
+  for (var pass = 0; pass < 2; pass++) {
+    Object.keys(old).forEach(function (n) {
+      if (idx[n] && (idx[n].savedAt || '') >= (old[n].savedAt || '')) { delete old[n]; return; }
+      if (sessPut(n, old[n], idx)) delete old[n];
+    });
+    if (!Object.keys(old).length) { lsWrite(LSK, null); return; }
+    lsWrite(LSK, JSON.stringify(old)); // smaller now, which frees room for a second pass
+  }
+}
 function snapshot(noLog) { var o = JSON.parse(JSON.stringify(noLog ? Object.assign({}, ST, { windLog: [] }) : ST)); o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.forecaster = RT.fc.toJSON(); o.savedAt = new Date().toISOString(); o.simT = ST.mode === 'live' ? 0 : RT.t; o.kind = 'coriolis-learn-session'; return o; }
 // Big live wind logs may not fit in browser storage: then the session is kept
 // without its raw 1 s log (the model and relationships still hold what it learned).
 function saveSession(n, quiet) {
-  var all = lsGet(); all[n] = snapshot();
-  if (lsSet(all)) { if (!quiet) toast('Saved "' + n + '".'); renderSessions(); return true; }
-  all[n] = snapshot(true);
-  var ok = lsSet(all);
+  if (sessPut(n, snapshot())) { if (!quiet) toast('Saved "' + n + '".'); renderSessions(); return true; }
+  var ok = sessPut(n, snapshot(true));
   if (!quiet) toast(ok ? 'Saved "' + n + '" without its raw wind log (too big for the browser). Download the session file to keep the log.' : 'This browser blocked saving. Use "Download session file" instead.');
   renderSessions(); return ok;
 }
 function renderSessions() {
-  var all = lsGet(), names = Object.keys(all).sort(function (a, b) { return (all[b].savedAt || '').localeCompare(all[a].savedAt || ''); });
+  var all = sessIndex(), names = Object.keys(all).sort(function (a, b) { return (all[b].savedAt || '').localeCompare(all[a].savedAt || ''); });
   var h = '<thead><tr><th>Saved session</th><th>Shots</th><th>Saved</th><th></th></tr></thead><tbody>';
-  names.forEach(function (n) { var s = all[n]; h += '<tr><td>' + esc(n) + '<div class="muted">' + (s.mode === 'live' ? 'live' : 'practice') + '</div></td><td class="n">' + (s.shots || []).length + '</td><td class="n">' + esc((s.savedAt || '').slice(0, 16).replace('T', ' ')) + '</td><td><button class="btn" data-sl="' + esc(n) + '">Load</button> <button class="btn" data-sd="' + esc(n) + '">Delete</button></td></tr>'; });
+  names.forEach(function (n) { var s = all[n]; h += '<tr><td>' + esc(n) + '<div class="muted">' + (s.mode === 'live' ? 'live' : 'practice') + '</div></td><td class="n">' + (+s.shots || 0) + '</td><td class="n">' + esc((s.savedAt || '').slice(0, 16).replace('T', ' ')) + '</td><td><button class="btn" data-sl="' + esc(n) + '">Load</button> <button class="btn" data-sd="' + esc(n) + '">Delete</button></td></tr>'; });
   $('sessTbl').innerHTML = h + (names.length ? '' : '<tr><td colspan="4" class="muted">Nothing saved in this browser yet.</td></tr>') + '</tbody>';
 }
 $('sessSave').onclick = function () { saveSession($('sessName').value.trim() || ((ST.mode === 'live' ? 'Live ' : 'Range ') + new Date().toLocaleString()), false); };
 $('sessDownload').onclick = function () { var n = $('sessName').value.trim() || ((ST.mode === 'live' ? 'Live ' : 'Range ') + new Date().toISOString().slice(0, 16)); download(fileName(n, '.session.json'), snapshot()); };
-$('sessTbl').addEventListener('click', function (e) { var d = e.target.dataset, all = lsGet(); if (d.sl && all[d.sl]) { load(all[d.sl]); toast('Loaded "' + d.sl + '".'); } if (d.sd) { delete all[d.sd]; lsSet(all); renderSessions(); } });
+$('sessTbl').addEventListener('click', function (e) { var d = e.target.dataset, o; if (d.sl) { o = sessGet(d.sl); if (o) { load(o); toast('Loaded "' + d.sl + '".'); } else toast('That session could not be read.'); } if (d.sd) { sessDel(d.sd); renderSessions(); } });
 $('sessCopy').onclick = function () { var txt = JSON.stringify(snapshot()); $('sessText').value = txt; try { navigator.clipboard.writeText(txt).then(function () { toast('Copied. Paste it into a file or another device.'); }, function () { $('sessText').select(); toast('Select the text below and copy it.'); }); } catch (e) { $('sessText').select(); } };
 $('sessLoadText').onclick = function () { try { load(JSON.parse($('sessText').value)); toast('Session loaded.'); } catch (e) { toast('That text is not a session. Paste the whole thing.'); } };
 $('sessFile').onchange = function (e) { var f = e.target.files[0]; if (!f) return; var r = new FileReader(); r.onload = function () { try { load(JSON.parse(r.result)); toast('Loaded ' + f.name + '.'); } catch (x) { toast('That file is not a session.'); } }; r.readAsText(f); };
@@ -1389,7 +1415,7 @@ function sessNewLoad(forget) {
 // keeps its own history (the base holds about two minutes), learns from your
 // real shots and plots, and learns how the meters relate as the wind blows.
 // which build of this page this is ('__' + 'LEARN_BUILD__' when not served by a base)
-var PAGE_BUILD = 'dba2833e91';
+var PAGE_BUILD = '7f853b0740';
 var LIVE = { timer: null, since: null, baseNow: 0, at: 0, utc: null, data: null, ok: false, lastOk: 0, busy: false, unplaced: [], lastSave: 0 };
 var YD_PER_DEG = 111319.4908 * 1.0936133;
 function liveClock() { return LIVE.at ? (LIVE.baseNow + (Date.now() - LIVE.at)) / 1000 : 0; }
@@ -1490,7 +1516,8 @@ async function livePoll() {
   } catch (e) { if (gone()) return; LIVE.ok = false; }
   if (LIVE.ok && Date.now() - (LIVE.leadAt || 0) > 10000) { LIVE.leadAt = Date.now(); refreshLeaders(); }
   LIVE.busy = false; renderLiveStat();
-  if (LIVE.ok && Date.now() - LIVE.lastSave > 60000) { LIVE.lastSave = Date.now(); autosave(); }
+  // save every minute; a big range that takes long to pack (10 meters on a slow tablet) saves less often, up to every 5 min
+  if (LIVE.ok && Date.now() - LIVE.lastSave > Math.min(300000, Math.max(60000, 400 * (LIVE.saveMs || 0)))) { var t0 = Date.now(); autosave(); LIVE.saveMs = Date.now() - t0; LIVE.lastSave = Date.now(); }
 }
 // The base was reflashed with a different Learn page while this one stayed
 // open: save, then load the new page (once per build, so a cached old page
@@ -1543,7 +1570,7 @@ function autosave() { saveSession(AUTOSAVE[ST.mode], true); }
 function setMode(m) {
   if (m === ST.mode) return;
   autosave();
-  var all = lsGet(), o = all[AUTOSAVE[m]];
+  var o = sessGet(AUTOSAVE[m]);
   if (!o) {
     o = defaultState(); o.mode = m; o.settings = Object.assign(o.settings, { mv: ST.settings.mv, bc: ST.settings.bc, rifleSd: ST.settings.rifleSd });
     if (m === 'live') {
@@ -1839,7 +1866,7 @@ function frame(ts) {
 }
 (function boot() {
   var o = null;
-  if (lsRead('windLearningRange.mode') === 'live') { o = lsGet()[AUTOSAVE.live] || null; if (!o) { o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live.az = parseFloat(lsRead('fireAz')) || 0; o.live.rangeYd = parseFloat(lsRead('sol_range')) || 800; } }
+  if (lsRead('windLearningRange.mode') === 'live') { o = sessGet(AUTOSAVE.live); if (!o) { o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live.az = parseFloat(lsRead('fireAz')) || 0; o.live.rangeYd = parseFloat(lsRead('sol_range')) || 800; } }
   load(o || ST);
 })();
 window.addEventListener('pagehide', function () { if (ST.mode === 'live') autosave(); });
@@ -2509,6 +2536,62 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     var U = {}; for (var u in this.U) U[u] = this.U[u].map(round6);
     return { kind: 'dist', D: this.NB * REL_BIN, tau: this.tau, P: pack(this.P), A: pack(this.A), F: pack(this.F), FA: pack(this.FA), M: M, U: U, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
   };
+
+  /*
+   * Compact text for browser storage: LZW over the UTF-8 bytes, codes packed
+   * 15 bits to a character (32..0x801F, never a surrogate), so a saved
+   * session takes about a fifth of the room. Synchronous, so a save on
+   * page close still finishes. zpack(str) -> 'Z1' + length + ':' + data.
+   */
+  var ZPOW = []; for (var zp = 0; zp <= 36; zp++) ZPOW.push(Math.pow(2, zp));
+  function zchars(u16, n) { var parts = [], CH = 8192; for (var i = 0; i < n; i += CH) parts.push(String.fromCharCode.apply(null, u16.subarray(i, Math.min(n, i + CH)))); return parts.join(''); }
+  function zpack(str) {
+    var b = unescape(encodeURIComponent(str)), n = b.length, MAX = 1 << 20;
+    if (!n) return 'Z10:';
+    // dictionary: open-addressed hash of (code, next byte) -> code, in typed arrays
+    var bits = 10; while ((1 << bits) < 2 * Math.min(n, MAX) && bits < 21) bits++;
+    var slots = 1 << bits, shift = 32 - bits, keys = new Int32Array(slots).fill(-1), vals = new Int32Array(slots), mask = slots - 1;
+    var out = new Uint16Array(Math.ceil(n * 20 / 15) + 2), oi = 0, acc = 0, nb = 0, width = 9, next = 256;
+    var w = b.charCodeAt(0);
+    for (var i = 1; i <= n; i++) {
+      var c = -1, h = 0;
+      if (i < n) {
+        c = b.charCodeAt(i);
+        var key = (w << 8) | c; h = Math.imul(key, 0x9E3779B1) >>> shift;
+        while (keys[h] !== -1 && keys[h] !== key) h = (h + 1) & mask;
+        if (keys[h] === key) { w = vals[h]; continue; }
+      }
+      // write w, width bits, most significant first, 15 bits to a character
+      acc = acc * ZPOW[width] + w; nb += width;
+      while (nb >= 15) { nb -= 15; var t = Math.floor(acc / ZPOW[nb]); out[oi++] = t + 32; acc -= t * ZPOW[nb]; }
+      if (c < 0) break;
+      if (next < MAX) { keys[h] = (w << 8) | c; vals[h] = next++; if (next > (1 << width) && width < 20) width++; }
+      w = c;
+    }
+    if (nb) out[oi++] = acc * ZPOW[15 - nb] + 32;
+    return 'Z1' + n + ':' + zchars(out, oi);
+  }
+  function zunpack(z) {
+    if (z.slice(0, 2) !== 'Z1') return z;
+    var colon = z.indexOf(':'), n = +z.slice(2, colon), pos = colon + 1, acc = 0, nb = 0, width = 9, next = 256, MAX = 1 << 20;
+    var cap = Math.min(MAX, n + 257);
+    var pre = new Int32Array(cap), suf = new Uint8Array(cap), first = new Uint8Array(cap), len = new Int32Array(cap);
+    for (var q = 0; q < 256; q++) { pre[q] = -1; suf[q] = q; first[q] = q; len[q] = 1; }
+    var out = new Uint8Array(n), o = 0, prev = -1;
+    while (o < n) {
+      while (nb < width) { acc = acc * 32768 + (z.charCodeAt(pos++) - 32); nb += 15; }
+      nb -= width; var code = Math.floor(acc / ZPOW[nb]); acc -= code * ZPOW[nb];
+      if (prev >= 0) {
+        // the entry the packer made after the last code: last string + first byte of this one
+        var fc = code < next ? first[code] : first[prev];
+        if (next < MAX) { pre[next] = prev; suf[next] = fc; first[next] = first[prev]; len[next] = len[prev] + 1; next++; }
+      }
+      var L = len[code], at = o + L - 1; for (var e = code; e >= 0; e = pre[e]) out[at--] = suf[e]; o += L;
+      prev = code;
+      if (next + 1 > (1 << width) && width < 20 && next < MAX) width++;
+    }
+    return decodeURIComponent(escape(zchars(out, n)));
+  }
 
   // ------------------------------------------------------------- forecaster
   /*
@@ -3340,6 +3423,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
   }
 
   root.WindLearner = {
+    zpack: zpack, zunpack: zunpack,
     YD_PER_S_PER_MPH: YD_PER_S_PER_MPH, SECTORS: SECTORS, SECTOR_NAMES: SECTOR_NAMES,
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,

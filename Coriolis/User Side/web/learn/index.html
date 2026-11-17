@@ -1316,29 +1316,55 @@ $('tH').onchange = function () { var v = parseFloat($('tH').value); if (v > 0) S
 $('follow').onchange = function () { ST.follow = $('follow').checked; };
 
 // -------------------------------------------------------------- sessions
-var LSK = 'windLearningRange.sessions';
-function lsGet() { try { return JSON.parse(localStorage.getItem(LSK) || '{}'); } catch (e) { return {}; } }
-function lsSet(o) { try { localStorage.setItem(LSK, JSON.stringify(o)); return true; } catch (e) { return false; } }
+// Each saved session is its own packed key (WL.zpack, about 1/5 the size of
+// its JSON) plus a small index, so a save writes one session, not all of them.
+// Sessions saved by older pages (all in one key) move over on first use.
+var LSK = 'windLearningRange.sessions', LSI = 'windLearningRange.sessIndex', LSP = 'windLearningRange.s:';
+function sessIndex() {
+  sessMigrate();
+  try { return JSON.parse(lsRead(LSI) || '{}') || {}; } catch (e) { return {}; }
+}
+function sessGet(n) { var z = lsRead(LSP + n); if (z == null) return null; try { return JSON.parse(WL.zunpack(z)); } catch (e) { return null; } }
+function sessPut(n, o, idx) {
+  var z; try { z = WL.zpack(JSON.stringify(o)); } catch (e) { return false; }
+  idx = idx || sessIndex();
+  if (!lsWrite(LSP + n, z)) return false;
+  idx[n] = { savedAt: o.savedAt || '', shots: (o.shots || []).length, mode: o.mode || 'sim' };
+  if (lsWrite(LSI, JSON.stringify(idx))) return true;
+  lsWrite(LSP + n, null); return false;
+}
+function sessDel(n) { var idx = sessIndex(); delete idx[n]; lsWrite(LSP + n, null); lsWrite(LSI, JSON.stringify(idx)); }
+function sessMigrate() {
+  var raw = lsRead(LSK); if (raw == null) return;
+  var old; try { old = JSON.parse(raw) || {}; } catch (e) { old = {}; }
+  var idx; try { idx = JSON.parse(lsRead(LSI) || '{}') || {}; } catch (e) { idx = {}; }
+  for (var pass = 0; pass < 2; pass++) {
+    Object.keys(old).forEach(function (n) {
+      if (idx[n] && (idx[n].savedAt || '') >= (old[n].savedAt || '')) { delete old[n]; return; }
+      if (sessPut(n, old[n], idx)) delete old[n];
+    });
+    if (!Object.keys(old).length) { lsWrite(LSK, null); return; }
+    lsWrite(LSK, JSON.stringify(old)); // smaller now, which frees room for a second pass
+  }
+}
 function snapshot(noLog) { var o = JSON.parse(JSON.stringify(noLog ? Object.assign({}, ST, { windLog: [] }) : ST)); o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.forecaster = RT.fc.toJSON(); o.savedAt = new Date().toISOString(); o.simT = ST.mode === 'live' ? 0 : RT.t; o.kind = 'coriolis-learn-session'; return o; }
 // Big live wind logs may not fit in browser storage: then the session is kept
 // without its raw 1 s log (the model and relationships still hold what it learned).
 function saveSession(n, quiet) {
-  var all = lsGet(); all[n] = snapshot();
-  if (lsSet(all)) { if (!quiet) toast('Saved "' + n + '".'); renderSessions(); return true; }
-  all[n] = snapshot(true);
-  var ok = lsSet(all);
+  if (sessPut(n, snapshot())) { if (!quiet) toast('Saved "' + n + '".'); renderSessions(); return true; }
+  var ok = sessPut(n, snapshot(true));
   if (!quiet) toast(ok ? 'Saved "' + n + '" without its raw wind log (too big for the browser). Download the session file to keep the log.' : 'This browser blocked saving. Use "Download session file" instead.');
   renderSessions(); return ok;
 }
 function renderSessions() {
-  var all = lsGet(), names = Object.keys(all).sort(function (a, b) { return (all[b].savedAt || '').localeCompare(all[a].savedAt || ''); });
+  var all = sessIndex(), names = Object.keys(all).sort(function (a, b) { return (all[b].savedAt || '').localeCompare(all[a].savedAt || ''); });
   var h = '<thead><tr><th>Saved session</th><th>Shots</th><th>Saved</th><th></th></tr></thead><tbody>';
-  names.forEach(function (n) { var s = all[n]; h += '<tr><td>' + esc(n) + '<div class="muted">' + (s.mode === 'live' ? 'live' : 'practice') + '</div></td><td class="n">' + (s.shots || []).length + '</td><td class="n">' + esc((s.savedAt || '').slice(0, 16).replace('T', ' ')) + '</td><td><button class="btn" data-sl="' + esc(n) + '">Load</button> <button class="btn" data-sd="' + esc(n) + '">Delete</button></td></tr>'; });
+  names.forEach(function (n) { var s = all[n]; h += '<tr><td>' + esc(n) + '<div class="muted">' + (s.mode === 'live' ? 'live' : 'practice') + '</div></td><td class="n">' + (+s.shots || 0) + '</td><td class="n">' + esc((s.savedAt || '').slice(0, 16).replace('T', ' ')) + '</td><td><button class="btn" data-sl="' + esc(n) + '">Load</button> <button class="btn" data-sd="' + esc(n) + '">Delete</button></td></tr>'; });
   $('sessTbl').innerHTML = h + (names.length ? '' : '<tr><td colspan="4" class="muted">Nothing saved in this browser yet.</td></tr>') + '</tbody>';
 }
 $('sessSave').onclick = function () { saveSession($('sessName').value.trim() || ((ST.mode === 'live' ? 'Live ' : 'Range ') + new Date().toLocaleString()), false); };
 $('sessDownload').onclick = function () { var n = $('sessName').value.trim() || ((ST.mode === 'live' ? 'Live ' : 'Range ') + new Date().toISOString().slice(0, 16)); download(fileName(n, '.session.json'), snapshot()); };
-$('sessTbl').addEventListener('click', function (e) { var d = e.target.dataset, all = lsGet(); if (d.sl && all[d.sl]) { load(all[d.sl]); toast('Loaded "' + d.sl + '".'); } if (d.sd) { delete all[d.sd]; lsSet(all); renderSessions(); } });
+$('sessTbl').addEventListener('click', function (e) { var d = e.target.dataset, o; if (d.sl) { o = sessGet(d.sl); if (o) { load(o); toast('Loaded "' + d.sl + '".'); } else toast('That session could not be read.'); } if (d.sd) { sessDel(d.sd); renderSessions(); } });
 $('sessCopy').onclick = function () { var txt = JSON.stringify(snapshot()); $('sessText').value = txt; try { navigator.clipboard.writeText(txt).then(function () { toast('Copied. Paste it into a file or another device.'); }, function () { $('sessText').select(); toast('Select the text below and copy it.'); }); } catch (e) { $('sessText').select(); } };
 $('sessLoadText').onclick = function () { try { load(JSON.parse($('sessText').value)); toast('Session loaded.'); } catch (e) { toast('That text is not a session. Paste the whole thing.'); } };
 $('sessFile').onchange = function (e) { var f = e.target.files[0]; if (!f) return; var r = new FileReader(); r.onload = function () { try { load(JSON.parse(r.result)); toast('Loaded ' + f.name + '.'); } catch (x) { toast('That file is not a session.'); } }; r.readAsText(f); };
@@ -1475,7 +1501,8 @@ async function livePoll() {
   } catch (e) { if (gone()) return; LIVE.ok = false; }
   if (LIVE.ok && Date.now() - (LIVE.leadAt || 0) > 10000) { LIVE.leadAt = Date.now(); refreshLeaders(); }
   LIVE.busy = false; renderLiveStat();
-  if (LIVE.ok && Date.now() - LIVE.lastSave > 60000) { LIVE.lastSave = Date.now(); autosave(); }
+  // save every minute; a big range that takes long to pack (10 meters on a slow tablet) saves less often, up to every 5 min
+  if (LIVE.ok && Date.now() - LIVE.lastSave > Math.min(300000, Math.max(60000, 400 * (LIVE.saveMs || 0)))) { var t0 = Date.now(); autosave(); LIVE.saveMs = Date.now() - t0; LIVE.lastSave = Date.now(); }
 }
 // The base was reflashed with a different Learn page while this one stayed
 // open: save, then load the new page (once per build, so a cached old page
@@ -1528,7 +1555,7 @@ function autosave() { saveSession(AUTOSAVE[ST.mode], true); }
 function setMode(m) {
   if (m === ST.mode) return;
   autosave();
-  var all = lsGet(), o = all[AUTOSAVE[m]];
+  var o = sessGet(AUTOSAVE[m]);
   if (!o) {
     o = defaultState(); o.mode = m; o.settings = Object.assign(o.settings, { mv: ST.settings.mv, bc: ST.settings.bc, rifleSd: ST.settings.rifleSd });
     if (m === 'live') {
@@ -1824,7 +1851,7 @@ function frame(ts) {
 }
 (function boot() {
   var o = null;
-  if (lsRead('windLearningRange.mode') === 'live') { o = lsGet()[AUTOSAVE.live] || null; if (!o) { o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live.az = parseFloat(lsRead('fireAz')) || 0; o.live.rangeYd = parseFloat(lsRead('sol_range')) || 800; } }
+  if (lsRead('windLearningRange.mode') === 'live') { o = sessGet(AUTOSAVE.live); if (!o) { o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live.az = parseFloat(lsRead('fireAz')) || 0; o.live.rangeYd = parseFloat(lsRead('sol_range')) || 800; } }
   load(o || ST);
 })();
 window.addEventListener('pagehide', function () { if (ST.mode === 'live') autosave(); });

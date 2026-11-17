@@ -659,6 +659,62 @@
     return { kind: 'dist', D: this.NB * REL_BIN, tau: this.tau, P: pack(this.P), A: pack(this.A), F: pack(this.F), FA: pack(this.FA), M: M, U: U, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
   };
 
+  /*
+   * Compact text for browser storage: LZW over the UTF-8 bytes, codes packed
+   * 15 bits to a character (32..0x801F, never a surrogate), so a saved
+   * session takes about a fifth of the room. Synchronous, so a save on
+   * page close still finishes. zpack(str) -> 'Z1' + length + ':' + data.
+   */
+  var ZPOW = []; for (var zp = 0; zp <= 36; zp++) ZPOW.push(Math.pow(2, zp));
+  function zchars(u16, n) { var parts = [], CH = 8192; for (var i = 0; i < n; i += CH) parts.push(String.fromCharCode.apply(null, u16.subarray(i, Math.min(n, i + CH)))); return parts.join(''); }
+  function zpack(str) {
+    var b = unescape(encodeURIComponent(str)), n = b.length, MAX = 1 << 20;
+    if (!n) return 'Z10:';
+    // dictionary: open-addressed hash of (code, next byte) -> code, in typed arrays
+    var bits = 10; while ((1 << bits) < 2 * Math.min(n, MAX) && bits < 21) bits++;
+    var slots = 1 << bits, shift = 32 - bits, keys = new Int32Array(slots).fill(-1), vals = new Int32Array(slots), mask = slots - 1;
+    var out = new Uint16Array(Math.ceil(n * 20 / 15) + 2), oi = 0, acc = 0, nb = 0, width = 9, next = 256;
+    var w = b.charCodeAt(0);
+    for (var i = 1; i <= n; i++) {
+      var c = -1, h = 0;
+      if (i < n) {
+        c = b.charCodeAt(i);
+        var key = (w << 8) | c; h = Math.imul(key, 0x9E3779B1) >>> shift;
+        while (keys[h] !== -1 && keys[h] !== key) h = (h + 1) & mask;
+        if (keys[h] === key) { w = vals[h]; continue; }
+      }
+      // write w, width bits, most significant first, 15 bits to a character
+      acc = acc * ZPOW[width] + w; nb += width;
+      while (nb >= 15) { nb -= 15; var t = Math.floor(acc / ZPOW[nb]); out[oi++] = t + 32; acc -= t * ZPOW[nb]; }
+      if (c < 0) break;
+      if (next < MAX) { keys[h] = (w << 8) | c; vals[h] = next++; if (next > (1 << width) && width < 20) width++; }
+      w = c;
+    }
+    if (nb) out[oi++] = acc * ZPOW[15 - nb] + 32;
+    return 'Z1' + n + ':' + zchars(out, oi);
+  }
+  function zunpack(z) {
+    if (z.slice(0, 2) !== 'Z1') return z;
+    var colon = z.indexOf(':'), n = +z.slice(2, colon), pos = colon + 1, acc = 0, nb = 0, width = 9, next = 256, MAX = 1 << 20;
+    var cap = Math.min(MAX, n + 257);
+    var pre = new Int32Array(cap), suf = new Uint8Array(cap), first = new Uint8Array(cap), len = new Int32Array(cap);
+    for (var q = 0; q < 256; q++) { pre[q] = -1; suf[q] = q; first[q] = q; len[q] = 1; }
+    var out = new Uint8Array(n), o = 0, prev = -1;
+    while (o < n) {
+      while (nb < width) { acc = acc * 32768 + (z.charCodeAt(pos++) - 32); nb += 15; }
+      nb -= width; var code = Math.floor(acc / ZPOW[nb]); acc -= code * ZPOW[nb];
+      if (prev >= 0) {
+        // the entry the packer made after the last code: last string + first byte of this one
+        var fc = code < next ? first[code] : first[prev];
+        if (next < MAX) { pre[next] = prev; suf[next] = fc; first[next] = first[prev]; len[next] = len[prev] + 1; next++; }
+      }
+      var L = len[code], at = o + L - 1; for (var e = code; e >= 0; e = pre[e]) out[at--] = suf[e]; o += L;
+      prev = code;
+      if (next + 1 > (1 << width) && width < 20 && next < MAX) width++;
+    }
+    return decodeURIComponent(escape(zchars(out, n)));
+  }
+
   // ------------------------------------------------------------- forecaster
   /*
    * Short-range wind forecast for every meter, trained on the meters alone:
@@ -1489,6 +1545,7 @@
   }
 
   root.WindLearner = {
+    zpack: zpack, zunpack: zunpack,
     YD_PER_S_PER_MPH: YD_PER_S_PER_MPH, SECTORS: SECTORS, SECTOR_NAMES: SECTOR_NAMES,
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,

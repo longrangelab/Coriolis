@@ -464,6 +464,21 @@ ok('layout pairs: each meter gets the meter straight upwind, from GPS spots alon
 });
 
 // ---- the page: served like the base serves it, no internet, no console errors
+// ---- saved-session codec: exact round trip, smaller, safe to store
+ok('zpack/zunpack: exact round trip on text, unicode and past the dictionary limit', () => {
+  let r = 12345; const rnd = () => (r = (r * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const json = JSON.stringify({ a: Array.from({ length: 4000 }, (_, i) => ({ t: i, s: +(8 + 3 * Math.sin(i / 9)).toFixed(3), d: 270 })) });
+  const noise = Array.from({ length: 1200000 }, () => String.fromCharCode(32 + Math.floor(rnd() * 90))).join('');
+  for (const str of ['', 'a', 'aaaaaaaaaaaaaaaa', 'ünïcode ✓ 风 😀 \u0000 end', json, noise]) {
+    const z = WL.zpack(str);
+    assert(/^Z1\d+:/.test(z), 'tagged');
+    assert(!/[\ud800-\udfff]/.test(z), 'no lone surrogates (storage-safe)');
+    assert.strictEqual(WL.zunpack(z), str, 'round trip, length ' + str.length);
+  }
+  assert(WL.zpack(json).length < json.length * 0.3, 'wind-like JSON packs small');
+  assert.strictEqual(WL.zunpack('{"plain":1}'), '{"plain":1}', 'unpacked text passes through');
+});
+
 async function pageTest() {
   const { chromium } = require('playwright');
   // a mock base station: three meters on GPS north of the base; meter 2's
@@ -595,6 +610,22 @@ async function pageTest() {
   await p.waitForTimeout(2500);
   assert.strictEqual(pageLoads, loads0 + 1, 'no reload loop when the page is still the old one');
   assert(/newer Learn page/.test(await p.textContent('#toast')), 'says the base has a newer page');
+  // saved sessions: one packed key each plus an index; saves from older pages (all in one key) move over
+  const ss = await p.evaluate(() => {
+    const K = 'windLearningRange.s:', old = snapshot(); old.savedAt = '2020-01-02T03:04:00.000Z';
+    localStorage.setItem('windLearningRange.sessions', JSON.stringify({ 'Old one': old }));
+    renderSessions();
+    const moved = !localStorage.getItem('windLearningRange.sessions') && /Old one/.test($('sessTbl').textContent) && /^Z1/.test(localStorage.getItem(K + 'Old one'));
+    const back = sessGet('Old one'), same = JSON.stringify(back) === JSON.stringify(old);
+    $('sessName').value = 'Kept ünïcode'; $('sessSave').click();
+    const z = localStorage.getItem(K + 'Kept ünïcode'), ratio = z.length / JSON.stringify(sessGet('Kept ünïcode')).length;
+    document.querySelector('#sessTbl button[data-sl="Old one"]').click();
+    const loaded = ST.mode === old.mode && ST.shots.length === old.shots.length;
+    document.querySelector('#sessTbl button[data-sd="Kept ünïcode"]').click();
+    const del = localStorage.getItem(K + 'Kept ünïcode') === null && !/Kept/.test($('sessTbl').textContent) && !JSON.parse(localStorage.getItem('windLearningRange.sessIndex'))['Kept ünïcode'];
+    return { moved, same, ratio, loaded, del };
+  });
+  assert(ss.moved && ss.same && ss.loaded && ss.del && ss.ratio < 0.5, 'sessions: packed one per key, old saves moved over, load and delete ' + JSON.stringify(ss));
   await b.close(); server.close();
   assert.deepStrictEqual(errs, []);
   pass++; console.log('ok  Learn page: offline at phone width, Fire 25 trains, relations, model to Wind Lab, live mode on a mock base');
