@@ -767,7 +767,7 @@ function getMult(id){
   if(lp&&lp.row.mult&&lp.row.mult[id]!==undefined){var lv=parseFloat(lp.row.mult[id]);if(isFinite(lv)&&lv>0)return lv;}
   var m=nodeMults();var v=(m[id]!==undefined)?parseFloat(m[id]):1;return (isFinite(v)&&v>0)?v:1;}
 function setNodeMult(id,v){var m=nodeMults();var f=parseFloat(v);m[id]=(isFinite(f)&&f>0)?f:1;storeMults(m);render();}
-function resetMultsOne(){var ns=(data&&data.nodes)||[];var m={};ns.forEach(function(n){m[n.id]=1;});storeMults(m);renderWeightsPanel(true);render();}
+function resetMultsOne(){if(learnedPick('mult'))return;var ns=(data&&data.nodes)||[];var m={};ns.forEach(function(n){m[n.id]=1;});storeMults(m);renderWeightsPanel(true);render();}
 function weightedAvgWind(){
   var all=(data&&data.nodes&&!liveStale())?data.nodes:[];
   // Drop nodes whose anemometer is dead or whose reading is too old (both arrive
@@ -804,6 +804,7 @@ function weightedAvgWind(){
 }
 function setNodeWeight(id,v){var w=nodeWeights();w[id]=Math.max(0,parseFloat(v)||0);storeWeights(w);updateWeightTotal();render();}
 function resetWeightsEqual(){
+  if(learnedPick('weights'))return;
   var ns=(data&&data.nodes)||[];if(!ns.length)return;
   var each=Math.round((100/ns.length)*10)/10,w={};
   ns.forEach(function(n){w[n.id]=each;});
@@ -830,6 +831,7 @@ function sensReadout(id){
   return dy+' \u00b7 '+r.src+' \u00b7 '+tag;
 }
 async function autoWeights(tries){
+  if(learnedPick('weights'))return;
   if(!data){flash('no data yet');return;}
   var usable=effectiveNodeWeights().nodes.length;
   if(usable<2){renderWeightsPanel(true);flash(usable?'Only one valid wind node: 100% weight':'No valid wind readings');return;}
@@ -939,10 +941,13 @@ function renderWeightsPanel(force){
          '<div id="slbl_'+n.id+'" style="color:var(--dim);font-size:.72rem;margin-top:6px">'+sensReadout(n.id)+'</div>'+
          '</div>';
     });
-    h+='<div class="stepRow"><button class="step" '+(weights.nodes.length<2?'disabled ':'')+'onclick="autoWeights()">Auto from ballistics</button>'+
-       '<button class="step" onclick="resetWeightsEqual()">Equal split</button></div>'+
+    // while the learned model drives weights / multipliers these buttons would
+    // rewrite your own settings kept underneath, unseen: off until "Use my settings"
+    h+='<div class="stepRow"><button class="step" '+(weights.nodes.length<2||lpW?'disabled ':'')+'onclick="autoWeights()">Auto from ballistics</button>'+
+       '<button class="step" '+(lpW?'disabled ':'')+'onclick="resetWeightsEqual()">Equal split</button></div>'+
        '<div class="stepRow"><button class="step" onclick="clearManualDown()">Clear manual downrange</button>'+
-       '<button class="step" onclick="resetMultsOne()">Reset &times;1</button></div>'+
+       '<button class="step" '+(lpM?'disabled ':'')+'onclick="resetMultsOne()">Reset &times;1</button></div>'+
+       ((lpW||lpM)?'<div style="color:var(--dim);font-size:.72rem;margin-top:6px;text-align:center">The learned model is setting '+(lpW&&lpM?'weights and multipliers':lpW?'weights':'multipliers')+'. Tap Use my settings to change your own.</div>':'')+
        '<div id="wTotal" style="color:var(--dim);font-size:.78rem;margin-top:8px;text-align:center"></div>';
     panel.innerHTML=h;
   }else{

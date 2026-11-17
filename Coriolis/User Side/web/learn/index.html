@@ -1302,9 +1302,17 @@ $('sessCopy').onclick = function () { var txt = JSON.stringify(snapshot()); $('s
 $('sessLoadText').onclick = function () { try { load(JSON.parse($('sessText').value)); toast('Session loaded.'); } catch (e) { toast('That text is not a session. Paste the whole thing.'); } };
 $('sessFile').onchange = function (e) { var f = e.target.files[0]; if (!f) return; var r = new FileReader(); r.onload = function () { try { load(JSON.parse(r.result)); toast('Loaded ' + f.name + '.'); } catch (x) { toast('That file is not a session.'); } }; r.readAsText(f); };
 $('sessNew').onclick = function () {
+  // a fresh range keeps how Wind Lab is driven ("Keep Wind Lab updated" and
+  // what the model controls), so Wind Lab doesn't sit on the old model unawares
+  var keep = { drive: Object.assign({}, ST.drive), autoPush: ST.autoPush }, wl = wlOn();
+  sessNewLoad();
+  ST.drive = Object.assign(ST.drive, keep.drive); ST.autoPush = keep.autoPush; renderModel();
+  if (wl) toast(ST.autoPush ? 'Fresh range. Wind Lab will get this new model at the next update.' : 'Fresh range. Wind Lab is still running the model you sent before: send this one or stop it on the Model tab.');
+};
+function sessNewLoad() {
   if (ST.mode === 'live') { var o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live = Object.assign(o.live, { rangeYd: ST.live.rangeYd, az: ST.live.az, roles: ST.live.roles, pos: ST.live.pos }); o.settings = ST.settings; load(o); toast('Fresh live session: no shots, nothing learned yet.'); }
   else { load(defaultState()); toast('Fresh range with the example layout.'); }
-};
+}
 
 // ------------------------------------------------------------- live mode
 // Live: the page is opened from the base (same Wi-Fi as Wind Lab). It reads
@@ -1389,20 +1397,25 @@ function syncNodeEnv(d, baseNowS) {
   RT.nodeEnv = RT.nodeEnv || {};
   (d.nodes || []).forEach(function (n) { var x = liveEnv(n); if (x) RT.nodeEnv[String(n.id)] = { x: x, t: baseNowS - (+n.age || 0) }; });
 }
+// A poll still in flight when you switch to Practice (or load a session)
+// must not land: each await checks the poll still belongs to the live run
+// that started it, else the practice range would get the live meters.
 async function livePoll() {
   if (LIVE.busy || ST.mode !== 'live') return; LIVE.busy = true;
+  var gen = LIVE.gen, gone = function () { return gen !== LIVE.gen || ST.mode !== 'live'; };
   try {
     var r = await fetch('/data.json', { cache: 'no-store' }); if (!r.ok) throw new Error('data');
-    LIVE.data = await r.json(); syncLiveMeters();
+    var d = await r.json(); if (gone()) return;
+    LIVE.data = d; syncLiveMeters();
     var r2 = await fetch('/windsec' + (LIVE.since != null ? '?since=' + LIVE.since : ''), { cache: 'no-store' }); if (!r2.ok) throw new Error('windsec');
-    var j = await r2.json();
+    var j = await r2.json(); if (gone()) return;
     if (LIVE.at && j.now < LIVE.baseNow - 5000) {   // the base restarted: its clock went back to zero
       LIVE.since = null; RT.base = { latest: {}, hist: {} }; RT.align = new WL.SecondAligner(8); RT.rel.rt = {}; RT.rel.lastT = null;
-      if (LIVE.since == null) { var r3 = await fetch('/windsec', { cache: 'no-store' }); j = await r3.json(); }
+      if (LIVE.since == null) { var r3 = await fetch('/windsec', { cache: 'no-store' }); j = await r3.json(); if (gone()) return; }
     }
     LIVE.baseNow = j.now; LIVE.at = Date.now(); LIVE.utc = j.utc; LIVE.ok = true; LIVE.lastOk = Date.now();
     syncNodeEnv(LIVE.data, j.now / 1000); ingestWindSec(j);
-  } catch (e) { LIVE.ok = false; }
+  } catch (e) { if (gone()) return; LIVE.ok = false; }
   if (LIVE.ok && Date.now() - (LIVE.leadAt || 0) > 10000) { LIVE.leadAt = Date.now(); refreshLeaders(); }
   LIVE.busy = false; renderLiveStat();
   if (LIVE.ok && Date.now() - LIVE.lastSave > 60000) { LIVE.lastSave = Date.now(); autosave(); }
@@ -1415,7 +1428,7 @@ function renderLiveStat() {
   else { el.className = 'pill bad'; el.textContent = LIVE.lastOk ? 'lost the base' : 'no base: open this page from the base Wi-Fi'; }
 }
 function startLive() { stopLive(); livePoll(); LIVE.timer = setInterval(livePoll, 2000); }
-function stopLive() { if (LIVE.timer) clearInterval(LIVE.timer); LIVE.timer = null; }
+function stopLive() { if (LIVE.timer) clearInterval(LIVE.timer); LIVE.timer = null; LIVE.gen = (LIVE.gen || 0) + 1; LIVE.busy = false; }
 function renderLiveSetup() {
   $('lvRange').value = ST.live.rangeYd; $('lvAz').value = ST.live.az;
   var h = '<thead><tr><th>Meter</th><th>Spot (yd E, N)</th><th>From</th><th>Use as</th><th>Type a spot</th></tr></thead><tbody>';

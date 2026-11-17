@@ -386,7 +386,12 @@ const skyFile = JSON.stringify({
     setView('avg'); renderWeightsPanel(true);
     const on = { speed: weightedAvgWind().speed, sector: learnedSectorNow(), pairs: sentPairs(), ev: evalSentinel(), enabled: sentinelEnabled(),
       panel: document.getElementById('weightsPanel').textContent, mult1: getMult(1) };
+    // the weight buttons can't rewrite the own settings hidden underneath
+    const btn = t => [...document.querySelectorAll('#weightsPanel button')].find(b => b.textContent === t);
+    on.locked = ['Auto from ballistics', 'Equal split', 'Reset ×1'].every(t => btn(t) && btn(t).disabled);
+    const ownBefore = JSON.stringify([nodeMults(), nodeWeights()]); resetMultsOne(); resetWeightsEqual(); on.ownKept = JSON.stringify([nodeMults(), nodeWeights()]) === ownBefore;
     setLearnedOn(false);
+    on.unlocked = !btn('Equal split').disabled && !btn('Reset ×1').disabled;
     const off = { speed: weightedAvgWind().speed, pairs: sentPairs(), mult1: getMult(1), stored: localStorage.getItem('learnedModel') !== null };
     return { before, on, off };
   });
@@ -394,6 +399,7 @@ const skyFile = JSON.stringify({
   check('Learned model: multiplier and weight drive the wind call (node 1 only, x1.5)', Math.abs(lmRes.on.speed - 12) < 0.01 && lmRes.on.mult1 === 1.5, lmRes.on);
   check('Learned model: Sentinel pairs come from the model, with lag and ratio', lmRes.on.enabled && lmRes.on.pairs.length === 1 && lmRes.on.pairs[0].sentId === 2 && lmRes.on.ev.live[0].lagS === 12 && Math.abs(lmRes.on.ev.live[0].comingMph - 4) < 0.01 && lmRes.on.ev.live[0].agree === false, lmRes.on.ev);
   check('Learned model: Wind Lab says it is driving', /Learned model: Test model/.test(lmRes.on.panel) && /Wind from W/.test(lmRes.on.panel), lmRes.on.panel.slice(0, 300));
+  check('Learned model: Auto / Equal split / Reset x1 are off while it drives, and on again after', lmRes.on.locked && lmRes.on.ownKept && lmRes.on.unlocked, lmRes.on);
   check('Learned model: turning it off puts the own settings back', Math.abs(lmRes.off.speed - lmRes.before) < 1e-9 && lmRes.off.mult1 === 1 && lmRes.off.pairs.length === 1 && lmRes.off.pairs[0].sentId === 3 && lmRes.off.stored, lmRes);
   await A.evaluate(() => { localStorage.removeItem('learnedModel'); localStorage.removeItem('learnedOn'); localStorage.removeItem('sentPairs'); });
 
