@@ -3238,6 +3238,7 @@ public:
         });
         server.on("/windsec", [this]() {
             server.sendHeader("Cache-Control","no-store");
+            server.sendHeader("X-Learn-Build", LEARN_BUILD);   // an open Learn page reloads when this changes
             server.send(200, "application/json", windSecProvider ? windSecProvider(server) : "{\"nodes\":{}}");
         });
         server.onNotFound([this]() { server.send_P(200, "text/html", WEBUI_PAGE); });

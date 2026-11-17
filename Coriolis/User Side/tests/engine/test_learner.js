@@ -6,6 +6,7 @@ const { extract } = require('./load_page_js.js');
 
 const LIB = extract('LearnJs.h', 'LEARNLIB');
 const PAGE = extract('LearnJs.h', 'LEARNHTML');
+const BUILD = /#define LEARN_BUILD "([0-9a-f]+)"/.exec(require('fs').readFileSync(require('path').join(__dirname, '../../lib/WebUI/LearnJs.h'), 'utf8'))[1];
 const ctx = vm.createContext({ Math, JSON, Array, Object });
 ctx.globalThis = ctx;
 vm.runInContext(LIB, ctx, { filename: 'wind-learner.js' });
@@ -309,6 +310,49 @@ ok('wind loop: other sensors are optional inputs that must earn their place', ()
   const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(L.toJSON())));
   assert.strictEqual(JSON.stringify(L2.pool('N', 10).find(c => c.champ).inputs), JSON.stringify(best.inputs));
 });
+// a field-wide gust sweeps the range: F1 feels it first, F2..F4 10-16 s
+// later; each meter adds its own turbulence; Q's air is unrelated
+function fieldRun(T, onSec) {
+  const rr = rng(31), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const C = [], D = []; let c = 0, d = 0; for (let t = 0; t < T + 60; t++) { c = 0.97 * c + 0.2 * gg(); d = 0.985 * d + 0.12 * gg(); C.push(c); D.push(d); }
+  const LAG = { F1: 0, F2: 10, F3: 12, F4: 14, F5: 16 }, loc = { F1: 0, F2: 0, F3: 0, F4: 0, F5: 0, Q: 0 };
+  let q = 0;
+  for (let t = 30; t < T; t++) {
+    const r = {};
+    for (const id in LAG) { loc[id] = 0.9 * loc[id] + 0.9 * gg(); r[id] = { spd: 12 + 3 * C[t + 30 - LAG[id]] + loc[id], dir: 270 + 15 * D[t + 30 - LAG[id]] + 5 * gg() }; }
+    q = 0.97 * q + 0.2 * gg(); r.Q = { spd: 12 + 3 * q + 0.9 * gg(), dir: 270 + 5 * gg() };
+    onSec(t, r);
+  }
+}
+ok('relations: finds the meter that warns the whole field, and the one on its own', () => {
+  const R = new WL.Relations();
+  fieldRun(3600, (t, r) => R.ingest(t, r));
+  const fl = R.fieldLeads(6), by = {}; fl.forEach(x => { by[x.id] = x; });
+  assert.strictEqual(fl[0].id, 'F1', 'F1 leads the list ' + JSON.stringify(fl.map(x => [x.id, x.kind])));
+  assert(by.F1.kind === 'warns the field' && by.F1.q.lagS >= 7 && by.F1.q.lagS <= 15 && by.F1.q.skill > 0.05, 'F1 warns the field ' + JSON.stringify(by.F1.q));
+  assert.strictEqual(by.Q.kind, 'on its own', 'Q ' + JSON.stringify(by.Q.q));
+  assert(by.F5.q.lagS <= 0, 'the last meter gets it after (or with) the rest ' + JSON.stringify(by.F5.q));
+  const R2 = new WL.Relations(JSON.parse(JSON.stringify(R.toJSON())));
+  assert.strictEqual(R2.fieldLead('F1', 6).alongYd, by.F1.q.alongYd, 'round-trips');
+});
+ok('wind loop: a model on every meter at once learns field-wide patterns', () => {
+  const L = new WL.ForecastLoop(null, { seed: 9, regimes: false });
+  fieldRun(2400, (t, r) => { for (const id in r) L.add(id, t, r[id].spd, r[id].dir); });
+  const pool = L.pool('F5', 10).filter(c => c.n >= 300), all = pool.filter(c => c.all), own = pool.find(c => !c.leaders.length && !c.all && !c.inputs.length && c.kind === 'rls');
+  assert(all.length, 'tried one: ' + pool.map(c => c.desc).join(' | '));
+  assert(all[0].all.join(',') === 'F1,F2,F3,F4,Q' && /every meter now/.test(all[0].desc), all[0].desc);
+  assert(all[0].rmse < own.rmse * 0.85, 'beats own history: ' + all[0].rmse + ' vs ' + own.rmse);
+  const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(L.toJSON())));
+  assert(L2.pool('F5', 10).some(c => c.all && c.all.length === 5), 'round-trips');
+});
+ok('proven pairs: a Sentinel that only rides along gets no credit, and each counts once', () => {
+  const L = new WL.ForecastLoop(null, { seed: 1, regimes: false });
+  const P = L._newPool(); L.P.N = P;
+  const mk = (id, leaders, e2, kind) => { const S = {}; L.H.forEach(h => { S[h] = { e2, n: 500 }; }); return { id, kind: kind || 'rls', lam: 0.998, leaders, inputs: [], all: null, origin: 'x', S, M: {} }; };
+  P.list = [mk(0, [], 9, 'stay'), mk(1, [], 4), mk(2, [{ by: 'A', lag: 12 }, { by: 'B', lag: 3 }, { by: 'A', lag: 14 }], 1), mk(3, [{ by: 'A', lag: 12 }], 1.01)];
+  const pp = L.provenPairs();
+  assert.strictEqual(pp.map(q => q.sentId + '@' + q.lagS).join(','), 'A@12', JSON.stringify(pp));
+});
 function chRun(adapt, change) {
   const rr = rng(5), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const L = new WL.Learner(null, { adapt }), errs = [];
@@ -365,7 +409,10 @@ async function pageTest() {
   // newer firmware adds, 3 only the older tempF / presInHg / lux fields
   const sens = { 1: { tempF: 32, presInHg: 0, lux: -1 }, 2: { tempF: 55.2, presInHg: 29.89, lux: 20000, env: { pressure: 1012.34, temp: 55.2, light: 20000 } }, 3: { tempF: 54, presInHg: 29.9, lux: 300 } };
   const node = (id, yd) => Object.assign({ id, speed: spd[id]((Date.now() - t0) / 1000), speedSd: 1, dir: 270, dirSd: 5, lat: 45 + yd / YDD, lon: -93, gps: true, windOk: true, age: 1 }, sens[id]);
+  let served = BUILD, pageLoads = 0;
   const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/learn')) pageLoads++;
+    if (req.url.startsWith('/windsec')) res.setHeader('X-Learn-Build', served);
     const u = new URL(req.url, 'http://x'), json = o => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
     if (u.pathname === '/learn') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(PAGE); }
     else if (u.pathname === '/wind-learner.js') { res.writeHead(200, { 'content-type': 'application/javascript' }); res.end(LIB); }
@@ -447,6 +494,12 @@ async function pageTest() {
   await p.evaluate(() => autosave());
   await p.reload();
   await p.waitForFunction(() => ST.mode === 'live' && ST.shots.length === 1, null, { timeout: 10000 });
+  // a new live session clears the shots and keeps what it learned
+  const kept = await p.evaluate(() => ({ rel: RT.rel.secs, fc: RT.fc.stats('1')[0].n }));
+  await p.evaluate(() => $('sessNew').click());
+  const after = await p.evaluate(() => ({ mode: ST.mode, shots: ST.shots.length, rel: RT.rel.secs, fc: RT.fc.stats('1')[0].n, pair: !!RT.rel.pair('1', '2', 6, { minN: 80 }) }));
+  assert(after.mode === 'live' && after.shots === 0 && after.rel >= kept.rel && after.fc >= kept.fc && after.pair, 'new live session keeps the learning ' + JSON.stringify([kept, after]));
+  assert(await p.evaluate(() => document.querySelectorAll('#relField tbody tr').length === 3 || (renderRel(), document.querySelectorAll('#relField tbody tr').length === 3)), 'Relations lists each meter against the field');
   await p.click('#modeSim');
   assert(await p.evaluate(() => ST.mode === 'sim' && ST.shots.length === 25), 'practice range comes back with its shots');
   // a live poll still in flight when you switch to Practice must not land there
@@ -461,6 +514,16 @@ async function pageTest() {
   // a fresh range keeps "Keep Wind Lab updated"
   await p.evaluate(() => { $('autoPush').checked = true; $('autoPush').onchange(); $('sessNew').click(); });
   assert(await p.evaluate(() => ST.autoPush === true && $('autoPush').checked && ST.shots.length === 0), 'fresh range keeps Keep Wind Lab updated');
+  // the base is reflashed with a new Learn page while this one is open: it reloads once, then just says so
+  await p.click('#modeLive'); await p.waitForFunction(() => ST.mode === 'live' && LIVE.ok, null, { timeout: 15000 });
+  const loads0 = pageLoads; served = 'feedbeef01';
+  await p.waitForFunction(n => n, null, { timeout: 100 }).catch(() => {});
+  for (let i = 0; i < 40 && pageLoads === loads0; i++) await new Promise(r => setTimeout(r, 250));
+  assert.strictEqual(pageLoads, loads0 + 1, 'reloaded once for the new build');
+  await p.waitForFunction(() => typeof LIVE !== 'undefined' && LIVE.reloading === true, null, { timeout: 15000 });
+  await p.waitForTimeout(2500);
+  assert.strictEqual(pageLoads, loads0 + 1, 'no reload loop when the page is still the old one');
+  assert(/newer Learn page/.test(await p.textContent('#toast')), 'says the base has a newer page');
   await b.close(); server.close();
   assert.deepStrictEqual(errs, []);
   pass++; console.log('ok  Learn page: offline at phone width, Fire 25 trains, relations, model to Wind Lab, live mode on a mock base');

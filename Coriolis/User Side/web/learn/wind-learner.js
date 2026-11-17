@@ -272,6 +272,10 @@
     this.A = (state && state.A) || {};     // 'id|s'  -> {n,c} arrays, autocovariance lags 0..L s
     this.M = (state && state.M) || {};     // 'id|s'  -> [n, sum speed]
     this.U = (state && state.U) || {};     // s -> [n, sum field speed mph] (turns yards back into seconds)
+    // each meter against the rest of the field (the mean gust of every other
+    // meter reporting): does this one see what the whole field gets next?
+    this.F = (state && state.F) || {};     // 'id|s'  -> {n,ab,aa,bb} arrays, index j+NB (j>0: id leads the field)
+    this.FA = (state && state.FA) || {};   // 'id|s'  -> {n,c} autocovariance of that rest-of-field gust
     this.secs = (state && state.secs) || 0;
     this.sectorSecs = (state && state.sectorSecs) || new Array(SECTORS).fill(0);
     this.rt = {};                          // per meter: {ema, ring} (not saved)
@@ -281,7 +285,7 @@
   function pairKey(a, b) { return String(a) < String(b) ? [String(a), String(b)] : [String(b), String(a)]; }
   Relations.prototype._ring = function (id) {
     var r = this.rt[id];
-    if (!r) r = this.rt[id] = { ema: null, ring: [] };
+    if (!r) r = this.rt[id] = { ema: null, ring: [], rest: [] };
     return r;
   };
   Relations.prototype.ingest = function (t, readings) {
@@ -289,8 +293,8 @@
     // a gap in time pushes empty seconds so lags stay honest
     if (this.lastT != null) {
       var gap = Math.min(REL_RING, Math.round(t - this.lastT) - 1);
-      for (var g = 0; g < gap; g++) for (id in this.rt) { this.rt[id].ring.unshift(null); this.rt[id].ring.length = Math.min(this.rt[id].ring.length, REL_RING); }
-      if (t - this.lastT > 600) for (id in this.rt) { this.rt[id].ema = null; this.rt[id].ring = []; }   // long break: start the running means again
+      for (var g = 0; g < gap; g++) for (id in this.rt) { var Rg = this.rt[id]; Rg.ring.unshift(null); Rg.rest.unshift(null); Rg.ring.length = Math.min(Rg.ring.length, REL_RING); Rg.rest.length = Math.min(Rg.rest.length, REL_RING); }
+      if (t - this.lastT > 600) for (id in this.rt) { this.rt[id].ema = null; this.rt[id].ring = []; this.rt[id].rest = []; }   // long break: start the running means again
     }
     this.lastT = t;
     // field wind for this second picks the sector
@@ -327,6 +331,16 @@
       present[k] = true;
     });
     for (id in present) if (!present[id]) { var R0 = this.rt[id]; R0.ring.unshift(null); if (R0.ring.length > REL_RING) R0.ring.length = REL_RING; }
+    // the rest of the field for each meter: the mean gust of the others
+    // reporting this second (two at least, or it is just another pair)
+    var liveIds = Object.keys(present).filter(function (k) { return present[k]; }), sumF = 0;
+    liveIds.forEach(function (k) { sumF += self.rt[k].ring[0].f; });
+    for (id in this.rt) {
+      var Rr = this.rt[id], nO = liveIds.length - (present[id] ? 1 : 0);
+      Rr.rest = Rr.rest || [];
+      Rr.rest.unshift(nO >= 2 ? { f: (sumF - (present[id] ? Rr.ring[0].f : 0)) / nO } : null);
+      if (Rr.rest.length > REL_RING) Rr.rest.length = REL_RING;
+    }
     if (!sectors.length) return;
     this.secs++;
     this._accumulate('all', present);
@@ -342,6 +356,21 @@
       var Mm = self.M[key] || (self.M[key] = [0, 0]); Mm[0]++; Mm[1] += cur.spd;
       var A = self.A[key] || (self.A[key] = { n: zeros(L + 1), c: zeros(L + 1) });
       for (var j = 0; j <= L && j < R.ring.length; j++) { var o = R.ring[j]; if (!o) continue; A.n[j]++; A.c[j] += cur.f * o.f; }
+    });
+    // each meter against the rest of the field, by the same yards of travel
+    Object.keys(this.rt).forEach(function (k) {
+      var R = self.rt[k], Fr = R.rest || [], key = k + '|' + sector, W = 2 * NB + 1;
+      if (!R.ring[0] && !Fr[0]) return;
+      if (Fr[0]) {
+        var FA = self.FA[key] || (self.FA[key] = { n: zeros(L + 1), c: zeros(L + 1) });
+        for (var j = 0; j <= L && j < Fr.length; j++) { var o = Fr[j]; if (!o) continue; FA.n[j]++; FA.c[j] += Fr[0].f * o.f; }
+      }
+      var F = self.F[key] || (self.F[key] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W) });
+      for (var jb = 0; jb <= NB; jb++) {
+        var kf = jb * REL_BIN / ups; if (kf > REL_RING - 2) break;
+        if (Fr[0]) { var xa = ringAt(R.ring, kf); if (xa) addF(F, NB + jb, xa.f, Fr[0].f); }          // meter then, field now
+        if (jb > 0 && R.ring[0]) { var xf = ringAt(Fr, kf); if (xf) addF(F, NB - jb, R.ring[0].f, xf.f); }   // field then, meter now
+      }
     });
     var all = Object.keys(this.rt);
     for (var i = 0; i < all.length; i++) for (var j2 = i + 1; j2 < all.length; j2++) {
@@ -359,12 +388,13 @@
       }
     }
   };
+  function addF(F, ix, x, y) { F.n[ix]++; F.ab[ix] += x * y; F.aa[ix] += x * x; F.bb[ix] += y * y; }
   // a meter's reading kf seconds ago, between whole seconds by straight line
   function ringAt(R, kf) {
     var k0 = Math.floor(kf), w = kf - k0, o0 = R[k0], o1 = R[k0 + 1];
     if (w < 1e-6) return o0 || null;
     if (!o0 || !o1) return (w < 0.5 ? o0 : o1) || null;
-    return { f: o0.f + w * (o1.f - o0.f), spd: o0.spd + w * (o1.spd - o0.spd), dir: w < 0.5 ? o0.dir : o1.dir };
+    return { f: o0.f + w * (o1.f - o0.f), spd: o0.spd + w * ((o1.spd || 0) - (o0.spd || 0)), dir: w < 0.5 ? o0.dir : o1.dir };
   }
   // x = a's sample, y = b's sample; ds/dc hold direction(b) - direction(a)
   Relations.prototype._add = function (P, ix, x, y) {
@@ -455,6 +485,55 @@
     if (p.lagS >= 2 && p.r >= 0.3 && p.skill > 0.05) return 'leads';
     return 'related';
   }
+  /*
+   * One meter against the rest of the field (the mean gust of every other
+   * meter) in one sector. alongYd > 0: this meter sees a gust that many yards
+   * of travel before the field as a whole does, so a change here says what
+   * the rest are about to do. rNow: how well it matches the field at the same
+   * moment. Null until there is enough data.
+   */
+  Relations.prototype.fieldLead = function (id, sector, opts) {
+    opts = opts || {};
+    var minN = opts.minN || 120, NB = this.NB, L = this.L, F = this.F[id + '|' + sector]; if (!F) return null;
+    var rAt = function (i) { var d = Math.sqrt(F.aa[i] * F.bb[i]); return F.n[i] && d > 0 ? F.ab[i] / d : 0; };
+    var best = -1, bestR = -2;
+    for (var i = 0; i <= 2 * NB; i++) {
+      if (F.n[i] < minN) continue;
+      var r = rAt(i);
+      if (r > bestR + 0.005 || (Math.abs(r - bestR) <= 0.005 && Math.abs(i - NB) < Math.abs(best - NB))) { bestR = r; best = i; }
+    }
+    if (best < 0) return null;
+    var dj = 0;
+    if (best > 0 && best < 2 * NB && F.n[best - 1] >= minN && F.n[best + 1] >= minN) {
+      var r0 = rAt(best - 1), r2 = rAt(best + 1), den = r0 - 2 * bestR + r2;
+      if (den < -1e-9) dj = Math.max(-0.5, Math.min(0.5, 0.5 * (r0 - r2) / den));
+    }
+    var yd = (best - NB + dj) * REL_BIN, mph = Math.max(0.5, this.speed(sector) || 10), lagF = yd / (mph * YD_PER_S_PER_MPH);
+    var FA = this.FA[id + '|' + sector], fac = function (j) { if (!FA || !FA.n[0] || !FA.n[j]) return 0; var c0 = FA.c[0] / FA.n[0]; return c0 > 0 ? (FA.c[j] / FA.n[j]) / c0 : 0; };
+    var T = 1; for (var j = 1; j <= L; j++) T += 2 * this.autoCorr(id, sector, j) * fac(j);
+    var n = F.n[best], neff = Math.max(4, n / Math.max(1, T)), se = 1 / Math.sqrt(Math.max(1, neff - 3));
+    var lag = Math.round(Math.abs(lagF)), rPers = yd > 0 ? fac(Math.min(L, lag)) : this.autoCorr(id, sector, Math.min(L, lag));
+    return { id: id, alongYd: Math.round(yd), lagS: Math.round(lagF), lagF: lagF, atMph: mph, r: bestR, rNow: F.n[NB] ? rAt(NB) : null, n: n, neff: neff, se: se,
+             significant: bestR > 3 * se, rPersist: rPers, skill: bestR - Math.max(0, rPers), gain: F.aa[best] > 0 ? F.ab[best] / F.aa[best] : 0 };
+  };
+  // every meter against the field, leaders first, each with a plain verdict
+  Relations.prototype.fieldLeads = function (sector, opts) {
+    var self = this;
+    return this.meters().map(function (id) {
+      var q = self.fieldLead(id, sector, opts), kind = 'learning';
+      if (q) {
+        if (!q.significant || q.r < 0.2) kind = 'on its own';
+        else if (q.lagS >= 2 && q.r >= 0.3 && q.skill > 0.05) kind = 'warns the field';
+        else if (q.lagS <= -2 && q.r >= 0.3) kind = 'follows the field';
+        else if (q.r >= 0.55) kind = 'moves with the field';
+        else kind = 'related';
+      }
+      return { id: id, q: q, kind: kind };
+    }).sort(function (a, b) {
+      var sc = function (x) { return !x.q ? -2000 : x.kind === 'warns the field' ? x.q.alongYd : -1000 + x.q.r; };
+      return sc(b) - sc(a);
+    });
+  };
   // Every pair for a sector, plus per meter: which other meter predicts it best
   Relations.prototype.summary = function (sector, opts) {
     var ids = this.meters(), pairs = [], best = {}, self = this;
@@ -547,7 +626,7 @@
     function pack(o) { var r = {}; for (var k in o) { r[k] = {}; for (var f in o[k]) r[k][f] = o[k][f].map(r5); } return r; }
     var M = {}; for (var k in this.M) M[k] = this.M[k].map(round6);
     var U = {}; for (var u in this.U) U[u] = this.U[u].map(round6);
-    return { kind: 'dist', D: this.NB * REL_BIN, tau: this.tau, P: pack(this.P), A: pack(this.A), M: M, U: U, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
+    return { kind: 'dist', D: this.NB * REL_BIN, tau: this.tau, P: pack(this.P), A: pack(this.A), F: pack(this.F), FA: pack(this.FA), M: M, U: U, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
   };
 
   // ------------------------------------------------------------- forecaster
@@ -739,6 +818,7 @@
     // and the ones for the new wind come back, learned weights and all.
     this.regimes = cfg.regimes != null ? cfg.regimes !== false : state.regimes !== false;
     this.noSpeedBands = cfg.speedBands != null ? cfg.speedBands === false : !!state.noSpeedBands;
+    this.allRate = cfg.allRate != null ? cfg.allRate : 0.5;   // chance a new model is one on every meter at once, when the pool has none
     this.cutN = cfg.cutN || 1e9;   // scores carry over a switch as they are (tested: cutting them back did worse)
     this.reg = { cur: state.regCur || null, cand: null, candN: 0, last: -Infinity };
     this.A = {};                                   // regime -> meter -> pool put away
@@ -839,12 +919,13 @@
   // the starting linear model on the meter's own history is never retired:
   // it is the fair yardstick a Sentinel or a sensor has to beat
   function isBase(c) { return c.origin === 'start' && c.kind === 'rls' && c.lam === 0.998 && !c.leaders.length && !(c.inputs || []).length; }
-  function lsig(c) { return c.kind + '|' + (c.lam || '') + '|' + (c.hidden || '') + '|' + (c.leaders || []).map(function (l) { return l.by + '@' + l.lag; }).sort().join(',') + '|' + (c.inputs || []).map(function (q) { return q.k + '@' + q.lag; }).sort().join(','); }
+  function lsig(c) { return c.kind + '|' + (c.lam || '') + '|' + (c.hidden || '') + '|' + (c.leaders || []).map(function (l) { return l.by + '@' + l.lag; }).sort().join(',') + '|' + (c.inputs || []).map(function (q) { return q.k + '@' + q.lag; }).sort().join(',') + (c.all ? '|A:' + c.all.join(',') : ''); }
   // names of a model's inputs, so a child can start from its parent's weights
   function fnames(c) {
     var n = ['1', 'cur', 'mean', 'trend'];
     c.leaders.forEach(function (l) { n.push('L:' + l.by); });
     (c.inputs || []).forEach(function (q) { n.push('C:' + q.k + ':z', 'C:' + q.k + ':d', 'C:' + q.k + ':x'); });
+    if (c.all) { n.push('F:now', 'F:d'); c.all.forEach(function (j) { n.push('A:' + j + ':now', 'A:' + j + ':d'); }); }
     return n;
   }
   function warmStart(c, par) {
@@ -865,6 +946,7 @@
         .filter(function (l, i, A) { return A.findIndex(function (o) { return o.by === l.by && Math.abs(o.lag - l.lag) < 2; }) === i; }),
       inputs: (spec.inputs || []).map(function (q) { return typeof q === 'string' ? { k: q, lag: 0 } : { k: String(q.k), lag: Math.max(0, Math.round(q.lag || 0)) }; })
         .filter(function (q, i, A) { return A.findIndex(function (o) { return o.k === q.k; }) === i; }),
+      all: spec.all && spec.all.length ? spec.all.map(String) : null,
       born: p.g, origin: origin, from: spec.from || null, M: {}, S: {} };
     var me = this;
     this.H.forEach(function (h) { c.S[h] = { e2: 0, n: 0 }; c.M[h] = { u: me._model(c), v: me._model(c) }; });
@@ -881,7 +963,7 @@
       for (var j = 0; j < secs.length; j++) { var s1 = secs[j], c0 = this._at(id, s1 - h), cur = R.s[s1]; if (c0) this._learn(c, h, this._x(c, id, s1 - h, h, c0), cur.u, cur.v); }
     }
   };
-  ForecastLoop.prototype._dim = function (c) { return 4 + c.leaders.length + 3 * (c.inputs || []).length; };
+  ForecastLoop.prototype._dim = function (c) { return 4 + c.leaders.length + 3 * (c.inputs || []).length + (c.all ? 2 + 2 * c.all.length : 0); };
   ForecastLoop.prototype._model = function (c) {
     var n = this._dim(c), r = this.rnd;
     if (c.kind === 'rls') {
@@ -939,6 +1021,19 @@
     for (i = 0; i < (c.inputs || []).length; i++) {
       var I = c.inputs[i], f = this._chan(id, I.k, I.lag ? Math.min(s0, s0 + h - I.lag) : s0);
       xu.push(f.z, f.d, f.z * cur.u / 10); xv.push(f.z, f.d, f.z * cur.v / 10);
+    }
+    // every meter at once: the field's mean wind and its 5 s change, then
+    // each other meter's wind now and its 5 s change (so a shift that shows
+    // in one or two meters can tell this one what is coming)
+    if (c.all) {
+      var fu = cur.u, fv = cur.v, fpu = prev.u, fpv = prev.v, nf = 1, ax = [], ay = [];
+      for (i = 0; i < c.all.length; i++) {
+        var o = this._near(c.all[i], s0), op = o && (this._near(c.all[i], s0 - 5) || o);
+        if (o) { fu += o.u; fv += o.v; fpu += op.u; fpv += op.v; nf++; }
+        ax.push(o ? o.u : cur.u, o ? o.u - op.u : 0); ay.push(o ? o.v : cur.v, o ? o.v - op.v : 0);
+      }
+      xu.push(fu / nf, (fu - fpu) / nf); xv.push(fv / nf, (fv - fpv) / nf);
+      for (i = 0; i < ax.length; i++) { xu.push(ax[i]); xv.push(ay[i]); }
     }
     return { u: xu, v: xv };
   };
@@ -1037,6 +1132,7 @@
     var k = c.kind === 'stay' ? 'Stays as it is' : c.kind === 'mlp' ? 'Neural net (' + c.hidden + ')' : 'Linear' + (c.lam < 0.995 ? ', fast memory' : '');
     if (c.kind !== 'stay') k += c.leaders.length ? ' + ' + c.leaders.map(function (l) { return l.by + ' ' + l.lag + ' s ahead'; }).join(' + ') : (c.inputs && c.inputs.length ? '' : ', own history');
     if (c.inputs && c.inputs.length) k += ' + ' + c.inputs.map(function (q) { return q.k + (q.lag ? ' ' + q.lag + ' s ahead' : ''); }).join(' + ');
+    if (c.all) k = k.replace(', own history', '') + ' + every meter now';
     return k;
   }
   ForecastLoop.describe = cdesc;
@@ -1086,7 +1182,7 @@
       // a net that can't start from a parent net's weights starts from the
       // last couple of minutes of wind instead of from random weights
       if (c.kind === 'mlp' && !(spec.parent && spec.parent.kind === 'mlp' && spec.parent.hidden === c.hidden)) me2._replay(id, c, 12);
-      log('Trying #' + c.id + ' ' + cdesc(c) + ' (' + (spec.origin === 'relation' ? 'Relations found this pair' : spec.origin === 'explore' ? 'a blind guess' : 'a change to #' + spec.from) + ')');
+      log('Trying #' + c.id + ' ' + cdesc(c) + ' (' + (spec.origin === 'relation' ? 'Relations found this pair' : spec.origin === 'explore' ? 'a blind guess' : spec.origin === 'collective' ? 'a model on every meter at once' : 'a change to #' + spec.from) + ')');
     }
   };
   // a meter's share of the shot (0..1) from the page, and the pool size it earns
@@ -1097,10 +1193,15 @@
     var sug = (this.leadersFn ? this.leadersFn(id) || [] : []).filter(function (l) { return l && l.by !== id; });
     var have = {}; p.list.forEach(function (c) { c.leaders.forEach(function (l) { have[l.by + '@' + l.lag] = 1; }); });
     var fresh = sug.filter(function (l) { return !have[l.by + '@' + Math.round(l.lagS)]; });
+    // a model on every meter at once, whenever the pool has none for the meters now reporting
+    if (others.length >= 2) {
+      var allNow = others.slice().sort(), hasAll = p.list.some(function (c) { return c.all && c.all.join(',') === allNow.join(','); });
+      if (!hasAll && r() < this.allRate) return { kind: 'rls', lam: r() < 0.5 ? 0.998 : 0.995, leaders: [], inputs: [], all: allNow, origin: 'collective' };
+    }
     var x = r();
     if (fresh.length && x < 0.4) { var l = fresh[Math.floor(r() * fresh.length)]; return { kind: 'rls', lam: 0.998, leaders: [{ by: l.by, lag: l.lagS }], origin: 'relation' }; }
     if (best && best.kind !== 'stay' && x < 0.8) {
-      var s = { kind: best.kind, lam: best.lam, hidden: best.hidden, lr: best.lr, leaders: best.leaders.map(function (l) { return { by: l.by, lag: l.lag }; }), inputs: (best.inputs || []).map(function (q) { return { k: q.k, lag: q.lag }; }), origin: 'mutation', from: best.id, parent: best };
+      var s = { kind: best.kind, lam: best.lam, hidden: best.hidden, lr: best.lr, leaders: best.leaders.map(function (l) { return { by: l.by, lag: l.lag }; }), inputs: (best.inputs || []).map(function (q) { return { k: q.k, lag: q.lag }; }), all: best.all ? best.all.slice() : null, origin: 'mutation', from: best.id, parent: best };
       var m = r(), chans = this.channels(), lagged = s.leaders.concat(s.inputs);
       if (lagged.length && m < 0.4) {                  // walk a Sentinel's (or sensor's) lag: next door first, then further
         var L = lagged[Math.floor(r() * lagged.length)], sigs = p.list.map(lsig), tabu = p.tabu || {}, base = L.lag;
@@ -1146,7 +1247,7 @@
     var st = p.list[0];
     return p.list.map(function (c) {
       var S = c.S[h], sc = me._score(p, c);
-      return { id: c.id, kind: c.kind, leaders: c.leaders.slice(), inputs: (c.inputs || []).slice(), desc: cdesc(c), origin: c.origin, from: c.from, born: c.born, n: S.n,
+      return { id: c.id, kind: c.kind, leaders: c.leaders.slice(), inputs: (c.inputs || []).slice(), all: c.all ? c.all.slice() : null, desc: cdesc(c), origin: c.origin, from: c.from, born: c.born, n: S.n,
         rmse: S.n ? Math.sqrt(S.e2) : null, skill: S.n >= 30 && st.S[h].e2 > 0 ? 1 - Math.sqrt(S.e2 / st.S[h].e2) : null, score: sc, champ: c.id === p.champ };
     }).sort(function (a, b) { return (a.rmse == null) - (b.rmse == null) || a.rmse - b.rmse; });
   };
@@ -1160,9 +1261,18 @@
     var me = this, out = [];
     Object.keys(this.P).forEach(function (id) {
       var L = me.pool(id, 10).filter(function (c) { return c.n >= 120 && c.rmse != null; });
-      var withL = L.filter(function (c) { return c.leaders.length; })[0], own = L.filter(function (c) { return !c.leaders.length && c.kind !== 'stay'; })[0];
+      var withL = L.filter(function (c) { return c.leaders.length; })[0], own = L.filter(function (c) { return !c.leaders.length && !c.all && c.kind !== 'stay'; })[0];
       if (!withL || !own || withL.rmse > own.rmse * 0.9) return;
-      withL.leaders.forEach(function (l) { out.push({ sentId: l.by, nodeId: id, lagS: l.lag, gain: 1 - withL.rmse / own.rmse, model: withL.id }); });
+      // each Sentinel in the winning model once (at its first lag), and only
+      // when it earns its place: the best model WITHOUT it must do clearly
+      // worse, so a meter that just rides along gets no credit
+      var seen = {};
+      withL.leaders.forEach(function (l) {
+        if (seen[l.by]) return; seen[l.by] = 1;
+        var wo = L.filter(function (c) { return c.kind !== 'stay' && !c.leaders.some(function (o) { return o.by === l.by; }) && !(c.all && c.all.indexOf(l.by) >= 0); })[0] || own;
+        if (withL.leaders.length > 1 && withL.rmse > wo.rmse * 0.97) return;
+        out.push({ sentId: l.by, nodeId: id, lagS: l.lag, gain: 1 - withL.rmse / own.rmse, model: withL.id });
+      });
     });
     return out;
   };
@@ -1184,7 +1294,7 @@
     return { next: p.next, g: p.g, k: p.k, checked: p.checked, champ: p.champ, B: p.B, hist: compact ? p.hist.slice(-60) : p.hist, log: compact ? p.log.slice(-20) : p.log, tabu: p.tabu || {},
       list: list.map(function (c) {
         var M = {}; for (var h in c.M) M[h] = { u: packModel(c.M[h].u, compact), v: packModel(c.M[h].v, compact) };
-        return { id: c.id, kind: c.kind, lam: c.lam, hidden: c.hidden, lr: c.lr, leaders: c.leaders, inputs: c.inputs || [], born: c.born, origin: c.origin, from: c.from, S: c.S, M: M };
+        return { id: c.id, kind: c.kind, lam: c.lam, hidden: c.hidden, lr: c.lr, leaders: c.leaders, inputs: c.inputs || [], all: c.all || null, born: c.born, origin: c.origin, from: c.from, S: c.S, M: M };
       }) };
   };
   ForecastLoop.prototype.toJSON = function () {

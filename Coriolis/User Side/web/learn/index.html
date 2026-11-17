@@ -300,6 +300,11 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="note" id="relPred"></div>
       </div>
       <div>
+        <div class="lbl" style="margin-bottom:4px">Who warns the whole field</div>
+        <div class="tblwrap"><table id="relField"></table></div>
+        <div class="note">Each meter against the rest of the field (the average gust of every other meter). A meter that <b>warns the field</b> sees a gust before the rest get it, so a change there tells you what most of the range is about to do. <b>Moves with the field</b>: it reads what the field reads, at the same moment. <b>On its own</b>: its gusts are its own. The wind model also tries a model on every meter at once for each meter, so these field-wide patterns feed its predictions.</div>
+      </div>
+      <div>
         <div class="lbl" style="margin-bottom:4px">Sentinel pairs this wind supports</div>
         <div class="tblwrap"><table id="relSent"></table></div>
         <div class="note">The Sentinel's reading from <i>lag</i> seconds ago, times the speed ratio, is what the paired meter should read now. <b>Layout</b> pairs come from the meters' spots alone (the meter straight upwind), so they work from the first minute, with wide tolerances; a <b>wind data</b> pair replaces one as soon as the 1 s readings back it, with tolerances from how far it normally strays. <b>Predicts</b>: the wind model has proven it. The Model tab sends these to Wind Lab.</div>
@@ -1222,7 +1227,15 @@ function renderPred() {
 }
 $('pMeter').onchange = renderPred; $('pH').onchange = renderPred;
 $('pEvolve').onchange = function () { ST.settings.evolve = $('pEvolve').checked; RT.fc.evolve = ST.settings.evolve; };
-$('pTrain').onclick = function () { if (ST.mode === 'live') return; var b = $('pTrain'); b.disabled = true; b.textContent = 'Training…'; setTimeout(function () { advance(1800); b.disabled = false; b.textContent = 'Train on 30 min of wind'; RT.dirty = true; renderPred(); toast('30 minutes of wind: every prediction made, checked and learned from.'); }, 30); };
+// 30 min of wind in 1 min slices, so the page keeps answering while it trains
+$('pTrain').onclick = function () {
+  if (ST.mode === 'live') return; var b = $('pTrain'), left = 30, gen = RT; b.disabled = true;
+  (function slice() {
+    if (RT !== gen || ST.mode === 'live') { b.disabled = false; b.textContent = 'Train on 30 min of wind'; return; }   // a new range or Live took over
+    if (left > 0) { b.textContent = 'Training… ' + Math.round((30 - left) / 30 * 100) + '%'; advance(60); left--; setTimeout(slice, 0); return; }
+    b.disabled = false; b.textContent = 'Train on 30 min of wind'; RT.dirty = true; renderPred(); toast('30 minutes of wind: every prediction made, checked and learned from.');
+  })();
+};
 $('pReset').onclick = function () { RT.fc = newLoop(null); renderPred(); toast('The wind model starts over. The shot model is unchanged.'); };
 function renderForecasts() {
   var ids = RT.fc.meters(), H = RT.fc.H, h = '<thead><tr><th>Meter</th>' + H.map(function (x) { return '<th>' + x + ' s</th>'; }).join('') + '<th>Early warning</th></tr></thead><tbody>';
@@ -1337,7 +1350,16 @@ $('sessNew').onclick = function () {
   if (wl) toast(ST.autoPush ? 'Fresh range. Wind Lab will get this new model at the next update.' : 'Fresh range. Wind Lab is still running the model you sent before: send this one or stop it on the Model tab.');
 };
 function sessNewLoad() {
-  if (ST.mode === 'live') { var o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual'; o.live = Object.assign(o.live, { rangeYd: ST.live.rangeYd, az: ST.live.az, roles: ST.live.roles, pos: ST.live.pos }); o.settings = ST.settings; load(o); toast('Fresh live session: no shots, nothing learned yet.'); }
+  // live: a new day of shooting on the same range. Shots and the day's wind
+  // log start empty; what it learned about these meters and this range
+  // (shot multipliers, how the meters relate, the wind model) carries on.
+  // Each tab's own "start over" button clears its part.
+  if (ST.mode === 'live') {
+    var o = defaultState(); o.mode = 'live'; o.meters = []; o.terrain = []; o.plotMode = 'manual';
+    o.live = Object.assign(o.live, { rangeYd: ST.live.rangeYd, az: ST.live.az, roles: ST.live.roles, pos: ST.live.pos, anchors: ST.live.anchors });
+    o.settings = ST.settings; o.learner = RT.learner.toJSON(); o.relations = RT.rel.toJSON(); o.forecaster = RT.fc.toJSON();
+    load(o); toast('New live session: no shots yet. Everything it learned about these meters and this range is kept.');
+  }
   else { load(defaultState()); toast('Fresh range with the example layout.'); }
 }
 
@@ -1346,6 +1368,8 @@ function sessNewLoad() {
 // /data.json for the meters' GPS spots and /windsec for their timed 1 s wind,
 // keeps its own history (the base holds about two minutes), learns from your
 // real shots and plots, and learns how the meters relate as the wind blows.
+// which build of this page this is ('__' + 'LEARN_BUILD__' when not served by a base)
+var PAGE_BUILD = '__LEARN_BUILD__';
 var LIVE = { timer: null, since: null, baseNow: 0, at: 0, utc: null, data: null, ok: false, lastOk: 0, busy: false, unplaced: [], lastSave: 0 };
 var YD_PER_DEG = 111319.4908 * 1.0936133;
 function liveClock() { return LIVE.at ? (LIVE.baseNow + (Date.now() - LIVE.at)) / 1000 : 0; }
@@ -1435,6 +1459,7 @@ async function livePoll() {
     var d = await r.json(); if (gone()) return;
     LIVE.data = d; syncLiveMeters();
     var r2 = await fetch('/windsec' + (LIVE.since != null ? '?since=' + LIVE.since : ''), { cache: 'no-store' }); if (!r2.ok) throw new Error('windsec');
+    checkBuild(r2.headers.get('X-Learn-Build'));
     var j = await r2.json(); if (gone()) return;
     if (LIVE.at && j.now < LIVE.baseNow - 5000) {   // the base restarted: its clock went back to zero
       LIVE.since = null; RT.base = { latest: {}, hist: {} }; RT.align = new WL.SecondAligner(8); RT.rel.rt = {}; RT.rel.lastT = null;
@@ -1446,6 +1471,18 @@ async function livePoll() {
   if (LIVE.ok && Date.now() - (LIVE.leadAt || 0) > 10000) { LIVE.leadAt = Date.now(); refreshLeaders(); }
   LIVE.busy = false; renderLiveStat();
   if (LIVE.ok && Date.now() - LIVE.lastSave > 60000) { LIVE.lastSave = Date.now(); autosave(); }
+}
+// The base was reflashed with a different Learn page while this one stayed
+// open: save, then load the new page (once per build, so a cached old page
+// can't loop; it says so instead).
+function checkBuild(served) {
+  if (!served || PAGE_BUILD.indexOf('__') === 0 || served === PAGE_BUILD || LIVE.reloading) return;
+  LIVE.reloading = true;
+  var tried = null; try { tried = sessionStorage.getItem('learnReloadFor'); } catch (e) {}
+  if (tried === served) { toast('The base has a newer Learn page. Reload this page to use it.'); return; }
+  try { sessionStorage.setItem('learnReloadFor', served); } catch (e) {}
+  autosave(); toast('The base was updated: loading its new Learn page…');
+  setTimeout(function () { location.reload(); }, 800);
 }
 function renderLiveStat() {
   var el = $('liveStat'); if (ST.mode !== 'live') { el.hidden = true; return; }
@@ -1566,6 +1603,19 @@ function renderRel() {
   $('relTbl').innerHTML = h + (S.pairs.length ? '' : '<tr><td colspan="8" class="muted">Needs two or more meters reporting.</td></tr>') + '</tbody>';
   var pred = Object.keys(S.predictors).sort().map(function (f) { var b = S.predictors[f]; return '<b>' + esc(f) + '</b>: ' + esc(b.by) + ' sees its gusts ' + b.lagS + ' s earlier (r ' + b.r.toFixed(2) + ', ' + (b.skill >= 0 ? '+' : '') + b.skill.toFixed(2) + ' over its own past)'; });
   $('relPred').innerHTML = pred.length ? pred.join('<br>') : 'No meter gives a useful early warning for another in this wind yet.';
+  var fl = R.fieldLeads(sec), ft = '<thead><tr><th>Meter</th><th>Pattern</th><th>Ahead of the rest</th><th>Match r</th><th>Matches the field now</th><th>Beats the field\'s own past</th></tr></thead><tbody>';
+  fl.forEach(function (row) {
+    var q = row.q, k = row.kind, pill;
+    if (k === 'learning') pill = '<span class="pill dim">Learning</span>';
+    else if (k === 'warns the field') pill = '<span class="pill acc">Warns the field</span>';
+    else if (k === 'moves with the field') pill = '<span class="pill good">Moves with the field</span>';
+    else if (k === 'follows the field') pill = '<span class="pill dim">Gets it after the rest</span>';
+    else if (k === 'on its own') pill = '<span class="pill dim">On its own</span>';
+    else pill = '<span class="pill warn">Shared slow swings</span>';
+    var ahead = !q || k === 'on its own' ? '–' : Math.abs(q.lagS) < 1 ? 'together' : (q.lagS > 0 ? q.lagS + ' s ahead' : -q.lagS + ' s behind') + ' <span class="muted">(' + Math.abs(q.alongYd) + ' yd)</span>';
+    ft += '<tr><td><b>' + esc(row.id) + '</b></td><td>' + pill + '</td><td>' + ahead + '</td><td class="n">' + (q ? q.r.toFixed(2) : '–') + '</td><td class="n">' + (q && q.rNow != null ? q.rNow.toFixed(2) : '–') + '</td><td class="n">' + (q && q.lagS >= 2 ? (q.skill >= 0 ? '+' : '') + q.skill.toFixed(2) : '–') + '</td></tr>';
+  });
+  $('relField').innerHTML = ft + (fl.length >= 3 ? '' : '<tr><td colspan="6" class="muted">Needs three or more meters reporting.</td></tr>') + '</tbody>';
   var sg = pairsFor(sec, RT.calls && RT.calls.sector === sec ? RT.calls.avg : null);
   var t = '<thead><tr><th>Sentinel → meter</th><th>From</th><th>Lag</th><th>Speed tol.</th><th>Dir tol.</th><th>Ratio</th><th>r</th></tr></thead><tbody>';
   sg.forEach(function (p) { t += '<tr><td><b>' + esc(p.sentId) + ' → ' + esc(p.nodeId) + '</b></td><td>' + (p.src === 'data' ? '<span class="pill good">Wind data</span>' : '<span class="pill dim">Layout</span>') + (p.proven ? ' <span class="pill acc">Predicts</span>' : '') + '</td><td class="n">' + p.lagS + ' s</td><td class="n">±' + p.spdPct + '%</td><td class="n">±' + p.dirDeg + '°</td><td class="n">' + p.ratio.toFixed(2) + '×</td><td class="n">' + (p.r != null ? p.r.toFixed(2) : '–') + '</td></tr>'; });
