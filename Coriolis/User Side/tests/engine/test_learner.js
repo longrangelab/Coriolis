@@ -96,7 +96,7 @@ const REL = relData(3000);
 ok('relations: finds who leads, by how long, and the speed ratio', () => {
   const p = REL.pair('B', 'A', 6);
   assert.strictEqual(p.lead, 'A'); assert.strictEqual(p.follow, 'B'); assert.strictEqual(p.lagS, 12);
-  assert(p.r > 0.9 && p.significant, 'r ' + p.r);
+  assert(p.r > 0.85 && p.significant, 'r ' + p.r);   // this test air keeps a fixed 12 s whatever the speed; learning is by yards, so a little blur
   near(p.ratio, 0.8, 0.03, 'ratio'); near(p.gain, 0.8, 0.05, 'gain'); near(p.dirOff, 10, 1.5, 'dir offset');
   assert(p.skill > 0.5, 'beats persistence ' + p.skill);
   assert.strictEqual(WL.relationKind(p), 'leads');
@@ -194,7 +194,7 @@ ok('forecaster: predict interpolates, reports doubt and round-trips', () => {
 function loopRun(evolve, seconds) {
   const rr = rng(3), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const G = []; let x = 0; for (let t = 0; t < seconds + 100; t++) { x = 0.95 * x + 0.6 * gg(); G.push(x); }
-  const L = new WL.ForecastLoop(null, { seed: 7, evolve });          // no hints: it has to find the pair itself
+  const L = new WL.ForecastLoop(null, { seed: 7, evolve, regimes: false });          // no hints: it has to find the pair itself
   for (let t = 50; t < seconds + 50; t++) { L.add('S', t, 10 + 3 * G[t] + 0.2 * gg(), 270); L.add('N', t, 0.9 * (10 + 3 * G[t - 22]) + 0.2 * gg(), 270 + 3 * gg()); L.add('X', t, 10 + 2 * gg(), 270); }
   return L;
 }
@@ -227,7 +227,7 @@ ok('wind loop: every prediction is checked only after its wind arrives, and the 
 });
 ok('wind loop: a base restart (clock back to zero) does not stop the checking', () => {
   const rr = rng(4), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
-  const L = new WL.ForecastLoop(null, { seed: 3 });
+  const L = new WL.ForecastLoop(null, { seed: 3, regimes: false });
   for (let t = 2000; t < 3200; t++) { L.addEnv(t, { pressure: 1000 + gg() }); L.add('A', t, 10 + 2 * gg(), 270); }
   const before = L.info('A').checked, gen = L.info('A').generation;
   for (let t = 5; t < 400; t++) { L.addEnv(t, { pressure: 1000 + gg() }); L.add('A', t, 10 + 2 * gg(), 270); }
@@ -238,7 +238,7 @@ ok('wind loop: a base restart (clock back to zero) does not stop the checking', 
 ok('wind loop: a new neural net gets 30 min before it can be retired (unless worse than "stays"), two at a time at most', () => {
   const rr = rng(8), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const G = []; let x = 0; for (let t = 0; t < 14500; t++) { x = 0.95 * x + 0.6 * gg(); G.push(x); }
-  const L = new WL.ForecastLoop(null, { seed: 5, maxCandidates: 10 }), born = {}, ages = [], scores = {};
+  const L = new WL.ForecastLoop(null, { seed: 5, maxCandidates: 10, regimes: false }), born = {}, ages = [], scores = {};
   let young = 0;
   const orig = L._generation.bind(L);
   L._generation = function (id, p, sec) {
@@ -254,10 +254,51 @@ ok('wind loop: a new neural net gets 30 min before it can be retired (unless wor
   assert(ages.every(a => a[0] >= 20 || a[1] > 1.05), 'no net retired before 20 generations unless worse than "stays": ' + JSON.stringify(ages));
   assert(young <= 2, 'at most two young nets at once: ' + young);
 });
+// two clusters: in a west wind A1 is 20 s upwind of A2, in a north wind B1 is 25 s upwind of it
+function clusterRun(regimes, segS, nSeg) {
+  const rr = rng(11), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const T = segS * nSeg + 200, GA = [], GB = []; let a = 0, b = 0;
+  for (let t = 0; t < T; t++) { a = 0.95 * a + 0.6 * gg(); b = 0.95 * b + 0.6 * gg(); GA.push(a); GB.push(b); }
+  const L = new WL.ForecastLoop(null, { seed: 4, regimes, speedBands: false }), pend = {}; let se = 0, n = 0;
+  for (let t = 100; t < T - 50; t++) {
+    const seg = Math.floor((t - 100) / segS), west = seg % 2 === 0, dir = west ? 270 : 0;
+    const R = { A1: 10 + 3 * GA[t], B1: 10 + 3 * GB[t], A2: west ? 10 + 3 * GA[t - 20] : 10 + 3 * GB[t - 25] };
+    for (const id in R) L.add(id, t, R[id] + 0.3 * gg(), dir + 4 * gg());
+    const d = dir * Math.PI / 180, last = L.rt.A2.s[t], q = pend[t];
+    if (q && seg >= 2) { se += ((q.x - last.u) ** 2 + (q.y - last.v) ** 2) / 2; n++; }
+    const f = L.predict('A2', t + 10); if (f) pend[t + 10] = f;
+  }
+  return { L, rmse: Math.sqrt(se / n) };
+}
+ok('wind loop: each wind direction keeps what it learned, and gets it back when the wind returns', () => {
+  const M = clusterRun(true, 1800, 8), A = clusterRun(false, 1800, 8);
+  const names = M.L.regimeList().map(r => r.name);
+  assert(names.includes('From W') && names.includes('From N'), names.join(','));
+  assert(M.L.log('A2').some(q => /brought back/.test(q.txt)), 'models come back when the wind does');
+  assert(M.rmse < 0.9 * A.rmse, 'remembering beats relearning: ' + M.rmse.toFixed(3) + ' vs ' + A.rmse.toFixed(3));
+  const W = M.L.regimeList().find(r => r.name === 'From W'), N = M.L.regimeList().find(r => r.name === 'From N');
+  assert(W.meters.A2.leaders.some(l => l.by === 'A1' && Math.abs(l.lag - 20) <= 2) || N.meters.A2.leaders.some(l => l.by === 'B1' && Math.abs(l.lag - 25) <= 2), 'the right Sentinel per wind: ' + JSON.stringify([W.meters.A2, N.meters.A2]));
+  const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(M.L.toJSON())));
+  assert.strictEqual(L2.regimeList().length, M.L.regimeList().length, 'what it knows per wind is saved');
+  assert.strictEqual(L2.regime(), M.L.regime());
+});
+ok('relations: learned in yards of air travel, so two wind speeds agree', () => {
+  const R = new WL.Relations(), rr = rng(21), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  // B is 60 yd downwind of A: 12.3 s at 10 mph, 6.1 s at 20 mph
+  const G = []; let x = 0; for (let t = 0; t < 4000; t++) { x = 0.9 * x + 0.9 * gg(); G.push(x); }
+  for (let t = 20; t < 3600; t++) {
+    const mph = t < 1800 ? 10 : 20, lag = 60 / (mph * WL.YD_PER_S_PER_MPH), k = Math.floor(lag), w = lag - k;
+    const gB = (1 - w) * G[t - k] + w * G[t - k - 1];
+    R.ingest(t, { A: { spd: mph + 2 * G[t], dir: 270 }, B: { spd: mph + 2 * gB, dir: 270 } });
+  }
+  const p = R.pair('A', 'B', 6);
+  assert(p.lead === 'A' && Math.abs(p.alongYd - 60) <= 6 && p.r > 0.8, JSON.stringify(p));
+  near(p.lagF, 60 / (p.atMph * WL.YD_PER_S_PER_MPH), 1.5, 'seconds at the speed it learned in');
+});
 ok('wind loop: other sensors are optional inputs that must earn their place', () => {
   const rr = rng(13), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
   const G = []; let x = 0; for (let t = 0; t < 3200; t++) { x = 0.97 * x + 0.4 * gg(); G.push(x); }
-  const L = new WL.ForecastLoop(null, { seed: 5 });
+  const L = new WL.ForecastLoop(null, { seed: 5, regimes: false });
   // a base pressure reading that moves 20 s before the wind does; a meter light reading that means nothing
   for (let t = 50; t < 3050; t++) { L.addEnv(t, { pressure: 1000 + G[t + 20] }); L.add('N', t, 10 + 3 * G[t] + 0.2 * gg(), 270, { light: 500 + 50 * gg() }); }
   assert.deepStrictEqual(L.channels(), ['light', 'pressure']);
@@ -381,6 +422,7 @@ async function pageTest() {
   assert.strictEqual(sc.ch, 'light,pressure,temp', 'practice: simulated sensors reach the wind model');
   assert(sc.top.some(L => L.some(I => I.some(q => q.k === 'pressure'))), 'practice: the leading pressure is found on its own ' + JSON.stringify(sc.top));
   assert(!sc.note || /10 s ahead than its best without|no sensor helps yet|checked enough/.test(sc.note), 'Predict tab says what the sensors are worth: ' + sc.note);
+  assert(await p.evaluate(() => { RT.regAt = 0; renderRegimes(RT.fc); return document.querySelectorAll('#pRegs tbody tr').length >= 1 && /\(now\)/.test(document.getElementById('pRegs').textContent); }), 'Predict tab lists what it knows, wind by wind');
   assert(await p.evaluate(() => document.querySelectorAll('#pPool tbody tr').length >= 4 && !!document.querySelector('#pHist polyline') && !!document.querySelector('#pTrace polyline') && +document.getElementById('kPc').textContent.replace(/,/g, '') > 10000), 'Predict tab: pool, skill by generation, predicted vs actual');
   // live mode against the mock base
   await p.click('#modeLive');

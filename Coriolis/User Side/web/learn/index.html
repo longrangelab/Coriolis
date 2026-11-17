@@ -272,6 +272,11 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="note">A pair is proven when the best model for a meter leans on another meter's reading and beats every model without it by at least 10%. One that is not upwind still helps the forecast (big gusts and swings cover several meters) but makes a poor Wind Lab Sentinel; Wind Lab's pairs come from Relations, which demands an upwind leader.</div>
       </div>
       <div>
+        <div class="lbl" style="margin-bottom:4px">What it knows, wind by wind</div>
+        <div class="tblwrap"><table id="pRegs"></table></div>
+        <div class="note">Every wind direction and speed band keeps its own models. When the wind turns, the ones for the wind it left are put away and the ones it learned for the new wind come back to compete, so a Sentinel pair that only works in a north wind is ready the next time the wind comes from the north. Skill is how much of the error of "the wind stays as it is" it removes 10 s ahead, averaged over the meters.</div>
+      </div>
+      <div>
         <div class="lbl" style="margin-bottom:4px">What it tried</div>
         <div class="tblwrap" style="max-height:240px;overflow:auto"><table id="pLog"></table></div>
       </div>
@@ -689,6 +694,12 @@ function computeImportance() {
   Object.keys(RT.leadList || {}).forEach(function (f) { RT.leadList[f].forEach(function (l) { imp[l.by] = Math.max(imp[l.by] || 0, 0.15 * (path[f] || 0)); }); });
   RT.imp = imp;
 }
+// a pair's lead at today's wind speed: Relations learns how far the air
+// travels between the meters, so the seconds follow the speed
+function lagNow(p) {
+  var v = RT.calls && RT.calls.avg, mph = v ? Math.hypot(v.x, v.y) : 0;
+  return p.alongYd > 0 && mph > 1 ? Math.max(1, Math.round(p.alongYd / (mph * WL.YD_PER_S_PER_MPH))) : p.lagS;
+}
 function refreshLeaders() {
   var sec = RT.calls ? RT.calls.sector : null, out = {};
   if (sec != null) {
@@ -704,7 +715,7 @@ function refreshLeaders() {
   if (sec != null) RT.rel.summary(sec).pairs.forEach(function (x) {
     var p = x.p; if (!p || !p.significant || p.lagS < 2 || WL.relationKind(p) !== 'leads') return;
     var A = ST.meters.find(function (m) { return m.id === p.lead; }), B = ST.meters.find(function (m) { return m.id === p.follow; });
-    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: p.lagS });
+    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: lagNow(p) });
   });
   if (sec != null && RT.calls) WL.geometryPairs(ST.meters, RT.calls.avg).forEach(function (q) { var L = all[q.nodeId] || (all[q.nodeId] = []); if (!L.some(function (o) { return o.by === q.sentId; })) L.push({ by: q.sentId, lagS: q.lagS }); });
   RT.pairsNow = sec != null ? pairsFor(sec, RT.calls ? RT.calls.avg : null) : [];
@@ -1133,6 +1144,21 @@ function sensorVerdict(F, id) {
   return g >= 0.03 ? ' ' + id + ': its best model with ' + what + ' is ' + Math.round(g * 100) + '% more accurate 10 s ahead than its best without sensors.'
     : ' ' + id + ': no sensor helps yet (best with ' + what + ': ' + (g >= 0 ? Math.round(g * 100) + '% better' : Math.round(-g * 100) + '% worse') + ' than the best without).';
 }
+// what the wind model knows for each wind it has met (refreshed every 10 s:
+// reading a put-away wind means unpacking it)
+function renderRegimes(F) {
+  if (!F.regimeList) return;
+  if (RT.regAt && Date.now() - RT.regAt < 10000 && $('pRegs').innerHTML) return;
+  RT.regAt = Date.now();
+  var L = F.regimeList(), h = '<thead><tr><th>Wind</th><th>Seen</th><th>Skill 10 s</th><th>Sentinels it leans on</th></tr></thead><tbody>';
+  L.forEach(function (r) {
+    var ids = Object.keys(r.meters), sk = ids.map(function (id) { return r.meters[id].skill10; }).filter(function (v) { return v != null; });
+    var pairs = [];
+    ids.forEach(function (id) { r.meters[id].leaders.forEach(function (l) { pairs.push(l.by + ' → ' + id + ' ' + l.lag + ' s'); }); });
+    h += '<tr' + (r.now ? ' style="font-weight:600"' : '') + '><td>' + esc(r.name) + (r.now ? ' (now)' : '') + '</td><td class="n">' + fmtDur(r.seconds) + '</td><td class="n">' + (sk.length ? pct(sk.reduce(function (a, b) { return a + b; }, 0) / sk.length) : '–') + '</td><td>' + (pairs.length ? esc(pairs.join(', ')) : '<span class="muted">none yet</span>') + '</td></tr>';
+  });
+  $('pRegs').innerHTML = h + (L.length ? '' : '<tr><td colspan="4" class="muted">Waiting for a minute of wind.</td></tr>') + '</tbody>';
+}
 function renderPred() {
   var F = RT.fc, ids = F.meters(), sel = $('pMeter'), h = +$('pH').value || 10;
   if (sel.options.length !== ids.length || ids.some(function (id, i) { return sel.options[i].value !== id; })) {
@@ -1188,6 +1214,7 @@ function renderPred() {
     pt += '<tr><td><b>' + esc(q.sentId) + '</b></td><td>' + esc(q.nodeId) + '</td><td class="n">' + q.lagS + ' s</td><td class="n">' + pct(q.gain) + '</td><td>' + (up ? '<span class="pill good">Yes</span>' : '<span class="pill dim">No</span>') + '</td><td>' + (ag ? '<span class="pill good">Yes</span>' : '<span class="pill dim">Not yet</span>') + '</td></tr>';
   });
   $('pPairs').innerHTML = pt + (pairs.length ? '' : '<tr><td colspan="6" class="muted">None yet. It takes a few generations to find and prove a pair.</td></tr>') + '</tbody>';
+  renderRegimes(F);
   // what it tried
   var lg = F.log(id).slice().reverse(), lt = '<thead><tr><th>Gen</th><th>' + esc(id) + '</th></tr></thead><tbody>';
   lg.forEach(function (q) { lt += '<tr><td class="n">' + q.g + '</td><td>' + esc(q.txt) + '</td></tr>'; });
@@ -1563,7 +1590,7 @@ function drawRelChart(sec) {
   if (p) { var pk = p.lead === a ? p.lagS : -p.lagS; g += '<circle cx="' + xs(pk) + '" cy="' + ys(p.r) + '" r="4.5" fill="' + COL.accent + '"/>'; }
   g += '<text x="' + (W - Rm) + '" y="' + (H - 1) + '" text-anchor="end" font-size="10" fill="' + COL.ink + '">' + esc(a) + ' earlier →</text><text x="' + Lm + '" y="' + (H - 1) + '" font-size="10" fill="' + COL.ink + '">← ' + esc(b) + ' earlier</text>';
   svg.innerHTML = g;
-  $('relChartNote').textContent = p ? ('Peak r ' + p.r.toFixed(2) + (p.lagS ? ' with ' + p.lead + ' ' + p.lagS + ' s ahead' : ' with no shift') + '. ' + p.follow + "'s own gusts " + p.lagS + ' s earlier match it at ' + Math.max(0, p.rPersist).toFixed(2) + ', so ' + p.lead + (p.skill > 0.05 ? ' adds real warning.' : ' adds little beyond that.') + (p.significant ? '' : ' Not enough data yet to trust it.')) : 'Not enough data yet.';
+  $('relChartNote').textContent = p ? ('Peak r ' + p.r.toFixed(2) + (p.lagS ? ' with ' + p.lead + ' ' + p.lagS + ' s ahead (about ' + p.alongYd + ' yd of air travel at the ' + Math.round(p.atMph) + ' mph it learned in; at other speeds the lead scales with the wind)' : ' with no shift') + '. ' + p.follow + "'s own gusts " + p.lagS + ' s earlier match it at ' + Math.max(0, p.rPersist).toFixed(2) + ', so ' + p.lead + (p.skill > 0.05 ? ' adds real warning.' : ' adds little beyond that.') + (p.significant ? '' : ' Not enough data yet to trust it.')) : 'Not enough data yet.';
 }
 $('relReset').onclick = function () { $('relResetConfirm').hidden = false; };
 $('relResetNo').onclick = function () { $('relResetConfirm').hidden = true; };

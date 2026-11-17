@@ -285,6 +285,11 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="note">A pair is proven when the best model for a meter leans on another meter's reading and beats every model without it by at least 10%. One that is not upwind still helps the forecast (big gusts and swings cover several meters) but makes a poor Wind Lab Sentinel; Wind Lab's pairs come from Relations, which demands an upwind leader.</div>
       </div>
       <div>
+        <div class="lbl" style="margin-bottom:4px">What it knows, wind by wind</div>
+        <div class="tblwrap"><table id="pRegs"></table></div>
+        <div class="note">Every wind direction and speed band keeps its own models. When the wind turns, the ones for the wind it left are put away and the ones it learned for the new wind come back to compete, so a Sentinel pair that only works in a north wind is ready the next time the wind comes from the north. Skill is how much of the error of "the wind stays as it is" it removes 10 s ahead, averaged over the meters.</div>
+      </div>
+      <div>
         <div class="lbl" style="margin-bottom:4px">What it tried</div>
         <div class="tblwrap" style="max-height:240px;overflow:auto"><table id="pLog"></table></div>
       </div>
@@ -702,6 +707,12 @@ function computeImportance() {
   Object.keys(RT.leadList || {}).forEach(function (f) { RT.leadList[f].forEach(function (l) { imp[l.by] = Math.max(imp[l.by] || 0, 0.15 * (path[f] || 0)); }); });
   RT.imp = imp;
 }
+// a pair's lead at today's wind speed: Relations learns how far the air
+// travels between the meters, so the seconds follow the speed
+function lagNow(p) {
+  var v = RT.calls && RT.calls.avg, mph = v ? Math.hypot(v.x, v.y) : 0;
+  return p.alongYd > 0 && mph > 1 ? Math.max(1, Math.round(p.alongYd / (mph * WL.YD_PER_S_PER_MPH))) : p.lagS;
+}
 function refreshLeaders() {
   var sec = RT.calls ? RT.calls.sector : null, out = {};
   if (sec != null) {
@@ -717,7 +728,7 @@ function refreshLeaders() {
   if (sec != null) RT.rel.summary(sec).pairs.forEach(function (x) {
     var p = x.p; if (!p || !p.significant || p.lagS < 2 || WL.relationKind(p) !== 'leads') return;
     var A = ST.meters.find(function (m) { return m.id === p.lead; }), B = ST.meters.find(function (m) { return m.id === p.follow; });
-    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: p.lagS });
+    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: lagNow(p) });
   });
   if (sec != null && RT.calls) WL.geometryPairs(ST.meters, RT.calls.avg).forEach(function (q) { var L = all[q.nodeId] || (all[q.nodeId] = []); if (!L.some(function (o) { return o.by === q.sentId; })) L.push({ by: q.sentId, lagS: q.lagS }); });
   RT.pairsNow = sec != null ? pairsFor(sec, RT.calls ? RT.calls.avg : null) : [];
@@ -1146,6 +1157,21 @@ function sensorVerdict(F, id) {
   return g >= 0.03 ? ' ' + id + ': its best model with ' + what + ' is ' + Math.round(g * 100) + '% more accurate 10 s ahead than its best without sensors.'
     : ' ' + id + ': no sensor helps yet (best with ' + what + ': ' + (g >= 0 ? Math.round(g * 100) + '% better' : Math.round(-g * 100) + '% worse') + ' than the best without).';
 }
+// what the wind model knows for each wind it has met (refreshed every 10 s:
+// reading a put-away wind means unpacking it)
+function renderRegimes(F) {
+  if (!F.regimeList) return;
+  if (RT.regAt && Date.now() - RT.regAt < 10000 && $('pRegs').innerHTML) return;
+  RT.regAt = Date.now();
+  var L = F.regimeList(), h = '<thead><tr><th>Wind</th><th>Seen</th><th>Skill 10 s</th><th>Sentinels it leans on</th></tr></thead><tbody>';
+  L.forEach(function (r) {
+    var ids = Object.keys(r.meters), sk = ids.map(function (id) { return r.meters[id].skill10; }).filter(function (v) { return v != null; });
+    var pairs = [];
+    ids.forEach(function (id) { r.meters[id].leaders.forEach(function (l) { pairs.push(l.by + ' → ' + id + ' ' + l.lag + ' s'); }); });
+    h += '<tr' + (r.now ? ' style="font-weight:600"' : '') + '><td>' + esc(r.name) + (r.now ? ' (now)' : '') + '</td><td class="n">' + fmtDur(r.seconds) + '</td><td class="n">' + (sk.length ? pct(sk.reduce(function (a, b) { return a + b; }, 0) / sk.length) : '–') + '</td><td>' + (pairs.length ? esc(pairs.join(', ')) : '<span class="muted">none yet</span>') + '</td></tr>';
+  });
+  $('pRegs').innerHTML = h + (L.length ? '' : '<tr><td colspan="4" class="muted">Waiting for a minute of wind.</td></tr>') + '</tbody>';
+}
 function renderPred() {
   var F = RT.fc, ids = F.meters(), sel = $('pMeter'), h = +$('pH').value || 10;
   if (sel.options.length !== ids.length || ids.some(function (id, i) { return sel.options[i].value !== id; })) {
@@ -1201,6 +1227,7 @@ function renderPred() {
     pt += '<tr><td><b>' + esc(q.sentId) + '</b></td><td>' + esc(q.nodeId) + '</td><td class="n">' + q.lagS + ' s</td><td class="n">' + pct(q.gain) + '</td><td>' + (up ? '<span class="pill good">Yes</span>' : '<span class="pill dim">No</span>') + '</td><td>' + (ag ? '<span class="pill good">Yes</span>' : '<span class="pill dim">Not yet</span>') + '</td></tr>';
   });
   $('pPairs').innerHTML = pt + (pairs.length ? '' : '<tr><td colspan="6" class="muted">None yet. It takes a few generations to find and prove a pair.</td></tr>') + '</tbody>';
+  renderRegimes(F);
   // what it tried
   var lg = F.log(id).slice().reverse(), lt = '<thead><tr><th>Gen</th><th>' + esc(id) + '</th></tr></thead><tbody>';
   lg.forEach(function (q) { lt += '<tr><td class="n">' + q.g + '</td><td>' + esc(q.txt) + '</td></tr>'; });
@@ -1576,7 +1603,7 @@ function drawRelChart(sec) {
   if (p) { var pk = p.lead === a ? p.lagS : -p.lagS; g += '<circle cx="' + xs(pk) + '" cy="' + ys(p.r) + '" r="4.5" fill="' + COL.accent + '"/>'; }
   g += '<text x="' + (W - Rm) + '" y="' + (H - 1) + '" text-anchor="end" font-size="10" fill="' + COL.ink + '">' + esc(a) + ' earlier →</text><text x="' + Lm + '" y="' + (H - 1) + '" font-size="10" fill="' + COL.ink + '">← ' + esc(b) + ' earlier</text>';
   svg.innerHTML = g;
-  $('relChartNote').textContent = p ? ('Peak r ' + p.r.toFixed(2) + (p.lagS ? ' with ' + p.lead + ' ' + p.lagS + ' s ahead' : ' with no shift') + '. ' + p.follow + "'s own gusts " + p.lagS + ' s earlier match it at ' + Math.max(0, p.rPersist).toFixed(2) + ', so ' + p.lead + (p.skill > 0.05 ? ' adds real warning.' : ' adds little beyond that.') + (p.significant ? '' : ' Not enough data yet to trust it.')) : 'Not enough data yet.';
+  $('relChartNote').textContent = p ? ('Peak r ' + p.r.toFixed(2) + (p.lagS ? ' with ' + p.lead + ' ' + p.lagS + ' s ahead (about ' + p.alongYd + ' yd of air travel at the ' + Math.round(p.atMph) + ' mph it learned in; at other speeds the lead scales with the wind)' : ' with no shift') + '. ' + p.follow + "'s own gusts " + p.lagS + ' s earlier match it at ' + Math.max(0, p.rPersist).toFixed(2) + ', so ' + p.lead + (p.skill > 0.05 ? ' adds real warning.' : ' adds little beyond that.') + (p.significant ? '' : ' Not enough data yet to trust it.')) : 'Not enough data yet.';
 }
 $('relReset').onclick = function () { $('relResetConfirm').hidden = false; };
 $('relResetNo').onclick = function () { $('relResetConfirm').hidden = true; };
@@ -2014,19 +2041,31 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
    * readings for that second (dir = degrees the wind blows FROM). Missing
    * meters are simply left out.
    */
+  /*
+   * Pairs are learned by DISTANCE along the wind, not by seconds: a gust
+   * that reaches meter b 60 yd after meter a does so in 12 s at 10 mph and
+   * 6 s at 20 mph. Each second, bin j compares b now with a as it was
+   * j * 6 yd of travel ago at the field's running wind speed (seconds
+   * interpolated). So every speed adds to the same peak, and the lag at
+   * any live speed is alongYd / speed. Out to 480 yd (98 s at 10 mph),
+   * as far as the 200 s of history reaches.
+   */
+  var REL_BIN = 6, REL_D = 480, REL_RING = 200;
   function Relations(state, cfg) {
     cfg = cfg || {};
-    state = state || null;
-    this.L = (state && state.L) || cfg.maxLag || 40;
+    if (state && state.kind !== 'dist') state = null;   // older by-seconds data: start over
+    this.L = 40;                                         // own-gust persistence, seconds (for n_eff)
+    this.NB = Math.round(((state && state.D) || cfg.maxYd || REL_D) / REL_BIN);
     this.tau = (state && state.tau) || cfg.tau || 60;
     // s = sector 0..7 or 'all'
-    this.P = (state && state.P) || {};     // 'a|b|s' -> {n,ab,aa,bb,ds,dc} arrays, index lag+L (lag>0: a leads b)
-    this.A = (state && state.A) || {};     // 'id|s'  -> {n,c} arrays, autocovariance lags 0..L
+    this.P = (state && state.P) || {};     // 'a|b|s' -> {n,ab,aa,bb,ds,dc} arrays, index j+NB (j>0: a leads b by j*BIN yd)
+    this.A = (state && state.A) || {};     // 'id|s'  -> {n,c} arrays, autocovariance lags 0..L s
     this.M = (state && state.M) || {};     // 'id|s'  -> [n, sum speed]
+    this.U = (state && state.U) || {};     // s -> [n, sum field speed mph] (turns yards back into seconds)
     this.secs = (state && state.secs) || 0;
     this.sectorSecs = (state && state.sectorSecs) || new Array(SECTORS).fill(0);
     this.rt = {};                          // per meter: {ema, ring} (not saved)
-    this.lastT = null;
+    this.lastT = null; this.fu = null;
   }
   function zeros(n) { return new Array(n).fill(0); }
   function pairKey(a, b) { return String(a) < String(b) ? [String(a), String(b)] : [String(b), String(a)]; }
@@ -2039,17 +2078,20 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     var L = this.L, self = this, id;
     // a gap in time pushes empty seconds so lags stay honest
     if (this.lastT != null) {
-      var gap = Math.min(L + 1, Math.round(t - this.lastT) - 1);
-      for (var g = 0; g < gap; g++) for (id in this.rt) { this.rt[id].ring.unshift(null); this.rt[id].ring.length = Math.min(this.rt[id].ring.length, L + 1); }
+      var gap = Math.min(REL_RING, Math.round(t - this.lastT) - 1);
+      for (var g = 0; g < gap; g++) for (id in this.rt) { this.rt[id].ring.unshift(null); this.rt[id].ring.length = Math.min(this.rt[id].ring.length, REL_RING); }
       if (t - this.lastT > 600) for (id in this.rt) { this.rt[id].ema = null; this.rt[id].ring = []; }   // long break: start the running means again
     }
     this.lastT = t;
     // field wind for this second picks the sector
-    var sx = 0, sy = 0, cnt = 0, ids = Object.keys(readings);
+    var sx = 0, sy = 0, cnt = 0, ss = 0, ids = Object.keys(readings);
     ids.forEach(function (k) {
       var r = readings[k]; if (!r || !isFinite(r.spd) || !isFinite(r.dir)) return;
-      var d = r.dir * Math.PI / 180; sx += r.spd * Math.sin(d); sy += r.spd * Math.cos(d); cnt++;
+      var d = r.dir * Math.PI / 180; sx += r.spd * Math.sin(d); sy += r.spd * Math.cos(d); cnt++; ss += r.spd;
     });
+    // the speed gusts travel at: the field's running mean speed (2 min; a
+    // gust rides the bigger air mass, it doesn't race ahead at its own speed)
+    if (cnt) { this.fk = (this.fk || 0) + 1; this.fu = this.fu == null ? ss / cnt : this.fu + (ss / cnt - this.fu) / Math.min(this.fk, 120); }
     // a wind within 7.5 deg of a sector edge counts for both neighbours, so a
     // wind sitting on the W/SW line does not split its learning in two
     var sectors = [];
@@ -2071,18 +2113,19 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
       R.k = (R.k || 0) + 1;
       R.ema += (r.spd - R.ema) / Math.min(R.k, self.tau);
       R.ring.unshift({ f: f, spd: r.spd, dir: r.dir });
-      if (R.ring.length > L + 1) R.ring.length = L + 1;
+      if (R.ring.length > REL_RING) R.ring.length = REL_RING;
       present[k] = true;
     });
-    for (id in present) if (!present[id]) { var R0 = this.rt[id]; R0.ring.unshift(null); if (R0.ring.length > L + 1) R0.ring.length = L + 1; }
+    for (id in present) if (!present[id]) { var R0 = this.rt[id]; R0.ring.unshift(null); if (R0.ring.length > REL_RING) R0.ring.length = REL_RING; }
     if (!sectors.length) return;
     this.secs++;
     this._accumulate('all', present);
     for (var si = 0; si < sectors.length; si++) this._accumulate(sectors[si], present);
   };
   Relations.prototype._accumulate = function (sector, present) {
-    var self = this, L = this.L;
+    var self = this, L = this.L, NB = this.NB, ups = Math.max(0.5, this.fu || 0) * YD_PER_S_PER_MPH;
     if (sector !== 'all') this.sectorSecs[sector]++;
+    var Us = this.U[sector] || (this.U[sector] = [0, 0]); Us[0]++; Us[1] += this.fu || 0;
     var live = Object.keys(present).filter(function (k) { return present[k]; });
     live.forEach(function (k) {
       var R = self.rt[k], cur = R.ring[0], key = k + '|' + sector;
@@ -2095,16 +2138,24 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
       var pk = pairKey(all[i], all[j2]), a = pk[0], b = pk[1];
       var Ra = this.rt[a].ring, Rb = this.rt[b].ring;
       if (!Ra[0] && !Rb[0]) continue;
-      var key2 = a + '|' + b + '|' + sector;
-      var P = this.P[key2] || (this.P[key2] = { n: zeros(2 * L + 1), ab: zeros(2 * L + 1), aa: zeros(2 * L + 1), bb: zeros(2 * L + 1), ds: zeros(2 * L + 1), dc: zeros(2 * L + 1) });
-      for (var k = 0; k <= L; k++) {
-        // +k: a at t-k with b now (a leads b by k s)
-        if (Rb[0] && Ra[k]) this._add(P, L + k, Ra[k], Rb[0]);
-        // -k: b at t-k with a now (b leads a by k s)
-        if (k > 0 && Ra[0] && Rb[k]) this._add(P, L - k, Ra[0], Rb[k], true);
+      var key2 = a + '|' + b + '|' + sector, W = 2 * NB + 1;
+      var P = this.P[key2] || (this.P[key2] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W), ds: zeros(W), dc: zeros(W) });
+      for (var jb = 0; jb <= NB; jb++) {
+        var kf = jb * REL_BIN / ups; if (kf > REL_RING - 2) break;
+        // +j: a as it was j bins of travel ago, with b now (a leads b)
+        if (Rb[0]) { var xa = ringAt(Ra, kf); if (xa) this._add(P, NB + jb, xa, Rb[0]); }
+        // -j: b as it was, with a now (b leads a)
+        if (jb > 0 && Ra[0]) { var xb = ringAt(Rb, kf); if (xb) this._add(P, NB - jb, Ra[0], xb); }
       }
     }
   };
+  // a meter's reading kf seconds ago, between whole seconds by straight line
+  function ringAt(R, kf) {
+    var k0 = Math.floor(kf), w = kf - k0, o0 = R[k0], o1 = R[k0 + 1];
+    if (w < 1e-6) return o0 || null;
+    if (!o0 || !o1) return (w < 0.5 ? o0 : o1) || null;
+    return { f: o0.f + w * (o1.f - o0.f), spd: o0.spd + w * (o1.spd - o0.spd), dir: w < 0.5 ? o0.dir : o1.dir };
+  }
   // x = a's sample, y = b's sample; ds/dc hold direction(b) - direction(a)
   Relations.prototype._add = function (P, ix, x, y) {
     P.n[ix]++; P.ab[ix] += x.f * y.f; P.aa[ix] += x.f * x.f; P.bb[ix] += y.f * y.f;
@@ -2127,11 +2178,12 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
   };
   // the lagged correlation curve: [{lag, r, n}], lag > 0 means a leads b
   Relations.prototype.curve = function (a, b, sector) {
-    var pk = pairKey(a, b), flip = pk[0] !== String(a), P = this._P(pk[0], pk[1], sector), L = this.L, out = [];
+    var pk = pairKey(a, b), flip = pk[0] !== String(a), P = this._P(pk[0], pk[1], sector), NB = this.NB, out = [];
     if (!P) return out;
-    for (var i = 0; i <= 2 * L; i++) {
-      var n = P.n[i], d = Math.sqrt(P.aa[i] * P.bb[i]);
-      out.push({ lag: flip ? L - i : i - L, r: n && d > 0 ? P.ab[i] / d : 0, n: n });
+    var ups = Math.max(0.5, this.speed(sector) || 10) * YD_PER_S_PER_MPH;
+    for (var i = 0; i <= 2 * NB; i++) {
+      var n = P.n[i], d = Math.sqrt(P.aa[i] * P.bb[i]), yd = (flip ? NB - i : i - NB) * REL_BIN;
+      out.push({ lag: Math.round(yd / ups * 10) / 10, yd: yd, r: n && d > 0 ? P.ab[i] / d : 0, n: n });
     }
     if (flip) out.reverse();
     return out;
@@ -2140,26 +2192,36 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
    * One pair, one sector (or 'all'). Returns null until there is enough data.
    * lead/follow name the meters so that lead sees the gusts lagS seconds first.
    */
+  // the sector's mean wind speed while it learned (mph), to turn yards into seconds
+  Relations.prototype.speed = function (sector) { var u = this.U[sector]; return u && u[0] ? u[1] / u[0] : null; };
   Relations.prototype.pair = function (a, b, sector, opts) {
     opts = opts || {};
-    var minN = opts.minN || 120, L = this.L;
+    var minN = opts.minN || 120, NB = this.NB, L = this.L;
     var pk = pairKey(a, b); a = pk[0]; b = pk[1];
     var P = this._P(a, b, sector); if (!P) return null;
-    var best = -1, bestR = -2;
-    for (var i = 0; i <= 2 * L; i++) {
+    var best = -1, bestR = -2, rAt = function (i) { var d = Math.sqrt(P.aa[i] * P.bb[i]); return P.n[i] && d > 0 ? P.ab[i] / d : 0; };
+    for (var i = 0; i <= 2 * NB; i++) {
       if (P.n[i] < minN) continue;
-      var d = Math.sqrt(P.aa[i] * P.bb[i]), r = d > 0 ? P.ab[i] / d : 0;
-      // ties and near-ties go to the smaller lag (simplest explanation)
-      if (r > bestR + 0.005 || (Math.abs(r - bestR) <= 0.005 && Math.abs(i - L) < Math.abs(best - L))) { bestR = r; best = i; }
+      var r = rAt(i);
+      // ties and near-ties go to the shorter distance (simplest explanation)
+      if (r > bestR + 0.005 || (Math.abs(r - bestR) <= 0.005 && Math.abs(i - NB) < Math.abs(best - NB))) { bestR = r; best = i; }
     }
     if (best < 0) return null;
-    var k = best - L, lead = k >= 0 ? a : b, follow = k >= 0 ? b : a, lag = Math.abs(k);
+    // the peak between bins: a parabola through the best bin and its neighbours
+    var dj = 0;
+    if (best > 0 && best < 2 * NB && P.n[best - 1] >= minN && P.n[best + 1] >= minN) {
+      var r0 = rAt(best - 1), r2 = rAt(best + 1), den = r0 - 2 * bestR + r2;
+      if (den < -1e-9) dj = Math.max(-0.5, Math.min(0.5, 0.5 * (r0 - r2) / den));
+    }
+    var yd = (best - NB + dj) * REL_BIN, mph = Math.max(0.5, this.speed(sector) || 10);
+    var k = best - NB, lead = k >= 0 ? a : b, follow = k >= 0 ? b : a, along = Math.abs(yd);
+    var lagF = along / (mph * YD_PER_S_PER_MPH), lag = Math.round(lagF);
     var n = P.n[best];
     // effective sample size (Bartlett): neighbouring seconds are not independent
     var T = 1;
     for (var j = 1; j <= L; j++) T += 2 * this.autoCorr(a, sector, j) * this.autoCorr(b, sector, j);
     var neff = Math.max(4, n / Math.max(1, T)), se = 1 / Math.sqrt(Math.max(1, neff - 3));
-    var rPers = this.autoCorr(follow, sector, lag);
+    var rPers = this.autoCorr(follow, sector, Math.min(L, lag));
     var varLead = k >= 0 ? P.aa[best] : P.bb[best], varFol = k >= 0 ? P.bb[best] : P.aa[best];
     var gain = varLead > 0 ? P.ab[best] / varLead : 0;
     var sdFol = Math.sqrt(varFol / n);
@@ -2168,7 +2230,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     if (k < 0) dirOff = -dirOff;                                     // follow minus lead
     var mLead = this._mean(lead, sector), mFol = this._mean(follow, sector);
     return {
-      a: a, b: b, lead: lead, follow: follow, lagS: lag, r: bestR, n: n, neff: neff, se: se,
+      a: a, b: b, lead: lead, follow: follow, lagS: lag, lagF: lagF, alongYd: Math.round(along), atMph: mph, r: bestR, n: n, neff: neff, se: se,
       significant: bestR > 3 * se, rPersist: rPers, skill: bestR - Math.max(0, rPers),
       gain: gain, sdFollow: sdFol, ratio: mLead && mFol != null ? mFol / mLead : 1,
       meanLead: mLead, meanFollow: mFol,
@@ -2192,7 +2254,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
       pairs.push(row);
       if (p && p.significant && p.lagS >= 1 && p.skill > 0.05) {
         var cur = best[p.follow];
-        if (!cur || p.skill > cur.skill) best[p.follow] = { by: p.lead, lagS: p.lagS, r: p.r, skill: p.skill, ratio: p.ratio };
+        if (!cur || p.skill > cur.skill) best[p.follow] = { by: p.lead, lagS: p.lagS, alongYd: p.alongYd, r: p.r, skill: p.skill, ratio: p.ratio };
       }
     }
     var secs = sector === 'all' ? this.secs : this.sectorSecs[sector];
@@ -2218,7 +2280,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
         var mean = Math.max(2, p.meanFollow || 0);
         var spdPct = Math.min(50, Math.max(8, Math.round(1.5 * resid / mean * 100 / 5) * 5));
         var dirDeg = Math.min(45, Math.max(8, Math.round(1.5 * Math.min(p.dirSd, 30) / 5) * 5));
-        out.push({ sentId: p.lead, nodeId: p.follow, lagS: p.lagS, spdPct: spdPct, dirDeg: dirDeg,
+        out.push({ sentId: p.lead, nodeId: p.follow, lagS: p.lagS, alongYd: p.alongYd, atMph: Math.round(p.atMph * 10) / 10, spdPct: spdPct, dirDeg: dirDeg,
                    ratio: Math.round(p.ratio * 1000) / 1000, dirOff: Math.round(p.dirOff), r: Math.round(p.r * 100) / 100,
                    skill: Math.round(p.skill * 100) / 100 });
       });
@@ -2243,7 +2305,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
    * Sentinel pairs from the layout alone, for day one before any wind data:
    * for each path meter, the meter whose air reaches it from upwind, close
    * to straight down the wind (cross offset <= 30 yd or 30 % of the run),
-   * 3 to 60 s ahead, preferring about 15 s. Tolerances are wide (30 %, 20
+   * at least 3 s ahead and up to 480 yd upwind, preferring about 15 s. Tolerances are wide (30 %, 20
    * deg) because nothing has confirmed the pair yet. meters: [{id, x, y,
    * role}], windTo: air motion (mph). Returns one pair per meter at most.
    */
@@ -2257,7 +2319,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
       meters.forEach(function (A) {
         if (A === B || A.x == null) return;
         var e = expectedLag(A, B, windTo); if (!e || e.alongYd < 20) return;
-        if (e.lagS < (opts.minLag || 3) || e.lagS > (opts.maxLag || 60)) return;
+        if (e.lagS < (opts.minLag || 3) || (opts.maxLag ? e.lagS > opts.maxLag : e.alongYd > (opts.maxYd || REL_D))) return;   // out to 480 yd, as far as the wind data looks
         if (e.crossYd > Math.max(30, 0.3 * e.alongYd)) return;
         var score = e.crossYd / e.alongYd + 0.3 * Math.abs(Math.log(e.lagS / 15));
         if (!best || score < best.score) best = { score: score, A: A, e: e };
@@ -2267,11 +2329,15 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     });
     return out;
   }
+  function round4(v) { return Math.abs(v) < 1e-12 ? 0 : +v.toPrecision(4); }
   function round6(v) { return Math.abs(v) < 1e-9 ? 0 : +v.toPrecision(6); }
   Relations.prototype.toJSON = function () {
-    function pack(o) { var r = {}; for (var k in o) { r[k] = {}; for (var f in o[k]) r[k][f] = o[k][f].map(round6); } return r; }
+    // 5 significant figures: plenty for correlations, and a third smaller saved
+    function r5(v) { return Math.abs(v) < 1e-9 ? 0 : +v.toPrecision(5); }
+    function pack(o) { var r = {}; for (var k in o) { r[k] = {}; for (var f in o[k]) r[k][f] = o[k][f].map(r5); } return r; }
     var M = {}; for (var k in this.M) M[k] = this.M[k].map(round6);
-    return { L: this.L, tau: this.tau, P: pack(this.P), A: pack(this.A), M: M, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
+    var U = {}; for (var u in this.U) U[u] = this.U[u].map(round6);
+    return { kind: 'dist', D: this.NB * REL_BIN, tau: this.tau, P: pack(this.P), A: pack(this.A), M: M, U: U, secs: this.secs, sectorSecs: this.sectorSecs.slice() };
   };
 
   // ------------------------------------------------------------- forecaster
@@ -2456,11 +2522,101 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     this.rt = {};                                  // per meter ring of seconds
     this.env = { s: {}, cs: {} };                  // base-level channels by second
     this.chan = {};                                // channel names seen so far
-    this.P = {};                                   // per meter pool
+    this.P = {};                                   // per meter pool, for the wind blowing now
+    // memory by wind: every direction (8 x 45 deg) and speed band (3-8,
+    // 8-15, 15+ mph, plus calm) keeps its own pools. When the wind turns,
+    // the pools for the wind it left are put away (best few models each)
+    // and the ones for the new wind come back, learned weights and all.
+    this.regimes = cfg.regimes != null ? cfg.regimes !== false : state.regimes !== false;
+    this.noSpeedBands = cfg.speedBands != null ? cfg.speedBands === false : !!state.noSpeedBands;
+    this.cutN = cfg.cutN || 1e9;   // scores carry over a switch as they are (tested: cutting them back did worse)
+    this.reg = { cur: state.regCur || null, cand: null, candN: 0, last: -Infinity };
+    this.A = {};                                   // regime -> meter -> pool put away
+    this.regSecs = state.regSecs || {};            // regime -> seconds of wind seen
+    this.RB = state.RB || {};                      // regime -> meter -> horizon -> blend error record
     var self = this;
     (state.channels || []).forEach(function (k) { self.chan[k] = true; });
     if (state.P) Object.keys(state.P).forEach(function (id) { self.P[id] = self._restorePool(state.P[id]); });
+    if (state.A) Object.keys(state.A).forEach(function (rk) { self.A[rk] = {}; Object.keys(state.A[rk]).forEach(function (id) { self.A[rk][id] = state.A[rk][id]; }); });
   }
+  // the wind regime for a field wind (mph, from-degrees)
+  function regimeKey(mph, from, noSpeed) {
+    if (!(mph >= 3)) return 'calm';
+    return (Math.round(((from % 360) + 360) % 360 / 45) % 8) + '/' + (noSpeed ? 'a' : mph < 8 ? 0 : mph < 15 ? 1 : 2);
+  }
+  // still inside regime k, with margins: 1 mph past a speed edge and 10 deg
+  // past a direction edge before it counts as a different wind
+  function regimeHolds(k, mph, from) {
+    if (k === 'calm') return mph < 4;
+    var q = String(k).split('/'), sct = +q[0], b = +q[1];
+    if (mph < 2) return false;
+    var lo = q[1] === 'a' ? 2 : [2, 7, 14][b], hi = q[1] === 'a' ? Infinity : [9, 16, Infinity][b];
+    var off = Math.abs(((from - sct * 45) % 360 + 540) % 360 - 180);
+    return mph >= lo && mph < hi && off <= 32.5;
+  }
+  var REG_DIR = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'], REG_SPD = ['3-8 mph', '8-15 mph', '15+ mph'];
+  function regimeName(k) { if (k === 'calm') return 'Calm (under 3 mph)'; var q = String(k).split('/'); return 'From ' + REG_DIR[+q[0]] + (q[1] === 'a' ? '' : ', ' + REG_SPD[+q[1]]); }
+  // once a second: which wind is this? A new one has to hold for 60 s
+  // before the pools change over, so a passing swing doesn't churn them
+  ForecastLoop.prototype._regTick = function (sec) {
+    var G = this.reg; if (sec <= G.last) return; G.last = sec;
+    var sx = 0, sy = 0, n = 0;
+    for (var id in this.rt) { var R = this.rt[id]; if (R.last >= sec - 10 && R.mu != null) { sx += R.mu; sy += R.mv; n++; } }
+    if (!n) return;
+    var u = sx / n, v = sy / n, mph = Math.hypot(u, v), from = (Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360;
+    var k = regimeKey(mph, from, this.noSpeedBands);
+    if (G.cur == null) G.cur = k;
+    if (k !== G.cur && regimeHolds(G.cur, mph, from)) k = G.cur;   // near an edge: stay put
+    this.regSecs[G.cur] = (this.regSecs[G.cur] || 0) + 1;
+    if (k === G.cur) { G.cand = null; G.candN = 0; return; }
+    if (k !== G.cand) { G.cand = k; G.candN = 0; }
+    if (++G.candN >= 60) { this._switch(k, sec); G.cand = null; G.candN = 0; }
+  };
+  // The wind turned: what it learned for the old wind is put away, and what
+  // it learned before for the new wind joins the pool, weights and all, to
+  // compete with the models running now. Nothing is thrown out at the
+  // switch; the next generations keep whichever do best in this wind. Every
+  // score is cut back to 30 checks, so this wind's own record soon decides.
+  ForecastLoop.prototype._switch = function (k, sec) {
+    var old = this.reg.cur, me = this, keep = this.A[old] || (this.A[old] = {});
+    Object.keys(this.P).forEach(function (id) {
+      var p = me.P[id];
+      keep[id] = me._packPool(p, true);
+      p.list.forEach(function (c) { for (var h in c.S) c.S[h].n = Math.min(c.S[h].n, me.cutN); });
+      var back = me.A[k] && me.A[k][id], n = 0;
+      if (back) {
+        var bp = me._restorePool(back), sigs = p.list.map(lsig);
+        bp.list.forEach(function (c) {
+          if (c.kind === 'stay' || isBase(c) || sigs.indexOf(lsig(c)) >= 0) return;
+          c.id = p.next++; c.born = p.g; c.origin = 'remembered'; c.from = null;
+          for (var h in c.S) c.S[h].n = Math.min(c.S[h].n, me.cutN);
+          p.list.push(c); n++;
+        });
+        delete me.A[k][id];
+      }
+      me._log(p, sec, 'Wind now ' + regimeName(k) + (n ? ': brought back ' + n + ' model' + (n > 1 ? 's' : '') + ' it learned in this wind before' : ': new to this wind'));
+    });
+    if (this.A[k] && !Object.keys(this.A[k]).length) delete this.A[k];
+    this.reg.cur = k;
+  };
+  ForecastLoop.prototype._log = function (p, sec, txt) { p.log.push({ g: p.g, t: sec, txt: txt }); if (p.log.length > 80) p.log.shift(); };
+  // what it knows, wind by wind: [{key, name, now, seconds, meters: {id: {skill10, champ, pairs}}}]
+  ForecastLoop.prototype.regimeList = function () {
+    var me = this, out = {}, keys = Object.keys(this.regSecs);
+    if (this.reg.cur && keys.indexOf(this.reg.cur) < 0) keys.push(this.reg.cur);
+    keys.forEach(function (k) {
+      var pools = k === me.reg.cur ? me.P : me.A[k] || {}, m = {};
+      Object.keys(pools).forEach(function (id) {
+        var p = pools[id] === me.P[id] && k === me.reg.cur ? me.P[id] : me._restorePool(pools[id]);
+        var B = ((me.RB[k] || {})[id] || {})[10], champ = p.list.filter(function (c) { return c.id === p.champ; })[0];
+        m[id] = { skill10: B && B.n >= 60 && B.p2 > 0 ? 1 - Math.sqrt(B.e2 / B.p2) : null, checked: p.checked, generation: p.g, champ: champ ? cdesc(champ) : null,
+          leaders: champ ? champ.leaders.slice() : [], inputs: champ ? (champ.inputs || []).slice() : [] };
+      });
+      out[k] = { key: k, name: regimeName(k), now: k === me.reg.cur, seconds: me.regSecs[k] || 0, meters: m };
+    });
+    return Object.keys(out).map(function (k) { return out[k]; }).sort(function (a, b) { return b.now - a.now || b.seconds - a.seconds; });
+  };
+  ForecastLoop.prototype.regime = function () { return this.reg.cur; };
   ForecastLoop.prototype._newPool = function () {
     var p = { list: [], next: 1, g: 0, k: 0, checked: 0, B: {}, W: {}, hist: [], log: [], champ: null, pend: {}, trace: [] };
     this.H.forEach(function (h) { p.B[h] = { e2: 0, p2: 0, n: 0 }; p.W[h] = { se: 0, sp: 0, n: 0 }; });
@@ -2624,7 +2780,8 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     var cur = R.s[sec] = { u: u, v: v, mu: R.mu, mv: R.mv };
     if (extra) { cur.x = extra; chanStats(R.cs, extra); for (var ck in extra) this.chan[ck] = true; }
     var newest = sec > R.last; if (newest) R.last = sec;
-    for (var k in R.s) if (+k < R.last - 150) delete R.s[k];
+    for (var k in R.s) if (+k < R.last - 200) delete R.s[k];
+    if (this.regimes && newest) this._regTick(sec);
     var p = this._pool(id), me = this, i;
     // 1) check what was predicted for this second
     var due = p.pend[sec];
@@ -2639,6 +2796,10 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
         });
         var eb = ((q.b.x - u) * (q.b.x - u) + (q.b.y - v) * (q.b.y - v)) / 2, ep = ((q.s.x - u) * (q.s.x - u) + (q.s.y - v) * (q.s.y - v)) / 2, B = p.B[h], W = p.W[h];
         B.n++; var a = Math.max(1 / B.n, 1 / 600); B.e2 += a * (eb - B.e2); B.p2 += a * (ep - B.p2);
+        if (me.reg.cur != null) {                   // the same record, kept per wind
+          var RBm = (me.RB[me.reg.cur] || (me.RB[me.reg.cur] = {}))[id] || (me.RB[me.reg.cur][id] = {}), rb = RBm[h] || (RBm[h] = { e2: 0, p2: 0, n: 0 });
+          rb.n++; var ar = Math.max(1 / rb.n, 1 / 600); rb.e2 += ar * (eb - rb.e2); rb.p2 += ar * (ep - rb.p2);
+        }
         W.se += eb; W.sp += ep; W.n++;
         if (h === 10) { p.trace.push({ t: sec, a: Math.hypot(u, v), p: Math.hypot(q.b.x, q.b.y), au: u, av: v, pu: q.b.x, pv: q.b.y }); if (p.trace.length > 240) p.trace.shift(); }
         p.checked++;
@@ -2747,7 +2908,9 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     var cs = this.channels();
     if (cs.length && (r() < 0.25 || !others.length)) return { kind: r() < 0.3 ? 'mlp' : 'rls', lam: 0.998, hidden: 6, leaders: [], inputs: [{ k: cs[Math.floor(r() * cs.length)], lag: r() < 0.5 ? 0 : 2 + Math.floor(r() * 38) }], origin: 'explore' };
     if (!others.length) return null;
-    return { kind: r() < 0.25 ? 'mlp' : 'rls', lam: 0.998, hidden: 6, leaders: [{ by: others[Math.floor(r() * others.length)], lag: 2 + Math.floor(r() * 38) }], origin: 'explore' };
+    // a blind guess: any other meter, up to 2 min ahead (short leads more often)
+    var bl = r() < 0.7 ? 2 + Math.floor(r() * 38) : 40 + Math.floor(r() * 80);
+    return { kind: r() < 0.25 ? 'mlp' : 'rls', lam: 0.998, hidden: 6, leaders: [{ by: others[Math.floor(r() * others.length)], lag: bl }], origin: 'explore' };
   };
   ForecastLoop.prototype.latest = function (id) { var R = this.rt[String(id)]; return R && isFinite(R.last) ? R.last : null; };
   ForecastLoop.prototype._one = function (id, s0, h) {
@@ -2793,22 +2956,42 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     });
     return out;
   };
-  function packModel(m) {
-    var o = {}; for (var k in m) { var v = m[k]; o[k] = Array.isArray(v) ? v.map(function (x) { return Array.isArray(x) ? x.map(round6) : round6(x); }) : round6(v); }
+  function packModel(m, noCov) {
+    // the covariance P to 4 figures (it only sets how fast weights move), weights to 6
+    var o = {}; for (var k in m) { if (noCov && k === 'P') { o.P = null; continue; } var v = m[k], rf = k === 'P' ? round4 : round6; o[k] = Array.isArray(v) ? v.map(function (x) { return Array.isArray(x) ? x.map(rf) : rf(x); }) : rf(v); }
     return o;
   }
-  ForecastLoop.prototype.toJSON = function () {
-    var P = {};
-    for (var id in this.P) {
-      var p = this.P[id];
-      P[id] = { next: p.next, g: p.g, k: p.k, checked: p.checked, champ: p.champ, B: p.B, hist: p.hist, log: p.log, tabu: p.tabu || {},
-        list: p.list.map(function (c) { var M = {}; for (var h in c.M) M[h] = { u: packModel(c.M[h].u), v: packModel(c.M[h].v) }; return { id: c.id, kind: c.kind, lam: c.lam, hidden: c.hidden, lr: c.lr, leaders: c.leaders, inputs: c.inputs || [], born: c.born, origin: c.origin, from: c.from, S: c.S, M: M }; }) };
+  // a pool as saved data. compact (a wind not blowing now): the best few
+  // models only, linear models without their covariance (it rebuilds in a
+  // few minutes of that wind), short history
+  ForecastLoop.prototype._packPool = function (p, compact) {
+    var me = this, list = p.list;
+    if (compact) {
+      var ranked = list.map(function (c) { return { c: c, s: me._score(p, c) }; }).filter(function (r) { return r.c.kind !== 'stay' && !isBase(r.c); })
+        .sort(function (a, b) { return (a.s == null) - (b.s == null) || a.s - b.s; }).slice(0, 4).map(function (r) { return r.c; });
+      list = list.filter(function (c) { return c.kind === 'stay' || isBase(c) || c.id === p.champ || ranked.indexOf(c) >= 0; });
     }
-    return { kind: 'loop', v: 1, H: this.H, maxC: this.maxC, genS: this.genS, seed: this.seed, channels: this.channels(), P: P };
+    return { next: p.next, g: p.g, k: p.k, checked: p.checked, champ: p.champ, B: p.B, hist: compact ? p.hist.slice(-60) : p.hist, log: compact ? p.log.slice(-20) : p.log, tabu: p.tabu || {},
+      list: list.map(function (c) {
+        var M = {}; for (var h in c.M) M[h] = { u: packModel(c.M[h].u, compact), v: packModel(c.M[h].v, compact) };
+        return { id: c.id, kind: c.kind, lam: c.lam, hidden: c.hidden, lr: c.lr, leaders: c.leaders, inputs: c.inputs || [], born: c.born, origin: c.origin, from: c.from, S: c.S, M: M };
+      }) };
+  };
+  ForecastLoop.prototype.toJSON = function () {
+    var P = {}, A = {}, me = this;
+    for (var id in this.P) P[id] = this._packPool(this.P[id], false);
+    for (var rk in this.A) { A[rk] = {}; for (var id2 in this.A[rk]) A[rk][id2] = this.A[rk][id2]; }
+    return { kind: 'loop', v: 1, H: this.H, maxC: this.maxC, genS: this.genS, seed: this.seed, channels: this.channels(), P: P, A: A,
+      regimes: this.regimes, noSpeedBands: this.noSpeedBands, regCur: this.reg.cur, regSecs: this.regSecs, RB: this.RB };
   };
   ForecastLoop.prototype._restorePool = function (o) {
     var p = this._newPool(), H = this.H;
-    p.list = o.list.map(function (c) { var d = JSON.parse(JSON.stringify(c)); H.forEach(function (h) { d.S[h] = d.S[h] || { e2: 0, n: 0 }; }); return d; });
+    p.list = o.list.map(function (c) {
+      var d = JSON.parse(JSON.stringify(c)); H.forEach(function (h) { d.S[h] = d.S[h] || { e2: 0, n: 0 }; });
+      // put away without its covariance: start it modest, it grows back in that wind
+      for (var h in d.M) ['u', 'v'].forEach(function (q) { var m = d.M[h][q]; if (m && m.w && m.P == null) m.P = eye(m.w.map(function () { return 0.05; })); });
+      return d;
+    });
     p.list.forEach(function (c) { c.inputs = (c.inputs || []).map(function (q) { return typeof q === 'string' ? { k: q, lag: 0 } : q; }); });
     ['next', 'g', 'k', 'checked', 'champ', 'hist', 'log', 'tabu'].forEach(function (k) { if (o[k] != null) p[k] = o[k]; });
     if (o.B) p.B = JSON.parse(JSON.stringify(o.B));
@@ -2871,7 +3054,9 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
         o.relations.suggestSentinels(s, o.relOpts).forEach(function (p) {
           var A = byId[p.sentId], B = byId[p.nodeId]; if (!A || !B || !upwindOk(A, B, wind)) return;
           var ex = expectedLag(A, B, wind);
-          sec.sent.push({ sentId: A.nodeId, nodeId: B.nodeId, lagS: p.lagS, spdPct: p.spdPct, dirDeg: p.dirDeg, ratio: p.ratio, dirOff: p.dirOff, r: p.r, src: 'data', alongYd: ex && ex.alongYd > 0 ? Math.round(ex.alongYd) : undefined });
+          // alongYd: how far the air travels from Sentinel to node, learned
+          // from the wind itself, so Wind Lab can time the warning at any speed
+          sec.sent.push({ sentId: A.nodeId, nodeId: B.nodeId, lagS: p.lagS, spdPct: p.spdPct, dirDeg: p.dirDeg, ratio: p.ratio, dirOff: p.dirOff, r: p.r, src: 'data', alongYd: p.alongYd > 0 ? p.alongYd : ex && ex.alongYd > 0 ? Math.round(ex.alongYd) : undefined });
         });
       }
       // meters the data has not paired yet get a pair from the layout
@@ -2910,7 +3095,7 @@ static const char LEARN_LIB_JS[] PROGMEM = R"LEARNLIB(/*
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,
     Relations: Relations, relationKind: relationKind, expectedLag: expectedLag, upwindOk: upwindOk,
-    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, geometryPairs: geometryPairs, Forecaster: Forecaster, ForecastLoop: ForecastLoop,
+    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, geometryPairs: geometryPairs, Forecaster: Forecaster, ForecastLoop: ForecastLoop, regimeKey: regimeKey, regimeName: regimeName,
     hitChance: hitChance
   };
 })(typeof window !== 'undefined' ? window : globalThis);
