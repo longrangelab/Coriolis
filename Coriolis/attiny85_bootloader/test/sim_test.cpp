@@ -22,6 +22,7 @@
 #include <simavr/sim_avr.h>
 #include <simavr/sim_io.h>
 #include <simavr/sim_interrupts.h>
+#include <simavr/sim_cycle_timers.h>
 
 #include "../../Node/lib/AttinyFlasher/AttinyFlasher.h"
 
@@ -170,9 +171,12 @@ static void usidrWrite(avr_t*, avr_io_addr_t, uint8_t v, void*) {
     if (!bScl) latch = v >> 7;                // latch is transparent while SCL is low
 }
 
+static avr_cycle_count_t tickle(avr_t*, avr_cycle_count_t when, void*);
 static void step(uint64_t cycles) {
     uint64_t end = avr->cycle + cycles;
     while (avr->cycle < end) {
+        // any reset (power cycle, watchdog) clears simavr's cycle timers
+        if (!avr_cycle_timer_status(avr, tickle, nullptr)) avr_cycle_timer_register(avr, 4, tickle, nullptr);
         int st = avr_run(avr);
         if (st == cpu_Crashed || st == cpu_Done) { printf("  !! AVR stopped (state %d) at pc 0x%04x\n", st, avr->pc); exit(2); }
         update();
@@ -304,6 +308,14 @@ static void busyWait(SimBus& bus, uint32_t ms) {
         bus.delayMs(50);
     }
 }
+// simavr skips a sleeping core straight to its next timer event, so an
+// interrupt raised by the USI model below would be seen up to 2 ms late (the
+// sketch idles between ticks). A timer every few cycles keeps each sleep step
+// as short as the real wake-up, and the no-op callback stops simavr from
+// sleeping in real time.
+static avr_cycle_count_t tickle(avr_t*, avr_cycle_count_t when, void*) { return when + 4; }
+static void noRealSleep(avr_t*, avr_cycle_count_t) {}
+
 static uint16_t word(uint16_t byteAddr) { return avr->flash[byteAddr] | (avr->flash[byteAddr + 1] << 8); }
 
 int main(int argc, char** argv) {
@@ -320,6 +332,7 @@ int main(int argc, char** argv) {
     avr_init(avr);
     avr->frequency = 8000000;
     avr->log = 0;
+    avr->sleep = noRealSleep;               // tickle is (re)armed in step()
 
     // USI model hooks
     avr->io[AVR_DATA_TO_IO(R_PINB)].r.c = pinbRead;  avr->io[AVR_DATA_TO_IO(R_PINB)].r.param = nullptr;

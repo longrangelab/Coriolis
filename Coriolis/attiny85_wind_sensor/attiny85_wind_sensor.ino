@@ -40,12 +40,25 @@
  *
  * Recommended fuses: BOD at 2.7 V, so a sagging cold battery resets the chip
  * cleanly instead of leaving it in an undefined state.
+ *
+ * Power (see "POWER" below). The chip is fed from the T-Beam's 3.3 V rail, which
+ * stays on while the ESP32 deep-sleeps, so whatever this sketch draws, the node
+ * draws around the clock. It used to run flat out (~3 mA) and hold the LED on
+ * half the time (~10 mA through the 100 ohm resistor, ~5 mA average). Now:
+ *   - between 100 ms ticks the CPU idles instead of spinning (~3 mA -> ~1 mA)
+ *   - the ADC is only switched on for the vane sample
+ *   - the heartbeat is a 20 ms blip every 2 s instead of 2 s on / 2 s off
+ *   - when the node writes {0x02, 0x00} just before it deep-sleeps, the chip
+ *     powers down (~1 uA: LED, ADC, watchdog, brown-out detector all off) and
+ *     wakes on the next I2C start condition, i.e. when the node wakes and
+ *     talks to its power chip. Wind data starts fresh after a wake.
+ *   An older node that never sends the command just leaves it awake, as before.
  */
 
 #include <TinyWireS.h>
 #include <avr/wdt.h>
+#include <avr/sleep.h>
 #include <math.h>
-#include <avr/wdt.h>
 
 // ============================================================================
 // CONFIGURATION
@@ -67,6 +80,8 @@
 #define DEBOUNCE_US        10000UL // min time between pulses: 100 Hz cap (149 mph SparkFun)
 #define HIGH_MIN_US        1500UL  // line must be open this long before a new closure
                                    // counts: rejects reed bounce when the switch opens
+#define HEARTBEAT_MS       2000UL  // LED heartbeat period...
+#define HEARTBEAT_ON_MS    20UL    // ...and how long it is lit (was 2 s on / 2 s off)
 
 // ---- Calibration constants for each kit ----
 #define SPARKFUN_MPH_PER_HZ  1.492f
@@ -184,6 +199,13 @@ bool vaneAdcValid(int adc) {
     return adc >= (VANE_ADC_AT_0 - VANE_IN_ADC_SLACK) && adc <= (VANE_ADC_AT_360 + VANE_IN_ADC_SLACK);
 }
 
+// x * 1000 rounded to the nearest integer, for |x| <= 1. Same result as
+// lroundf(x * 1000) without pulling lround() into the 7168-byte sketch.
+static int16_t round1000(float x) {
+    x *= 1000.0f;
+    return (int16_t)(x < 0.0f ? x - 0.5f : x + 0.5f);
+}
+
 // Unit vector (cos, sin) * 1000 for the current vane reading.
 void decodeVaneVector(int adc, int16_t& c1000, int16_t& s1000) {
     if (sensorType == SENSOR_SPARKFUN) {
@@ -195,14 +217,12 @@ void decodeVaneVector(int adc, int16_t& c1000, int16_t& s1000) {
         c1000 = (int16_t)pgm_read_word(&vaneTable[best].c1000);
         s1000 = (int16_t)pgm_read_word(&vaneTable[best].s1000);
     } else {
-        // Inspeed: continuous linear angle -> trig
-        float span = (float)(VANE_ADC_AT_360 - VANE_ADC_AT_0);
-        float deg  = (span != 0) ? (float)(adc - VANE_ADC_AT_0) * 360.0f / span : 0.0f;
-        while (deg < 0.0f)    deg += 360.0f;
-        while (deg >= 360.0f) deg -= 360.0f;
-        float th = deg * (float)DEG_TO_RAD;
-        c1000 = (int16_t)lroundf(cos(th) * 1000.0f);
-        s1000 = (int16_t)lroundf(sin(th) * 1000.0f);
+        // Inspeed: continuous linear angle -> trig. cos/sin don't care about
+        // whole turns, so the angle needs no wrapping into 0..360 first.
+        const float radPerCount = 2.0f * (float)PI / (float)(VANE_ADC_AT_360 - VANE_ADC_AT_0);
+        float th = (float)(adc - VANE_ADC_AT_0) * radPerCount;
+        c1000 = round1000(cos(th));
+        s1000 = round1000(sin(th));
     }
 }
 
@@ -336,7 +356,12 @@ void drainPulses() {
 
 // One 100 ms vane sample into the current bucket.
 void sampleVane() {
+    // The ADC is only powered for this one conversion (POWER below). The first
+    // conversion after switching it on takes 25 ADC clocks instead of 13, about
+    // 200 us at 125 kHz, which analogRead() simply waits out.
+    ADCSRA |= (1 << ADEN);
     int adc = analogRead(WIND_VANE_PIN);
+    ADCSRA &= ~(1 << ADEN);
     lastVaneADC = (uint16_t)adc;
 
     noInterrupts();
@@ -510,21 +535,97 @@ void requestEvent() {
 // reset, which starts the bootloader at I2C address 0x43. On a chip without
 // the bootloader this just restarts the sketch. Keep the sketch under 7168
 // bytes (the bootloader uses the top 1 KB) and do not use EE_RDY_vect.
+//
+// {0x02, 0x00} asks the chip to power down until the node wakes (POWER below).
+// Older sketches ignore it, so a new node works with an old ATtiny and the
+// other way round.
 volatile bool bootloaderRequested = false;
+volatile bool sleepRequested      = false;
 
 void receiveEvent(uint8_t n) {
     uint8_t b0 = TinyWireS.read();
     uint8_t b1 = (n > 1) ? TinyWireS.read() : 0xFF;
     while (TinyWireS.available()) TinyWireS.read();
-    if (n == 2 && b0 == 0x01 && b1 == 0x00) bootloaderRequested = true;
+    if (n != 2 || b1 != 0x00) return;
+    if (b0 == 0x01) bootloaderRequested = true;
+    if (b0 == 0x02) sleepRequested = true;
+}
+
+// ============================================================================
+// POWER
+// ============================================================================
+// Wiring that sets the floor (daughterboard schematic, 2026-05-30): the chip,
+// the vane and both 10k pull-ups hang off the T-Beam 3.3 V pin, which the
+// power chip keeps on while the ESP32 sleeps. The LED is on PB1 through 100
+// ohm, so lit it takes ~10 mA, three times the chip itself. Nothing here can
+// switch off the vane (SparkFun ladder through R2 ~0.03-0.3 mA, Inspeed
+// E-Vane its own supply current) or a reed switch that stopped closed (0.33 mA
+// through R3); that needs a switched supply on the next board.
+
+static unsigned long lastTick = 0;
+static uint8_t       ticks    = 0;
+static uint16_t      lastBeat = 0;     // low 16 bits of millis(): plenty for 2 s
+
+// Parts this sketch never uses, switched off for good at boot.
+static void powerTrimAtBoot() {
+    ACSR  |= (1 << ACD);            // analog comparator off (on by default)
+    DIDR0 |= (1 << ADC3D);          // no digital input buffer on the vane pin:
+                                    // a mid-rail analog level makes it draw current
+    ADCSRA &= ~(1 << ADEN);         // ADC on only during a sample (sampleVane)
+    PRR   |= (1 << PRTIM1);         // timer 1 unused (millis runs on timer 0)
+}
+
+// Wind state as if the chip had just booted, keeping the last direction (held
+// as in a calm) and the publish counter. millis() and micros() stood still
+// while powered down, so the stored pulse times say nothing about the gap; the
+// first pulse after a wake only starts timing (haveEdge = false).
+static void __attribute__((noinline)) restartMeasuring() {
+    memset(bk, 0, sizeof(bk));       // every bucket = EMPTY_BUCKET
+    curB = 0; filledB = 1; ticks = 0;
+    noInterrupts();
+    ringCount     = 0;
+    haveEdge      = false;           // the next pulse starts timing, no period yet
+    lineHigh      = (PINB & (1 << ANEMOMETER_PIN)) != 0;   // may have moved while asleep
+    lastPulseSnap = pulseCount;
+    // Sequence 0 says "no data yet" to the node, so it never takes the frame
+    // from before the sleep as a new reading. The first publish, 1 s from now,
+    // carries the next sequence number as usual.
+    windData.rawADC = lastVaneADC & 0x03FF;
+    interrupts();
+    lastTick = millis();
+    lastBeat = (uint16_t)lastTick;
+}
+
+// Power down until the next I2C start condition. Called from loop(), so the
+// write that asked for it has finished. Every start condition on the bus wakes
+// the chip, whoever it is addressed to: the node's first I2C transaction after
+// its own wake (the power chip, in setup) brings us back. That is also why the
+// node sends the command as its LAST I2C transaction before deep sleep.
+static void powerDownUntilI2C() {
+    digitalWrite(DEBUG_LED_PIN, LOW);
+    PCMSK &= ~(1 << PCINT4);         // wind pulses must not wake us
+    wdt_disable();                   // the watchdog oscillator alone is ~4 uA; a
+                                     // powered-down chip can't hang anyway
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+    cli();
+    sleepRequested = false;
+    sleep_enable();
+#if defined(BODS) && defined(BODSE)
+    sleep_bod_disable();             // brown-out detector off while asleep (~20 uA);
+#endif                               // the hardware turns it back on at wake
+    sei();                           // SEI + SLEEP: no interrupt can slip between
+    sleep_cpu();
+    sleep_disable();
+    // Woken by a start condition: the USI interrupt is already handling it.
+    wdt_enable(WDTO_2S);
+    restartMeasuring();
+    GIFR   = (1 << PCIF);            // drop a pin change latched while asleep
+    PCMSK |= (1 << PCINT4);
 }
 
 // ============================================================================
 // SETUP
 // ============================================================================
-static unsigned long lastTick = 0;
-static uint8_t       ticks    = 0;
-
 void setup() {
     MCUSR = 0;                                  // clear reset flags so the WDT
     wdt_disable();                              // can't loop us on startup
@@ -536,8 +637,8 @@ void setup() {
     delay(300);
     blink(sensorType == SENSOR_INSPEED ? 3 : 2); // 2 = SparkFun, 3 = Inspeed
 
+    powerTrimAtBoot();
     windData = {0, 0, 0, 0, 0, 0};              // rawADC seq 0 = no data yet
-    for (uint8_t i = 0; i < WINDOW_BUCKETS; i++) bk[i] = EMPTY_BUCKET;
 
     pinMode(ANEMOMETER_PIN, INPUT);             // external ~10k pull-up required
     PCMSK |= (1 << PCINT4);
@@ -552,7 +653,7 @@ void setup() {
     // interrupt), reset the chip after ~2 s instead of holding the bus forever.
     wdt_enable(WDTO_2S);
 
-    lastTick = millis();                        // start sampling now, not at boot
+    restartMeasuring();                         // empty window; start sampling now
 }
 
 // ============================================================================
@@ -568,6 +669,8 @@ void loop() {
         wdt_enable(WDTO_15MS);                  // longer running timeout can't delay it
         for (;;) {}
     }
+
+    if (sleepRequested) powerDownUntilI2C();    // returns when the node wakes
 
     unsigned long now = millis();
 
@@ -585,9 +688,14 @@ void loop() {
         }
     }
 
-    static unsigned long lastBeat = 0;
-    if (now - lastBeat >= 2000) {
-        digitalWrite(DEBUG_LED_PIN, !digitalRead(DEBUG_LED_PIN));
-        lastBeat = now;
-    }
+    // Heartbeat: a short blip, not 2 s on / 2 s off (that alone was ~5 mA).
+    uint16_t beat = (uint16_t)now - lastBeat;
+    if (beat >= HEARTBEAT_MS) { lastBeat += HEARTBEAT_MS; beat -= HEARTBEAT_MS; }
+    digitalWrite(DEBUG_LED_PIN, beat < HEARTBEAT_ON_MS ? HIGH : LOW);
+
+    // Nothing to do until the next interrupt: the millis timer (every 2 ms),
+    // a wind pulse or I2C. Idle stops the CPU clock but keeps all of those
+    // running, so timing and I2C behave exactly as when spinning.
+    set_sleep_mode(SLEEP_MODE_IDLE);
+    sleep_mode();
 }
