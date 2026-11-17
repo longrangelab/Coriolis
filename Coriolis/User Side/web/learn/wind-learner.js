@@ -968,19 +968,21 @@
     return n;
   }
   function warmStart(c, par) {
-    if (!par || par.kind !== c.kind || c.kind === 'stay') return;
+    if (!par || c.kind === 'stay' || par.kind === 'stay') return;
     var nc = fnames(c), np = fnames(par), map = nc.map(function (k) { return np.indexOf(k); });
     for (var h in c.M) for (var comp in c.M[h]) {
       var A = c.M[h][comp], B = par.M[h] && par.M[h][comp]; if (!B) continue;
-      if (c.kind === 'rls') map.forEach(function (j, i) { if (j >= 0) A.w[i] = B.w[j]; });
-      else if (c.hidden === par.hidden) {
+      // the linear weights carry over (a net from a linear parent starts as that parent)
+      if (A.w && B.w) map.forEach(function (j, i) { if (j >= 0) A.w[i] = B.w[j]; });
+      if (c.kind === 'mlp' && par.kind === 'mlp' && c.hidden === par.hidden) {
         A.b1 = B.b1.slice(); A.W2 = B.W2.slice(); A.b2 = B.b2;
+        if (A.zm && B.zm) { map.slice(1).forEach(function (j, i) { if (j >= 1) { A.zm[i] = B.zm[j - 1]; A.zv[i] = B.zv[j - 1]; } }); A.zn = B.zn; }
         A.W1 = B.W1.map(function (row, r) { return map.slice(1).map(function (j, i) { return j >= 1 ? row[j - 1] : A.W1[r][i]; }); });
       }
     }
   }
   ForecastLoop.prototype._addCand = function (p, spec, origin) {
-    var c = { id: p.next++, kind: spec.kind, lam: spec.lam || 0.998, hidden: spec.hidden || 6, lr: spec.lr || 0.03,
+    var c = { id: p.next++, kind: spec.kind, lam: spec.lam || 0.998, hidden: spec.hidden || 6, lr: spec.lr || 0.08,
       leaders: (spec.leaders || []).map(function (l) { var o = { by: String(l.by), lag: Math.max(1, Math.round(l.lag)) }; if (l.yd > 0) o.yd = Math.round(l.yd); return o; })
         .filter(function (l, i, A) { return A.findIndex(function (o) { return o.by === l.by && !o.yd === !l.yd && (l.yd ? Math.abs(o.yd - l.yd) < 6 : Math.abs(o.lag - l.lag) < 2); }) === i; }),
       inputs: (spec.inputs || []).map(function (q) { return typeof q === 'string' ? { k: q, lag: 0 } : { k: String(q.k), lag: Math.max(0, Math.round(q.lag || 0)) }; })
@@ -999,7 +1001,8 @@
     var secs = Object.keys(R.s).map(Number).sort(function (a, b) { return a - b; });
     for (var e = 0; e < epochs; e++) for (var i = 0; i < this.H.length; i++) {
       var h = this.H[i];
-      for (var j = 0; j < secs.length; j++) { var s1 = secs[j], c0 = this._at(id, s1 - h), cur = R.s[s1]; if (c0) this._learn(c, h, this._x(c, id, s1 - h, h, c0), cur.u, cur.v); }
+      // a net's linear part sees each second once; its hidden units go round several times
+      for (var j = 0; j < secs.length; j++) { var s1 = secs[j], c0 = this._at(id, s1 - h), cur = R.s[s1]; if (c0) this._learn(c, h, this._x(c, id, s1 - h, h, c0), cur.u, cur.v, e > 0); }
     }
   };
   ForecastLoop.prototype._dim = function (c) { return 4 + c.leaders.length + 3 * (c.inputs || []).length + (c.all ? 2 + 2 * c.all.length : 0); };
@@ -1012,8 +1015,13 @@
     }
     if (c.kind === 'mlp') {
       var H = c.hidden, ni = n - 1, W1 = [], b1 = [], W2 = [];
-      for (var i = 0; i < H; i++) { var row = []; for (var j = 0; j < ni; j++) row.push((r() - 0.5) * 0.6); W1.push(row); b1.push(0); W2.push(0); }   // W2 = 0: starts as "stays", random W1 keeps the units different
-      return { W1: W1, b1: b1, W2: W2, b2: 0 };
+      // W2 = 0: starts as its linear part. W1 and b1 spread so each unit bends somewhere in the usual range of its inputs
+      for (var i = 0; i < H; i++) { var row = []; for (var j = 0; j < ni; j++) row.push((r() - 0.5) * 2 / Math.sqrt(Math.max(1, ni / 3))); W1.push(row); b1.push((r() - 0.5) * 2); W2.push(0); }
+      // a net is a linear model (learned fast, like the others) plus hidden
+      // units that learn only what the linear part misses, so it starts as
+      // good as its linear twin and can only add to it
+      var wl = new Array(n).fill(0); wl[1] = 1;
+      return { W1: W1, b1: b1, W2: W2, b2: 0, zm: new Array(ni).fill(0), zv: new Array(ni).fill(1), zn: 0, w: wl, P: eye(new Array(n).fill(0).map(function (_, i) { return i === 0 ? 1 : i < 4 ? 0.01 : 0.2; })) };
     }
     return {};
   };
@@ -1076,18 +1084,31 @@
     }
     return { u: xu, v: xv };
   };
-  function mlpOut(m, x) {
+  // a net sees each input as how far it is from its usual value, in SDs
+  // (running mean and spread per input), so its units can bend where the
+  // wind actually sits; older saved nets had none and see input / 10
+  function mlpIn(m, x) {
+    var z = new Array(x.length - 1);
+    for (var j = 1; j < x.length; j++) z[j - 1] = m.zm ? Math.max(-4, Math.min(4, (x[j] - m.zm[j - 1]) / Math.sqrt(m.zv[j - 1] + 1e-4))) : x[j] / 10;
+    return z;
+  }
+  function mlpOut(m, x, z) {
+    z = z || mlpIn(m, x);
     var H = m.W1.length, a = new Array(H), o = m.b2;
-    for (var i = 0; i < H; i++) { var s = m.b1[i], w = m.W1[i]; for (var j = 1; j < x.length; j++) s += w[j - 1] * x[j] / 10; a[i] = Math.tanh(s); o += m.W2[i] * a[i]; }
+    for (var i = 0; i < H; i++) { var s = m.b1[i], w = m.W1[i]; for (var j = 0; j < z.length; j++) s += w[j] * z[j]; a[i] = Math.tanh(s); o += m.W2[i] * a[i]; }
     return { o: o, a: a };
   }
-  function mlpStep(m, x, y, lr) {          // y: change from now / 10
-    var f = mlpOut(m, x), e = Math.max(-3, Math.min(3, f.o - y)), H = m.W1.length;
+  function mlpStep(m, x, y, lr) {          // y: what to add to the linear part / 10
+    if (m.zm) {
+      m.zn = (m.zn || 0) + 1; var al = 1 / Math.min(m.zn, 600);
+      for (var q = 1; q < x.length; q++) { var d = x[q] - m.zm[q - 1]; if (m.zn === 1) { m.zm[q - 1] = x[q]; m.zv[q - 1] = 1; } else { m.zm[q - 1] += al * d; m.zv[q - 1] += al * (d * d - m.zv[q - 1]); } }
+    }
+    var z = mlpIn(m, x), f = mlpOut(m, x, z), e = Math.max(-3, Math.min(3, f.o - y)), H = m.W1.length;
     for (var i = 0; i < H; i++) {
       var g = e * m.W2[i] * (1 - f.a[i] * f.a[i]);
       m.W2[i] -= lr * e * f.a[i];
       m.b1[i] -= lr * g;
-      for (var j = 1; j < x.length; j++) m.W1[i][j - 1] -= lr * g * x[j] / 10;
+      for (var j = 0; j < z.length; j++) m.W1[i][j] -= lr * g * z[j];
     }
     m.b2 -= lr * e;
   }
@@ -1095,11 +1116,17 @@
     if (c.kind === 'stay') return { x: X.u[1], y: X.v[1] };
     var mu = c.M[h].u, mv = c.M[h].v;
     if (c.kind === 'rls') { var a = 0, b = 0; for (var i = 0; i < X.u.length; i++) { a += mu.w[i] * X.u[i]; b += mv.w[i] * X.v[i]; } return { x: a, y: b }; }
-    return { x: X.u[1] + 10 * mlpOut(mu, X.u).o, y: X.v[1] + 10 * mlpOut(mv, X.v).o };
+    return { x: linOf(mu, X.u) + 10 * mlpOut(mu, X.u).o, y: linOf(mv, X.v) + 10 * mlpOut(mv, X.v).o };
   };
-  ForecastLoop.prototype._learn = function (c, h, X, tu, tv) {
+  // a net's linear part (older nets had none: "stays as it is")
+  function linOf(m, x) { if (!m.w) return x[1]; var a = 0; for (var i = 0; i < x.length; i++) a += m.w[i] * x[i]; return a; }
+  ForecastLoop.prototype._learn = function (c, h, X, tu, tv, hiddenOnly) {
     if (c.kind === 'rls') { rlsStep(c.M[h].u, X.u, tu, c.lam); rlsStep(c.M[h].v, X.v, tv, c.lam); }
-    else if (c.kind === 'mlp') { mlpStep(c.M[h].u, X.u, (tu - X.u[1]) / 10, c.lr); mlpStep(c.M[h].v, X.v, (tv - X.v[1]) / 10, c.lr); }
+    else if (c.kind === 'mlp') {
+      var mu = c.M[h].u, mv = c.M[h].v, lu = linOf(mu, X.u), lv = linOf(mv, X.v);
+      mlpStep(mu, X.u, (tu - lu) / 10, c.lr); mlpStep(mv, X.v, (tv - lv) / 10, c.lr);   // the hidden units learn what the linear part missed
+      if (mu.w && !hiddenOnly) { rlsStep(mu, X.u, tu, c.lam || 0.998); rlsStep(mv, X.v, tv, c.lam || 0.998); }
+    }
   };
   // the blend: the best few grown-up models, weighted by 1 / recent error
   ForecastLoop.prototype._blend = function (p, h, preds) {
@@ -1209,7 +1236,9 @@
     }
     // the cap counts the models that compete; "stays" and the own-history
     // yardstick ride along on top of it
-    var nc = function () { return p.list.filter(function (c) { return c.kind !== 'stay' && !isBase(c); }).length; };
+    // young nets ride on top too: each starts as a copy of a linear model
+    // that did well, so it doesn't take a slot from the search
+    var nc = function () { return p.list.filter(function (c) { return c.kind !== 'stay' && !isBase(c) && !(c.kind === 'mlp' && p.g - c.born < MLP_GRACE); }).length; };
     while (nc() > cap && retire()) { /* the meter matters less now */ }
     for (var k = 0; k < tries; k++) {
       if (nc() >= cap && !retire()) break;
@@ -1264,11 +1293,12 @@
       return s;
     }
     var cs = this.channels();
-    if (cs.length && (r() < 0.25 || !others.length)) return { kind: r() < 0.3 ? 'mlp' : 'rls', lam: 0.998, hidden: 6, leaders: [], inputs: [{ k: cs[Math.floor(r() * cs.length)], lag: r() < 0.5 ? 0 : 2 + Math.floor(r() * 38) }], origin: 'explore' };
+    // blind guesses are linear; nets come from a linear model that earned it (below, as a change to the best)
+    if (cs.length && (r() < 0.25 || !others.length)) return { kind: (r(), 'rls'), lam: 0.998, hidden: 6, leaders: [], inputs: [{ k: cs[Math.floor(r() * cs.length)], lag: r() < 0.5 ? 0 : 2 + Math.floor(r() * 38) }], origin: 'explore' };
     if (!others.length) return null;
     // a blind guess: any other meter, up to 2 min ahead (short leads more often)
     var bl = r() < 0.7 ? 2 + Math.floor(r() * 38) : 40 + Math.floor(r() * 80);
-    return { kind: r() < 0.25 ? 'mlp' : 'rls', lam: 0.998, hidden: 6, leaders: [{ by: others[Math.floor(r() * others.length)], lag: bl }], origin: 'explore' };
+    return { kind: (r(), 'rls'), lam: 0.998, hidden: 6, leaders: [{ by: others[Math.floor(r() * others.length)], lag: bl }], origin: 'explore' };
   };
   ForecastLoop.prototype.latest = function (id) { var R = this.rt[String(id)]; return R && isFinite(R.last) ? R.last : null; };
   ForecastLoop.prototype._one = function (id, s0, h) {
