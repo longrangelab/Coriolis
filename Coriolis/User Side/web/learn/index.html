@@ -80,6 +80,13 @@ main{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px;m
 .outlook div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 6px;text-align:center}
 .outlook b{display:block;font-family:"IBM Plex Mono",monospace;font-size:.9rem}
 .outlook .muted{font-size:.72rem}
+.wbad{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:.8rem}
+.wbad>div{border:1px solid var(--line);border-left:4px solid var(--muted);border-radius:6px;padding:4px 8px;background:var(--panel2)}
+.wbad b{font-family:var(--f-display);font-size:1.05rem;letter-spacing:.03em;margin-right:6px}
+.wbad .good{border-left-color:var(--good)} .wbad .good b{color:var(--good)}
+.wbad .warnY{border-left-color:var(--warn)} .wbad .warnY b{color:var(--warn)}
+.wbad .warn{border-left-color:var(--bad)} .wbad .warn b{color:var(--bad)}
+.wbad .win{grid-column:1/-1}
 .dial{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .dialbox{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .dialbox button{width:44px;height:48px;border:0;background:var(--panel2);font-size:1.4rem;cursor:pointer}
@@ -171,6 +178,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="call learned"><div class="lbl">Learned call</div><div class="v" id="callLearn">–</div><div class="s" id="callLearnS">relevant meters, lead time, learned multipliers</div></div>
       </div>
       <div class="outlook" id="outlook" aria-live="off"></div>
+      <div class="wbad" id="winBad" aria-live="off"></div>
       <div>
         <div class="lbl" style="margin-bottom:6px">Scope dialed (windage)</div>
         <div class="dial">
@@ -184,6 +192,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <span class="lbl">Who plots</span>
         <div class="seg" role="group" aria-label="Plot mode"><button id="plotAuto" aria-pressed="true">Spotter (sim)</button><button id="plotMan" aria-pressed="false">I plot it</button></div>
         <button class="btn" id="burstL">Fire 25 · dial learned</button>
+        <button class="btn" id="burstG" title="Before each shot, waits up to 2 min for Sentinels GO with Steady not at WAIT">Fire 25 · wait for a window</button>
         <button class="btn" id="burstT">Fire 25 · dial today's</button>
       </div>
       <div class="row">
@@ -208,6 +217,11 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="chip"><div class="lbl">Is the doubt honest?</div><div class="v" id="kCal">–</div><div class="note" id="kCalN">real error ÷ stated doubt, last 20</div></div>
       </div>
       <div class="note" id="changeNote"></div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Does waiting for the stable window pay?</div>
+        <div class="tblwrap"><table id="winTbl"></table></div>
+        <div class="note">Each shot keeps the two badges as they stood when it broke: <b>Steady</b> (gusting, spread and drift of the crosswind along the path, in mil) and <b>Sentinels</b> (each pair's meter against what its Sentinel says is arriving). Both green is the window Wind Lab calls the ideal shot moment.</div>
+      </div>
       <div>
         <div class="lbl" style="margin-bottom:4px">Call error by shot (mil, 15-shot rolling RMS)</div>
         <svg class="chart" id="chart" viewBox="0 0 520 190" role="img" aria-label="Call error chart"></svg>
@@ -366,6 +380,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <label class="f">Direction wobble (degrees)<input id="wW" type="number" step="1"></label>
         <label class="f">Gust size<select id="wSize"><option value="small">Small and switchy</option><option value="medium">Medium</option><option value="large">Large, slow rollers</option></select></label>
         <label class="ck"><input id="wDrift" type="checkbox"> Let the average wind drift slowly over minutes</label>
+        <label class="ck"><input id="wSpells" type="checkbox"> Calm and gusty spells (gusts come and go over a minute or two, so there are windows to wait for)</label>
       </fieldset>
       <fieldset><legend>Radio and learning</legend>
         <label class="f">Radio speed<select id="rMode"><option value="sf9">Today: SF9 (2.7 s with 4 meters)</option><option value="fast">Adaptive fast (about 1 s)</option></select></label>
@@ -523,7 +538,7 @@ function windAt(px, py, t, X) {
   var d = F.D * Math.PI / 180, ex = -Math.sin(d), ey = -Math.cos(d), nx = ey, ny = -ex;
   var qx = px - X.x, qy = py - X.y, gu = 0, gv = 0, M = F.modes;
   for (var i = 0; i < M.length; i++) { var m = M[i], arg = m.kx * qx + m.ky * qy + m.om * t; gu += m.a * Math.cos(arg + m.p); gv += m.a * Math.cos(arg + m.q); }
-  var spd = Math.max(0, F.S + s.gust * gu), lat = F.S * Math.tan(s.wobble * Math.PI / 180) * gv;
+  var gm = F.gm || 1, spd = Math.max(0, F.S + s.gust * gm * gu), lat = F.S * Math.tan(s.wobble * Math.PI / 180) * gm * gv;
   var f = terrainFactor(px, py);
   return { x: (ex * spd + nx * lat) * f, y: (ey * spd + ny * lat) * f };
 }
@@ -558,7 +573,7 @@ function meterWinds() {
   for (i = 0; i < ms.length; i++) {
     var Re = P.re[i], Im = P.im[i], gu = 0, gv = 0;
     for (k = 0; k < n; k++) { var m = M[k]; gu += m.a * (Re[k] * m.cp - Im[k] * m.sp); gv += m.a * (Re[k] * m.cq - Im[k] * m.sq); }
-    var spd = Math.max(0, F.S + st.gust * gu), lat = F.S * tw * gv, f = terrainFactor(ms[i].x, ms[i].y);
+    var gm = F.gm || 1, spd = Math.max(0, F.S + st.gust * gm * gu), lat = F.S * tw * gm * gv, f = terrainFactor(ms[i].x, ms[i].y);
     out.push({ x: (ex * spd + nx * lat) * f, y: (ey * spd + ny * lat) * f });
   }
   return out;
@@ -631,6 +646,8 @@ function tickField(dt) {
     F.D += (s.windFrom - F.D) * a + gauss() * 10 * Math.sqrt(2 * a);
     F.S = Math.max(0.5, F.S);
   } else { F.S = s.windSpeed; F.D = s.windFrom; }
+  // spells: how gusty the air is drifts between calm (x0.3) and rough (x1.7) over a minute or two
+  if (s.spells) { var b = dt / 90; F.sp = (F.sp || 0) * (1 - b) + gauss() * Math.sqrt(2 * b); F.gm = 0.3 + 1.4 / (1 + Math.exp(-2 * F.sp)); } else F.gm = 1;
   var U = meanVec(F); F.X.x += U.x * YDS * dt; F.X.y += U.y * YDS * dt;
 }
 // ------------------------------------------------------- other sensors
@@ -664,6 +681,7 @@ function step(dt) {
     if (ST.settings.sensors) RT.fc.addEnv(RT.t, sensorRead('base', ST.shooter.x, ST.shooter.y, false));
   }
   if (RT.t >= RT.leadNext) { RT.leadNext = RT.t + 10; if (!RT.calls) RT.calls = computeCalls(); refreshLeaders(); }
+  if (RT.t >= (RT.winNext || 0)) { RT.winNext = Math.floor(RT.t) + 1; windowTick(); }
   for (var i = RT.pending.length - 1; i >= 0; i--) {
     var p = RT.pending[i];
     if (RT.t >= p.at) { RT.pending.splice(i, 1); impactArrives(p.shot); }
@@ -766,6 +784,98 @@ function refreshLeaders() {
   computeImportance();
 }
 
+// ------------------------------------------------ the stable window
+// Wind Lab's two badges, worked out the same way from the 1 s readings:
+//  Steady: the path's crosswind gusting (each meter, last 10 s), spread
+//    (meters disagreeing now) and drift (10 s averages over the last minute),
+//    weighted by spot on the path, in mil. GO under 0.2, CAUTION under 0.4.
+//  Sentinels: each pair's meter against what its Sentinel says is arriving
+//    (speed x ratio, direction + offset); GO when 75 % agree, CAUTION 50 %.
+// Both green = the window. It also says how long it has held, and how long
+// it should last: the Sentinel's readings over the last lag seconds are the
+// air due at its meter over the next lag seconds.
+var WIN_TH = { gMil: 0.2, yMil: 0.4, sg: 0.75, sy: 0.5 };
+// Wind Lab's own thresholds when this phone has set them (same base, same storage)
+function winTh() {
+  var t = Object.assign({}, WIN_TH);
+  try { var v = JSON.parse(lsRead('varTh') || 'null'); if (v) { if (isFinite(parseFloat(v.gMil))) t.gMil = parseFloat(v.gMil); if (isFinite(parseFloat(v.yMil))) t.yMil = parseFloat(v.yMil); } } catch (e) {}
+  try { var a = JSON.parse(lsRead('sentAggTh') || 'null'); if (a) { if (isFinite(a.g)) t.sg = a.g; if (isFinite(a.y)) t.sy = a.y; } } catch (e) {}
+  return t;
+}
+function meanSdOf(a) { var m = 0; a.forEach(function (v) { m += v; }); m /= a.length; var q = 0; a.forEach(function (v) { q += (v - m) * (v - m); }); return { m: m, sd: Math.sqrt(q / a.length) }; }
+function crossIn(id, lof, t0, t1, k) { var H = RT.base.hist[id] || [], out = []; for (var i = 0; i < H.length; i++) if (H[i].t > t0 && H[i].t <= t1) out.push(k * WL.components(H[i], lof).cross); return out; }
+function multOf(m, sector) { var k = lkey(m); return RT.learner.idx['m:' + k] != null ? Math.max(0.3, Math.min(3, RT.learner.meter(k, sector).mult)) : 1; }
+function steadyNow(C) {
+  if (!C) return null;
+  var now = RT.t, used = [];
+  C.have.forEach(function (m) {
+    var w = C.wToday[m.id] || 0; if (w <= 0) return;
+    var k = multOf(m, C.sector), a = crossIn(m.id, C.lof, now - 10, now, k); if (a.length < 2) return;
+    var ms = meanSdOf(a), blocks = [];
+    for (var b = 0; b < 6; b++) { var x = crossIn(m.id, C.lof, now - 10 * (b + 1), now - 10 * b, k); if (x.length) blocks.push(meanSdOf(x).m); }
+    used.push({ w: w, g: ms.sd, m: ms.m, d: blocks.length >= 3 ? meanSdOf(blocks).sd : null });
+  });
+  var ws = used.reduce(function (a, u) { return a + u.w; }, 0); if (!used.length || ws <= 0) return null;
+  var g2 = 0, mx = 0, s2 = 0, da = 0, db = 0;
+  used.forEach(function (u) { var f = u.w / ws; g2 += f * u.g * u.g; mx += f * u.m; if (u.d != null) { da += u.w * u.d * u.d; db += u.w; } });
+  used.forEach(function (u) { s2 += u.w / ws * (u.m - mx) * (u.m - mx); });
+  var dr = db > 0 ? Math.sqrt(da / db) : null, tot = Math.sqrt(g2 + s2 + (dr != null ? dr * dr : 0)), mpm = C.bl.mpm, mil = tot * mpm, th = winTh();
+  return { gust: Math.sqrt(g2), spread: Math.sqrt(s2), drift: dr, mph: tot, mil: mil, tier: mil <= th.gMil ? 'good' : mil <= th.yMil ? 'warnY' : 'warn' };
+}
+function dDiff(a, b) { var d = Math.abs(((a - b) % 360 + 360) % 360); return d > 180 ? 360 - d : d; }
+function sentinelsNow() {
+  var B = RT.base, live = [], now = RT.t;
+  (RT.pairsNow || []).forEach(function (p) {
+    var s = B.latest[p.sentId], n = B.latest[p.nodeId]; if (!s || !n) return;
+    if (ST.mode === 'live' && (now - s.t > 15 || now - n.t > 15)) return;
+    var ratio = p.ratio > 0 ? p.ratio : 1, off = p.dirOff || 0, np = Math.hypot(n.x, n.y), nd = WL.fromDeg(n);
+    function agrees(v) { var e = Math.hypot(v.x, v.y) * ratio, sd = e > 0.1 ? Math.abs(e - np) / e * 100 : Math.abs(e - np) * 100; return sd <= p.spdPct && dDiff((WL.fromDeg(v) + off + 360) % 360, nd) <= p.dirDeg; }
+    var ok = agrees(s), lasts = null, lag = p.lagS > 0 ? p.lagS : 0;
+    if (ok && lag > 0) {
+      lasts = lag; var H = B.hist[p.sentId] || [];
+      for (var i = 0; i < H.length; i++) { var h = H[i]; if (h.t <= now - lag || h.t > now) continue; if (!agrees(h)) { lasts = Math.max(0, h.t - (now - lag)); break; } }
+    }
+    live.push({ sentId: p.sentId, nodeId: p.nodeId, agree: ok, lasts: lasts });
+  });
+  if (!live.length) return null;
+  var n = live.filter(function (q) { return q.agree; }).length, r = n / live.length, L = live.filter(function (q) { return q.agree && q.lasts != null; }).map(function (q) { return q.lasts; });
+  var th = winTh();
+  return { n: n, of: live.length, ratio: r, tier: r >= th.sg ? 'good' : r >= th.sy ? 'warnY' : 'warn', lasts: L.length ? Math.min.apply(null, L) : null };
+}
+function windowTick() {
+  var C = RT.calls || computeCalls(ST.settings.delay || 0), st = steadyNow(C), se = sentinelsNow(), both = !!(st && se && st.tier === 'good' && se.tier === 'good');
+  var W = RT.win || (RT.win = { since: null });
+  if (both) { if (W.since == null || W.since > RT.t) W.since = RT.t; } else W.since = null;
+  W.st = st; W.se = se; W.both = both; W.t = RT.t;
+}
+// good enough to shoot: the Sentinels agree and the path isn't rough
+function winOpen() { var W = RT.win; return !!(W && W.se && W.se.tier === 'good' && W.st && W.st.tier !== 'warn'); }
+function winSnap() {
+  var W = RT.win; if (!W) return null;
+  return { both: W.both, steady: W.st ? W.st.tier : null, mil: W.st ? Math.round(W.st.mil * 1000) / 1000 : null, sent: W.se ? W.se.tier : null, agree: W.se ? W.se.n + '/' + W.se.of : null,
+    held: W.since != null ? Math.round(RT.t - W.since) : 0, lasts: W.se && W.se.lasts != null ? Math.round(W.se.lasts) : null };
+}
+function renderWindow() {
+  var W = RT.win, el = $('winBad'); if (!el) return;
+  if (!W || (!W.st && !W.se)) { el.innerHTML = ''; return; }
+  var word = { good: 'GO', warnY: 'CAUTION', warn: 'WAIT' }, st = W.st, se = W.se;
+  var h = '<div class="' + (st ? st.tier : '') + '"><b>' + (st ? word[st.tier] : '–') + '</b>Steady' + (st ? ' <span class="muted">± ' + st.mil.toFixed(2) + ' mil</span>' : '') + '</div>';
+  h += '<div class="' + (se ? se.tier : '') + '"><b>' + (se ? word[se.tier] : '–') + '</b>Sentinels' + (se ? ' <span class="muted">' + se.n + '/' + se.of + ' agree</span>' : ' <span class="muted">no pairs yet</span>') + '</div>';
+  var held = W.since != null ? Math.round(RT.t - W.since) : 0;
+  h += '<div class="win ' + (W.both ? 'good' : '') + '">' + (W.both ? '<b>WINDOW</b>held ' + held + ' s' + (se && se.lasts != null ? ' · should last about ' + Math.round(se.lasts) + ' s more' : '') : '<span class="muted">Stable window when both are green</span>') + '</div>';
+  el.innerHTML = h;
+}
+function renderWinTbl() {
+  var P = ST.shots.filter(function (s) { return s.plotted && !s.flier && s.win; });
+  var groups = [['Both green', P.filter(function (s) { return s.win.both; })], ['Not both green', P.filter(function (s) { return !s.win.both; })]];
+  var h = '<thead><tr><th>Shots fired</th><th>Shots</th><th>Hits</th><th>Learned call error</th><th>Today\'s call error</th></tr></thead><tbody>';
+  groups.forEach(function (g) {
+    var A = g[1], T = A.filter(function (s) { return s.target; }), eL = rms(A.filter(function (s) { return s.perfect != null; }).map(function (s) { return s.learned - s.perfect; })), eT = rms(A.filter(function (s) { return s.perfect != null; }).map(function (s) { return s.today - s.perfect; }));
+    h += '<tr><td>' + g[0] + '</td><td class="n">' + A.length + '</td><td class="n">' + (T.length ? T.filter(function (s) { return s.hit; }).length + ' of ' + T.length + ' (' + Math.round(T.filter(function (s) { return s.hit; }).length / T.length * 100) + '%)' : '–') + '</td><td class="n">' + (eL == null ? '–' : eL.toFixed(2) + ' mil') + '</td><td class="n">' + (eT == null ? '–' : eT.toFixed(2) + ' mil') + '</td></tr>';
+  });
+  $('winTbl').innerHTML = h + '</tbody>';
+}
+
 // ------------------------------------------------------------------ shots
 // Cd: the call as it stood when the shooter decided (shown on screen); the
 // shot learns from the meters as they stand when the trigger breaks.
@@ -783,7 +893,7 @@ function fire(dial, Cd) {
   var shot = { n: ST.shots.length + 1, t: t0, range: Math.round(lof.R), dial: dial, today: Cd.today, learned: Cd.learned, learnedSd: Cd.learnedSd, callSd: Cd.callSd, hitP: Cd.hit,
     perfect: -dr.mil, truth: { x: dr.mil + dial + gauss() * sd, y: gauss() * sd * 1.1 }, impact: null, plotted: false, flier: false,
     feats: C.feats.map(function (f) { return { lkey: f.lkey, x: f.x }; }), sector: C.sector, mpm: bl.mpm,
-    sigma: Math.sqrt(Math.pow(sd / bl.mpm, 2) + Math.pow(ST.settings.unmeasured, 2)), tof: dr.tof };
+    sigma: Math.sqrt(Math.pow(sd / bl.mpm, 2) + Math.pow(ST.settings.unmeasured, 2)), tof: dr.tof, win: winSnap() };
   ST.shots.push(shot);
   RT.pending.push({ at: t0 + dr.tof, shot: shot });
   return shot;
@@ -797,7 +907,7 @@ function fireLive(dial, C, Cd) {
     perfect: null, truth: null, impact: null, plotted: false, flier: false,
     feats: C.feats.map(function (f) { return { lkey: f.lkey, x: f.x }; }), sector: C.sector, mpm: bl.mpm,
     meters: Object.keys(C.used).map(function (id) { var u = C.used[id]; return { id: id, cross: Math.round(u.cross * 100) / 100, age: Math.round(u.age * 10) / 10, w: Math.round(u.w * 1000) / 1000, src: u.src }; }),
-    sigma: Math.sqrt(Math.pow(sd / bl.mpm, 2) + Math.pow(ST.settings.unmeasured, 2)), tof: bl.tof };
+    sigma: Math.sqrt(Math.pow(sd / bl.mpm, 2) + Math.pow(ST.settings.unmeasured, 2)), tof: bl.tof, win: winSnap() };
   ST.shots.push(shot);
   RT.awaiting = shot; showPrompt('Shot ' + shot.n + ' recorded. Tap the target view where it hit (anywhere off the plate is ground).');
   RT.dirty = true;
@@ -831,16 +941,18 @@ function relearn() {
   RT.dirty = true; renderLearn();
 }
 function burst(mode) {
-  RT.burst = true;
+  RT.burst = true; var waited = 0;
   for (var i = 0; i < 25; i++) {
     advance(6 + rnd() * 12);
+    // wait for a window: Sentinels GO and Steady not WAIT (up to 2 min, then shoot anyway)
+    if (mode === 'green') { var w0 = RT.t; while (!winOpen() && RT.t - w0 < 120) advance(1); waited += RT.t - w0; }
     var dl = ST.settings.delay || 0;
     var C = computeCalls(dl); if (!C) { advance(5); C = computeCalls(dl); if (!C) break; }
-    var d = Math.round((mode === 'learned' ? C.learned : C.today) / 0.1) * 0.1;
+    var d = Math.round((mode === 'today' ? C.today : C.learned) / 0.1) * 0.1;
     ST.dial = d; advance(dl); var sh = fire(d, C); if (!sh) break;
     advance(sh.tof + 0.15);
   }
-  RT.burst = false; renderDial(); renderLast(); renderLearn(); toast('Fired 25 shots. The spotter plotted each one.');
+  RT.burst = false; renderDial(); renderLast(); renderLearn(); toast('Fired 25 shots. The spotter plotted each one.' + (mode === 'green' ? ' Waited ' + Math.round(waited / 25) + ' s a shot on average for the window.' : ''));
 }
 
 // ------------------------------------------------------------ formatting
@@ -1093,6 +1205,7 @@ function renderLast() {
   el.innerHTML = rows.map(function (r) { return '<dt>' + r[0] + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
 }
 function renderLearn() {
+  renderWinTbl();
   var P = ST.shots.filter(function (s) { return s.plotted && !s.flier; });
   $('kShots').textContent = RT.learner.n;
   var last = P.slice(-20);
@@ -1319,7 +1432,7 @@ function renderSetup() {
   if (ST.mode === 'live') renderLiveSetup();
   bindNum('sMv', 'mv', function () { ballCache = {}; }); bindNum('sBc', 'bc', function () { ballCache = {}; }); bindNum('sSd', 'rifleSd'); bindNum('sDelay', 'delay'); bindCk('lFc', 'useForecast');
   renderTargetPick();
-  bindNum('wS', 'windSpeed', function () { RT.field.S = ST.settings.windSpeed; }); bindNum('wD', 'windFrom', function () { RT.field.D = ST.settings.windFrom; }); bindNum('wG', 'gust'); bindNum('wW', 'wobble'); bindCk('wDrift', 'drift');
+  bindNum('wS', 'windSpeed', function () { RT.field.S = ST.settings.windSpeed; }); bindNum('wD', 'windFrom', function () { RT.field.D = ST.settings.windFrom; }); bindNum('wG', 'gust'); bindNum('wW', 'wobble'); bindCk('wDrift', 'drift'); bindCk('wSpells', 'spells');
   var ws = $('wSize'); ws.value = ST.settings.gustSize; ws.onchange = function () { ST.settings.gustSize = ws.value; var F = makeField(ST.seed); F.X = RT.field.X; F.S = RT.field.S; F.D = RT.field.D; RT.field = F; };
   var rm = $('rMode'); rm.value = ST.settings.radio; rm.onchange = function () { ST.settings.radio = rm.value; resetRadio(); };
   bindNum('rLoss', 'loss'); bindNum('lU', 'unmeasured'); bindCk('rMissed', 'sendMissed'); bindCk('wSens', 'sensors'); bindCk('lLead', 'useLead');
@@ -1862,7 +1975,7 @@ $('dialZero').onclick = function () { ST.dial = 0; renderDial(); };
 $('dialLearned').onclick = function () { if (RT.calls) { ST.dial = Math.round(RT.calls.learned * 10) / 10; renderDial(); } };
 $('dialToday').onclick = function () { if (RT.calls) { ST.dial = Math.round(RT.calls.today * 10) / 10; renderDial(); } };
 $('shoot').onclick = function () { if (RT.awaiting) return; var s = fire(ST.dial); if (s) { renderLast(); toast('Shot ' + s.n + ' away. Flight time ' + s.tof.toFixed(2) + ' s.'); } };
-$('burstL').onclick = function () { burst('learned'); }; $('burstT').onclick = function () { burst('today'); };
+$('burstL').onclick = function () { burst('learned'); }; $('burstG').onclick = function () { burst('green'); }; $('burstT').onclick = function () { burst('today'); };
 $('resetLearn').onclick = function () { $('resetConfirm').hidden = false; };
 $('resetNo').onclick = function () { $('resetConfirm').hidden = true; };
 $('resetYes').onclick = function () { $('resetConfirm').hidden = true; ST.shots.forEach(function (s) { s.flier = s.flier; }); ST.shots = []; RT.learner = new WL.Learner(); renderLearn(); renderLast(); toast('Learning cleared. Shots removed too.'); };
@@ -1873,7 +1986,7 @@ TABS.forEach(function (k) { $('tab-' + k).onclick = function () { TABS.forEach(f
 var lastFrame = 0, acc = 0, uiAcc = 0, relAcc = 0;
 function frame(ts) {
   var dtR = lastFrame ? Math.min(0.1, (ts - lastFrame) / 1000) : 0; lastFrame = ts;
-  if (ST.mode === 'live') { if (LIVE.at) RT.t = liveClock(); }
+  if (ST.mode === 'live') { if (LIVE.at) RT.t = liveClock(); if (RT.t >= (RT.winNext || 0) || RT.t < (RT.winNext || 0) - 5) { RT.winNext = Math.floor(RT.t) + 1; windowTick(); } }
   else if (RT.speed > 0) { acc += dtR * RT.speed; var n = 0; while (acc >= 0.1 && n < 40) { step(0.1); acc -= 0.1; n++; } if (n >= 40) acc = 0; }
   uiAcc += dtR; relAcc += dtR;
   if (relAcc > 1.5) {
@@ -1885,7 +1998,7 @@ function frame(ts) {
   if (uiAcc > 0.25 || RT.dirty) {
     uiAcc = 0; RT.calls = computeCalls(ST.settings.delay || 0); renderCalls();
     if (RT.calls) { var CL = RT.callLog || (RT.callLog = []); if (CL.length && CL[CL.length - 1].t > RT.t) CL.length = 0; CL.push({ t: RT.t, C: RT.calls }); while (CL.length && CL[0].t < RT.t - 30) CL.shift(); }
-    if (!$('pane-shoot').hidden && RT.t - (RT.outlookAt || -9) >= 1) { RT.outlookAt = RT.t; renderOutlook(); }
+    if (!$('pane-shoot').hidden && RT.t - (RT.outlookAt || -9) >= 1) { RT.outlookAt = RT.t; renderOutlook(); renderWindow(); }
     if (ST.follow && RT.calls && !RT.awaiting) { var fd = Math.round(RT.calls.learned * 10) / 10; if (fd !== ST.dial) { ST.dial = fd; renderDial(); } }
     var mm = Math.floor(RT.t / 60), ss = Math.floor(RT.t % 60); $('clock').textContent = mm + ':' + String(ss).padStart(2, '0');
     if (!$('pane-learn').hidden && RT.dirty) renderLearn();

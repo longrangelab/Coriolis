@@ -528,6 +528,11 @@ async function pageTest() {
   assert.strictEqual(n, 25, 'Fire 25 plots 25 shots');
   assert(await p.evaluate(() => RT.learner.n === 25), 'learner saw 25 shots');
   assert(await p.evaluate(() => ST.shots.every(s => s.callSd > 0 && s.hitP > 0 && s.hitP <= 1)), 'each shot keeps the stated doubt and hit chance');
+  // the stable window: both of Wind Lab's badges, kept on every shot and compared on the Learning tab
+  const wb = await p.evaluate(() => { renderWindow(); renderLearn(); return { badge: $('winBad').textContent, every: ST.shots.every(s => s.win && 'both' in s.win && s.win.steady && typeof s.win.mil === 'number'), rows: document.querySelectorAll('#winTbl tbody tr').length, tbl: $('winTbl').textContent }; });
+  assert(/Steady/.test(wb.badge) && /Sentinels/.test(wb.badge) && wb.every && wb.rows === 2 && /25/.test(wb.tbl), 'stable window badges, kept per shot and compared ' + JSON.stringify(wb));
+  const opened = await p.evaluate(() => { RT.win = { since: RT.t - 7, both: true, st: { tier: 'good', mil: 0.12 }, se: { tier: 'good', n: 2, of: 2, lasts: 14 } }; renderWindow(); return { txt: $('winBad').textContent, open: winOpen(), snap: winSnap() }; });
+  assert(/WINDOW/.test(opened.txt) && /held 7 s/.test(opened.txt) && /14 s more/.test(opened.txt) && opened.open && opened.snap.both && opened.snap.lasts === 14, 'window readout ' + JSON.stringify(opened));
   await p.waitForFunction(() => document.querySelectorAll('#outlook > div').length === 4, null, { timeout: 5000 });
   assert(/hit chance/.test(await p.textContent('#callLearnS')), 'learned call shows its hit chance');
   await p.click('#tab-learn');
