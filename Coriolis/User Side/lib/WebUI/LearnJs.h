@@ -9,7 +9,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define LEARN_BUILD "ec7cc27d17"   // sent as X-Learn-Build on /windsec
+#define LEARN_BUILD "ebfdfc1d22"   // sent as X-Learn-Build on /windsec
 
 static const char LEARN_HTML[] PROGMEM = R"LEARNHTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1454,7 +1454,7 @@ function sessNewLoad(forget) {
 // keeps its own history (the base holds about two minutes), learns from your
 // real shots and plots, and learns how the meters relate as the wind blows.
 // which build of this page this is ('__' + 'LEARN_BUILD__' when not served by a base)
-var PAGE_BUILD = 'ec7cc27d17';
+var PAGE_BUILD = 'ebfdfc1d22';
 var LIVE = { timer: null, since: null, baseNow: 0, at: 0, utc: null, data: null, ok: false, lastOk: 0, busy: false, unplaced: [], lastSave: 0 };
 var YD_PER_DEG = 111319.4908 * 1.0936133;
 function liveClock() { return LIVE.at ? (LIVE.baseNow + (Date.now() - LIVE.at)) / 1000 : 0; }
@@ -1561,6 +1561,13 @@ async function livePoll() {
 // The base was reflashed with a different Learn page while this one stayed
 // open: save, then load the new page (once per build, so a cached old page
 // can't loop; it says so instead).
+// Practice doesn't poll the base, so ask it now and then (a tiny /windsec
+// read) whether it was reflashed with a newer Learn page
+function practiceBuildCheck() {
+  if (ST.mode === 'live' || LIVE.reloading || !/^https?:/.test(location.protocol) || !window.fetch) return;
+  fetch('/windsec?since=9000000000000', { cache: 'no-store' }).then(function (r) { if (ST.mode !== 'live') checkBuild(r.headers.get('X-Learn-Build')); }, function () {});
+}
+setInterval(practiceBuildCheck, 60000);
 function checkBuild(served) {
   if (!served || PAGE_BUILD.indexOf('__') === 0 || served === PAGE_BUILD || LIVE.reloading) return;
   LIVE.reloading = true;

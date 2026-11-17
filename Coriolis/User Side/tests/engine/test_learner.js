@@ -618,6 +618,14 @@ async function pageTest() {
   await p.waitForTimeout(2500);
   assert.strictEqual(pageLoads, loads0 + 1, 'no reload loop when the page is still the old one');
   assert(/newer Learn page/.test(await p.textContent('#toast')), 'says the base has a newer page');
+  // a page left in Practice also picks up a reflash (it asks the base now and then)
+  await p.evaluate(() => { lsWrite('windLearningRange.mode', 'sim'); try { sessionStorage.clear(); } catch (e) {} });
+  await p.goto('http://127.0.0.1:' + port + '/learn'); await p.waitForFunction(() => typeof ST !== 'undefined' && ST.mode === 'sim', null, { timeout: 10000 });
+  const loads1 = pageLoads; served = 'cafe000002';
+  await p.evaluate(() => practiceBuildCheck());
+  for (let i = 0; i < 40 && pageLoads === loads1; i++) await new Promise(r => setTimeout(r, 250));
+  assert.strictEqual(pageLoads, loads1 + 1, 'Practice reloads for the new build too');
+  await p.waitForFunction(() => typeof ST !== 'undefined' && ST.mode === 'sim', null, { timeout: 10000 });
   // saved sessions: one packed key each plus an index; saves from older pages (all in one key) move over
   const ss = await p.evaluate(() => {
     const K = 'windLearningRange.s:', old = snapshot(); old.savedAt = '2020-01-02T03:04:00.000Z';
