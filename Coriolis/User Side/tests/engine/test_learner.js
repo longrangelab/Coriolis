@@ -328,15 +328,6 @@ async function pageTest() {
   assert(await p.evaluate(() => /×/.test(document.getElementById('kCal').textContent) && document.querySelectorAll('#fcTbl tbody tr').length >= 3 && !!document.querySelector('#chart polyline[stroke-dasharray]')), 'Learning tab: doubt check, forecast table, doubt line');
   await p.click('#tab-pred'); await p.click('#pTrain');
   await p.waitForFunction(() => !document.getElementById('pTrain').disabled && RT.fc.info('M3').generation >= 20, null, { timeout: 60000 });
-  // practice meters carry pressure / temp / light; pressure reads the air
-  // ~15 s ahead, so the loop should pick it up on its own
-  await p.click('#pTrain'); await p.waitForFunction(() => !document.getElementById('pTrain').disabled, null, { timeout: 60000 });
-  const sc = await p.evaluate(() => ({ ch: RT.fc.channels().join(','), top: RT.fc.meters().map(id => RT.fc.pool(id, 10).filter(c => c.n >= 120).slice(0, 3).map(c => c.inputs)), champs: RT.fc.meters().map(id => (RT.fc.pool(id, 10).find(c => c.champ) || { inputs: [] }).inputs),
-    note: RT.fc.meters().filter(id => (RT.fc.pool(id, 10).find(c => c.champ) || { inputs: [] }).inputs.some(q => q.k === 'pressure')).map(id => sensorVerdict(RT.fc, id)).join('') }));
-  assert.strictEqual(sc.ch, 'light,pressure,temp', 'practice: simulated sensors reach the wind model');
-  assert(sc.top.some(L => L.some(I => I.some(q => q.k === 'pressure'))), 'practice: the leading pressure is found on its own ' + JSON.stringify(sc.top));
-  assert(!sc.note || /10 s ahead than its best without|no sensor helps yet|checked enough/.test(sc.note), 'Predict tab says what the sensors are worth: ' + sc.note);
-  assert(await p.evaluate(() => document.querySelectorAll('#pPool tbody tr').length >= 4 && !!document.querySelector('#pHist polyline') && !!document.querySelector('#pTrace polyline') && +document.getElementById('kPc').textContent.replace(/,/g, '') > 10000), 'Predict tab: pool, skill by generation, predicted vs actual');
   await p.click('#tab-shoot');
   assert(await p.evaluate(() => !!document.querySelector('a[href="/"]')), 'back link to Wind Lab');
   const wide = await p.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
@@ -353,6 +344,15 @@ async function pageTest() {
   await p.fill('#modelName', 'Test range'); await p.click('#modelSave');
   assert(await p.evaluate(() => !!JSON.parse(localStorage.getItem('windLearningRange.models'))['Test range']), 'model saved');
   await p.click('#stopWL'); assert(await p.evaluate(() => localStorage.getItem('learnedOn') === '0'), 'Stop turns Wind Lab back to its own settings');
+  // practice meters carry pressure / temp / light; pressure reads the air
+  // ~15 s ahead, so the loop should pick it up on its own
+  await p.click('#tab-pred'); await p.click('#pTrain'); await p.waitForFunction(() => !document.getElementById('pTrain').disabled, null, { timeout: 60000 });
+  const sc = await p.evaluate(() => ({ ch: RT.fc.channels().join(','), top: RT.fc.meters().map(id => RT.fc.pool(id, 10).filter(c => c.n >= 120).slice(0, 3).map(c => c.inputs)), champs: RT.fc.meters().map(id => (RT.fc.pool(id, 10).find(c => c.champ) || { inputs: [] }).inputs),
+    note: RT.fc.meters().filter(id => (RT.fc.pool(id, 10).find(c => c.champ) || { inputs: [] }).inputs.some(q => q.k === 'pressure')).map(id => sensorVerdict(RT.fc, id)).join('') }));
+  assert.strictEqual(sc.ch, 'light,pressure,temp', 'practice: simulated sensors reach the wind model');
+  assert(sc.top.some(L => L.some(I => I.some(q => q.k === 'pressure'))), 'practice: the leading pressure is found on its own ' + JSON.stringify(sc.top));
+  assert(!sc.note || /10 s ahead than its best without|no sensor helps yet|checked enough/.test(sc.note), 'Predict tab says what the sensors are worth: ' + sc.note);
+  assert(await p.evaluate(() => document.querySelectorAll('#pPool tbody tr').length >= 4 && !!document.querySelector('#pHist polyline') && !!document.querySelector('#pTrace polyline') && +document.getElementById('kPc').textContent.replace(/,/g, '') > 10000), 'Predict tab: pool, skill by generation, predicted vs actual');
   // live mode against the mock base
   await p.click('#modeLive');
   await p.waitForFunction(() => ST.mode === 'live' && ST.meters.length === 3 && RT.calls, null, { timeout: 15000 });
