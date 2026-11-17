@@ -18,7 +18,11 @@ permissions:
 
 jobs:
   build-and-simulate:
-    runs-on: ubuntu-latest
+    # 24.04 ships avr-gcc 7.3, the version in the Arduino IDE's AVR toolchain and
+    # the one the release .hex files are built with. ubuntu-latest (26.04) has
+    # avr-gcc 14, which rejects TinyWireS.h (curly quotes in an #error line) and
+    # would also change the code size against the 7168-byte limit.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
 
