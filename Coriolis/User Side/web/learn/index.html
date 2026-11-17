@@ -527,6 +527,42 @@ function windAt(px, py, t, X) {
   return { x: (ex * spd + nx * lat) * f, y: (ey * spd + ny * lat) * f };
 }
 
+// The same wind at each meter, ten times a second, without 96 cosines per
+// meter: each mode's phase there is kept as a unit phasor and turned by how
+// far the field moved this step (one turn per mode, shared by every meter).
+// Recomputed exactly every minute, or when the field or the meters change.
+function meterWinds() {
+  var F = RT.field, M = F.modes, X = F.X, ms = ST.meters, P = RT.ph, i, k, n = M.length;
+  if (!M[0].cp) M.forEach(function (m) { m.cp = Math.cos(m.p); m.sp = Math.sin(m.p); m.cq = Math.cos(m.q); m.sq = Math.sin(m.q); });
+  var same = P && P.F === F && P.n < 600 && P.ids.length === ms.length;
+  for (i = 0; same && i < ms.length; i++) same = P.ids[i] === ms[i].id && P.x[i] === ms[i].x && P.y[i] === ms[i].y;
+  if (!same) {
+    P = RT.ph = { F: F, n: 0, ids: ms.map(function (m) { return m.id; }), x: ms.map(function (m) { return m.x; }), y: ms.map(function (m) { return m.y; }), re: [], im: [] };
+    for (i = 0; i < ms.length; i++) {
+      var re = new Float64Array(n), im = new Float64Array(n), qx = ms[i].x - X.x, qy = ms[i].y - X.y;
+      for (k = 0; k < n; k++) { var a = M[k].kx * qx + M[k].ky * qy + M[k].om * RT.t; re[k] = Math.cos(a); im[k] = Math.sin(a); }
+      P.re.push(re); P.im.push(im);
+    }
+  } else {
+    var dx = X.x - P.X.x, dy = X.y - P.X.y, dt = RT.t - P.t, cr = P.cr || (P.cr = new Float64Array(n)), ci = P.ci || (P.ci = new Float64Array(n));
+    for (k = 0; k < n; k++) { var d = -M[k].kx * dx - M[k].ky * dy + M[k].om * dt; cr[k] = Math.cos(d); ci[k] = Math.sin(d); }
+    for (i = 0; i < ms.length; i++) {
+      var R = P.re[i], I = P.im[i];
+      for (k = 0; k < n; k++) { var r0 = R[k]; R[k] = r0 * cr[k] - I[k] * ci[k]; I[k] = r0 * ci[k] + I[k] * cr[k]; }
+    }
+    P.n++;
+  }
+  P.X = { x: X.x, y: X.y }; P.t = RT.t;
+  var st = ST.settings, dd = F.D * Math.PI / 180, ex = -Math.sin(dd), ey = -Math.cos(dd), nx = ey, ny = -ex, tw = Math.tan(st.wobble * Math.PI / 180), out = [];
+  for (i = 0; i < ms.length; i++) {
+    var Re = P.re[i], Im = P.im[i], gu = 0, gv = 0;
+    for (k = 0; k < n; k++) { var m = M[k]; gu += m.a * (Re[k] * m.cp - Im[k] * m.sp); gv += m.a * (Re[k] * m.cq - Im[k] * m.sq); }
+    var spd = Math.max(0, F.S + st.gust * gu), lat = F.S * tw * gv, f = terrainFactor(ms[i].x, ms[i].y);
+    out.push({ x: (ex * spd + nx * lat) * f, y: (ey * spd + ny * lat) * f });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------- meters + radio
 function cycleLen() { var n = ST.meters.length; return ST.settings.radio === 'fast' ? 0.3 + n * 0.15 + 0.15 : (Math.max(n, 4) + 2) * 0.45; }
 function slotLen() { return ST.settings.radio === 'fast' ? 0.15 : 0.45; }
@@ -541,10 +577,10 @@ function newNode() { return { sx: 0, sy: 0, ss: 0, n: 0, pulses: 0, sec: [], nex
 function lkey(m) { return m.id + '#' + m.epoch; }
 
 function tickMeters(dt) {
-  var s = ST.settings, C = cycleLen();
+  var s = ST.settings, C = cycleLen(), W = meterWinds();
   for (var i = 0; i < ST.meters.length; i++) {
     var m = ST.meters[i], N = RT.nodes[m.id] || (RT.nodes[m.id] = newNode());
-    var v = windAt(m.x, m.y, RT.t);
+    var v = W[i];
     var vx = v.x * m.cal + gauss() * 0.15, vy = v.y * m.cal + gauss() * 0.15, spd = Math.hypot(vx, vy);
     if (m.type === 'sparkfun') { var from = WL.fromDeg({ x: vx, y: vy }), q = Math.round(from / 22.5) * 22.5 * Math.PI / 180; vx = -Math.sin(q) * spd; vy = -Math.cos(q) * spd; N.pulses += spd / 1.492 * dt; }
     N.sx += vx; N.sy += vy; N.ss += spd; N.n++;

@@ -516,6 +516,9 @@ async function pageTest() {
   await p.goto('http://127.0.0.1:' + port + '/learn');
   await p.waitForFunction(() => /[LR0]/.test(document.getElementById('callLearn').textContent), null, { timeout: 15000 });
   await p.click('#burstL');
+  // practice wind at the meters, kept as turning phasors, matches the exact field
+  const wd = await p.evaluate(() => { let worst = 0; for (let i = 0; i < 1500; i++) { step(0.1); if (i % 50 === 0) { const W = meterWinds(); ST.meters.forEach((m, k) => { const v = windAt(m.x, m.y, RT.t); worst = Math.max(worst, Math.abs(v.x - W[k].x), Math.abs(v.y - W[k].y)); }); } } return worst; });
+  assert(wd < 1e-9, 'practice meter wind matches the field ' + wd);
   const n = await p.evaluate(() => ST.shots.filter(s => s.plotted).length);
   assert.strictEqual(n, 25, 'Fire 25 plots 25 shots');
   assert(await p.evaluate(() => RT.learner.n === 25), 'learner saw 25 shots');

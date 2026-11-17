@@ -362,58 +362,73 @@
       LC[id] = { r: xr, q: xq };
     }
     this._lc = LC;
-    this._accumulate('all', present);
-    for (var si = 0; si < sectors.length; si++) this._accumulate(sectors[si], present);
+    this._accumulate(['all'].concat(sectors), present);
   };
-  Relations.prototype._accumulate = function (sector, present) {
-    var self = this, L = this.L, NB = this.NB, ups = Math.max(0.5, this.fu || 0) * YD_PER_S_PER_MPH;
-    if (sector !== 'all') this.sectorSecs[sector]++;
-    var Us = this.U[sector] || (this.U[sector] = [0, 0]); Us[0]++; Us[1] += this.fu || 0;
+  // one pass for every sector this second counts toward ('all' and one or two
+  // compass sectors): each product is worked out once and added to each
+  Relations.prototype._accumulate = function (sectors, present) {
+    var self = this, L = this.L, NB = this.NB, ns = sectors.length, q, j, o, v;
+    function get(store, key, mk) { var r = []; for (var i = 0; i < ns; i++) { var kk = key + '|' + sectors[i]; r.push(store[kk] || (store[kk] = mk())); } return r; }
+    function mkA() { return { n: zeros(L + 1), c: zeros(L + 1) }; }
+    for (q = 0; q < ns; q++) {
+      if (sectors[q] !== 'all') this.sectorSecs[sectors[q]]++;
+      var Us = this.U[sectors[q]] || (this.U[sectors[q]] = [0, 0]); Us[0]++; Us[1] += this.fu || 0;
+    }
     var live = Object.keys(present).filter(function (k) { return present[k]; });
-    live.forEach(function (k) {
-      var R = self.rt[k], cur = R.ring[0], key = k + '|' + sector;
-      var Mm = self.M[key] || (self.M[key] = [0, 0]); Mm[0]++; Mm[1] += cur.spd;
-      var A = self.A[key] || (self.A[key] = { n: zeros(L + 1), c: zeros(L + 1) });
-      for (var j = 0; j <= L && j < R.ring.length; j++) { var o = R.ring[j]; if (!o) continue; A.n[j]++; A.c[j] += cur.f * o.f; }
-    });
+    for (var li = 0; li < live.length; li++) {
+      var k = live[li], R = self.rt[k], cur = R.ring[0];
+      for (q = 0; q < ns; q++) { var kq = k + '|' + sectors[q], Mm = self.M[kq] || (self.M[kq] = [0, 0]); Mm[0]++; Mm[1] += cur.spd; }
+      var As = get(self.A, k, mkA);
+      for (j = 0; j <= L && j < R.ring.length; j++) { o = R.ring[j]; if (!o) continue; v = cur.f * o.f; for (q = 0; q < ns; q++) { As[q].n[j]++; As[q].c[j] += v; } }
+    }
     // each meter against the rest of the field, by the same yards of travel:
-    // speed gusts (f) and direction shifts (g, keys ending '|d')
-    Object.keys(this.rt).forEach(function (k) {
-      var R = self.rt[k], Fr = R.rest || [], W = 2 * NB + 1;
-      if (!R.ring[0] && !Fr[0]) return;
-      [['', 'f'], ['|d', 'g']].forEach(function (cv) {
-        var key = k + '|' + sector + cv[0], c = cv[1], j, o;
-        if (Fr[0]) {
-          var FA = self.FA[key] || (self.FA[key] = { n: zeros(L + 1), c: zeros(L + 1) });
-          for (j = 0; j <= L && j < Fr.length; j++) { o = Fr[j]; if (!o) continue; FA.n[j]++; FA.c[j] += Fr[0][c] * (o[c] || 0); }
+    // speed gusts (f) and direction shifts (keys ending '|d')
+    var W = 2 * NB + 1, ids = Object.keys(this.rt);
+    function mkF() { return { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W) }; }
+    function addFs(Fs, ix, x, y) { var ab = x * y, aa = x * x, bb = y * y; for (var i = 0; i < ns; i++) { var F = Fs[i]; F.n[ix]++; F.ab[ix] += ab; F.aa[ix] += aa; F.bb[ix] += bb; } }
+    for (var ki = 0; ki < ids.length; ki++) {
+      var id = ids[ki], Rm = self.rt[id], Fr = Rm.rest || [], r0 = Rm.ring[0], f0 = Fr[0], lc = self._lc[id];
+      if (!r0 && !f0) continue;
+      for (var cv = 0; cv < 2; cv++) {
+        var c = cv ? 'g' : 'f', base = id + '|';
+        var key = function (sfx) { var r = []; for (var i = 0; i < ns; i++) r.push(base + sectors[i] + sfx); return r; };
+        var sfx = cv ? '|d' : '';
+        if (f0) {
+          var FAs = key(sfx).map(function (kk) { return self.FA[kk] || (self.FA[kk] = mkA()); });
+          for (j = 0; j <= L && j < Fr.length; j++) { o = Fr[j]; if (!o) continue; v = f0[c] * (o[c] || 0); for (q = 0; q < ns; q++) { FAs[q].n[j]++; FAs[q].c[j] += v; } }
         }
-        if (c === 'g' && R.ring[0]) {                    // the meter's own direction persistence (its speed one is in A)
-          var DA = self.FA[key + 'm'] || (self.FA[key + 'm'] = { n: zeros(L + 1), c: zeros(L + 1) });
-          for (j = 0; j <= L && j < R.ring.length; j++) { o = R.ring[j]; if (!o) continue; DA.n[j]++; DA.c[j] += R.ring[0].g * (o.g || 0); }
+        if (cv && r0) {                    // the meter's own direction persistence (its speed one is in A)
+          var DAs = key('|dm').map(function (kk) { return self.FA[kk] || (self.FA[kk] = mkA()); });
+          for (j = 0; j <= L && j < Rm.ring.length; j++) { o = Rm.ring[j]; if (!o) continue; v = r0.g * (o.g || 0); for (q = 0; q < ns; q++) { DAs[q].n[j]++; DAs[q].c[j] += v; } }
         }
-        var F = self.F[key] || (self.F[key] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W) }), lc = self._lc[k];
+        var Fs = key(sfx).map(function (kk) { return self.F[kk] || (self.F[kk] = mkF()); });
         for (var jb = 0; jb < lc.r.length; jb++) {
-          if (Fr[0]) { var xa = lc.r[jb]; if (xa) addF(F, NB + jb, xa[c] || 0, Fr[0][c]); }          // meter then, field now
-          if (jb > 0 && R.ring[0]) { var xf = lc.q[jb]; if (xf) addF(F, NB - jb, R.ring[0][c] || 0, xf[c] || 0); }   // field then, meter now
+          if (f0) { var xa = lc.r[jb]; if (xa) addFs(Fs, NB + jb, xa[c] || 0, f0[c]); }          // meter then, field now
+          if (jb > 0 && r0) { var xf = lc.q[jb]; if (xf) addFs(Fs, NB - jb, r0[c] || 0, xf[c] || 0); }   // field then, meter now
         }
-      });
-    });
-    var all = Object.keys(this.rt);
-    for (var i = 0; i < all.length; i++) for (var j2 = i + 1; j2 < all.length; j2++) {
-      var pk = pairKey(all[i], all[j2]), a = pk[0], b = pk[1];
+      }
+    }
+    function mkP() { return { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W), ds: zeros(W), dc: zeros(W) }; }
+    for (var i = 0; i < ids.length; i++) for (var j2 = i + 1; j2 < ids.length; j2++) {
+      var pk = pairKey(ids[i], ids[j2]), a = pk[0], b = pk[1];
       var Ra = this.rt[a].ring, Rb = this.rt[b].ring;
       if (!Ra[0] && !Rb[0]) continue;
-      var key2 = a + '|' + b + '|' + sector, W = 2 * NB + 1;
-      var P = this.P[key2] || (this.P[key2] = { n: zeros(W), ab: zeros(W), aa: zeros(W), bb: zeros(W), ds: zeros(W), dc: zeros(W) });
-      var La = this._lc[a].r, Lb = this._lc[b].r;
-      for (var jb = 0; jb < La.length; jb++) {
+      var Ps = get(this.P, a + '|' + b, mkP), La = this._lc[a].r, Lb = this._lc[b].r;
+      for (jb = 0; jb < La.length; jb++) {
         // +j: a as it was j bins of travel ago, with b now (a leads b)
-        if (Rb[0]) { var xa = La[jb]; if (xa) this._add(P, NB + jb, xa, Rb[0]); }
+        if (Rb[0]) { xa = La[jb]; if (xa) addPs(Ps, ns, NB + jb, xa, Rb[0]); }
         // -j: b as it was, with a now (b leads a)
-        if (jb > 0 && Ra[0]) { var xb = Lb[jb]; if (xb) this._add(P, NB - jb, Ra[0], xb); }
+        if (jb > 0 && Ra[0]) { var xb = Lb[jb]; if (xb) addPs(Ps, ns, NB - jb, Ra[0], xb); }
       }
     }
   };
+  // x = a's sample, y = b's sample; ds/dc hold direction(b) - direction(a)
+  function addPs(Ps, ns, ix, x, y) {
+    var ab = x.f * y.f, aa = x.f * x.f, bb = y.f * y.f, ds, dc;
+    if (x.s != null && y.s != null) { ds = y.s * x.c - y.c * x.s; dc = y.c * x.c + y.s * x.s; }   // sin/cos of dir(b) - dir(a)
+    else { var dd = (y.dir - x.dir) * Math.PI / 180; ds = Math.sin(dd); dc = Math.cos(dd); }
+    for (var i = 0; i < ns; i++) { var P = Ps[i]; P.n[ix]++; P.ab[ix] += ab; P.aa[ix] += aa; P.bb[ix] += bb; P.ds[ix] += ds; P.dc[ix] += dc; }
+  }
   function addF(F, ix, x, y) { F.n[ix]++; F.ab[ix] += x * y; F.aa[ix] += x * x; F.bb[ix] += y * y; }
   // a meter's reading kf seconds ago, between whole seconds by straight line
   function ringAt(R, kf) {
