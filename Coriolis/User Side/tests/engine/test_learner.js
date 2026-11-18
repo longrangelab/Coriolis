@@ -377,6 +377,24 @@ ok('wind loop: a Sentinel lead in yards follows the wind speed', () => {
   const L2 = new WL.ForecastLoop(JSON.parse(JSON.stringify(L.toJSON())));
   assert(L2.pool('T', 10).some(c => c.leaders.some(l => l.yd)), 'round-trips');
 });
+ok('two-layer predictor: follows the fixed map, and a pressure trend, past its own history', () => {
+  // S runs 20 s ahead of T; a slow wander in speed shows up in pressure 2 minutes early
+  const rr = rng(9), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const G = [], W = []; let x = 0, w = 0; for (let t = 0; t < 7400; t++) { x = 0.96 * x + 0.4 * gg(); w = 0.995 * w + 0.2 * gg(); G.push(x); W.push(w); }
+  const mk = (map, env) => new WL.MapForecaster({ H: [10, 30, 60], useEnv: env, mapFn: id => id === 'T' ? map : [] });
+  const F = mk([{ by: 'S', lagS: 20 }], true), F0 = mk([], true), Fn = mk([], false);
+  for (let t = 100; t < 7200; t++) {
+    const r = { S: 10 + W[t] + 2 * G[t], T: 10 + W[t - 20] + 2 * G[t - 20] + 0.2 * gg() }, env = { press: 1000 - 0.5 * W[t + 100] };
+    for (const f of [F, F0, Fn]) { f.addEnv(t, env); for (const id in r) f.add(id, t, r[id], 270 + 3 * gg()); }
+  }
+  const sk = (f, h) => f.stats('T').find(q => q.h === h);
+  assert(sk(F, 10).n > 5000 && sk(F, 10).skill > 0.6, 'the 20 s leader carries the 10 s call: ' + JSON.stringify(sk(F, 10)));
+  assert(sk(F, 10).skill > sk(F0, 10).skill + 0.3, 'map beats no map at 10 s: ' + sk(F, 10).skill + ' vs ' + sk(F0, 10).skill);
+  assert(sk(F0, 60).skill > sk(Fn, 60).skill + 0.015, 'pressure gives a 60 s edge: ' + sk(F0, 60).skill + ' vs ' + sk(Fn, 60).skill);
+  const p = F.predict('T', F.latest('T') + 15);
+  assert(p && p.ready && isFinite(p.x) && p.sd > 0, 'predicts between horizons: ' + JSON.stringify(p));
+  assert.strictEqual(F.predict('nobody', 5), null);
+});
 ok('wind loop: a neural net starts as its linear parent and learns what it misses', () => {
   // N gets S's gusts 10 s later, but only the gusts: lulls fill in (a bend a straight line can't follow)
   const rr = rng(17), gg = () => { const u = 1 - rr(), v = rr(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
@@ -529,8 +547,8 @@ async function pageTest() {
   assert(await p.evaluate(() => RT.learner.n === 25), 'learner saw 25 shots');
   assert(await p.evaluate(() => ST.shots.every(s => s.callSd > 0 && s.hitP > 0 && s.hitP <= 1)), 'each shot keeps the stated doubt and hit chance');
   // the stable window: both of Wind Lab's badges, kept on every shot and compared on the Learning tab
-  const wb = await p.evaluate(() => { renderWindow(); renderLearn(); return { badge: $('winBad').textContent, every: ST.shots.every(s => s.win && 'both' in s.win && s.win.steady && typeof s.win.mil === 'number'), rows: document.querySelectorAll('#winTbl tbody tr').length, tbl: $('winTbl').textContent }; });
-  assert(/Steady/.test(wb.badge) && /Sentinels/.test(wb.badge) && wb.every && wb.rows === 2 && /25/.test(wb.tbl), 'stable window badges, kept per shot and compared ' + JSON.stringify(wb));
+  const wb = await p.evaluate(() => { renderWindow(); renderLearn(); return { badge: $('winBad').textContent, every: ST.shots.every(s => s.win && 'both' in s.win && s.win.steady && typeof s.win.mil === 'number'), rows: document.querySelectorAll('#winTbl tbody tr').length, fired: [...document.querySelectorAll('#winTbl tbody tr')].reduce((a, r) => a + (+r.cells[1].textContent || 0), 0), tbl: $('winTbl').textContent }; });
+  assert(/Steady/.test(wb.badge) && /Sentinels/.test(wb.badge) && wb.every && wb.rows === 2 && wb.fired === 25, 'stable window badges, kept per shot and compared ' + JSON.stringify(wb));
   const opened = await p.evaluate(() => { RT.win = { since: RT.t - 7, both: true, st: { tier: 'good', mil: 0.12 }, se: { tier: 'good', n: 2, of: 2, lasts: 14 } }; renderWindow(); return { txt: $('winBad').textContent, open: winOpen(), snap: winSnap() }; });
   assert(/WINDOW/.test(opened.txt) && /held 7 s/.test(opened.txt) && /14 s more/.test(opened.txt) && opened.open && opened.snap.both && opened.snap.lasts === 14, 'window readout ' + JSON.stringify(opened));
   await p.waitForFunction(() => document.querySelectorAll('#outlook > div').length === 4, null, { timeout: 5000 });
@@ -567,6 +585,11 @@ async function pageTest() {
   assert(!sc.note || /10 s ahead than its best without|no sensor helps yet|checked enough/.test(sc.note), 'Predict tab says what the sensors are worth: ' + sc.note);
   assert(await p.evaluate(() => { RT.regAt = 0; renderRegimes(RT.fc); return document.querySelectorAll('#pRegs tbody tr').length >= 1 && /\(now\)/.test(document.getElementById('pRegs').textContent); }), 'Predict tab lists what it knows, wind by wind');
   assert(await p.evaluate(() => document.querySelectorAll('#pPool tbody tr').length >= 4 && !!document.querySelector('#pHist polyline') && !!document.querySelector('#pTrace polyline') && +document.getElementById('kPc').textContent.replace(/,/g, '') > 10000), 'Predict tab: pool, skill by generation, predicted vs actual');
+  // the two-layer test: fixed map + predictor, scored beside the blended loop
+  const tl = await p.evaluate(() => { renderP2(); const rows = [...document.querySelectorAll('#p2Tbl tbody tr')].map(r => r.textContent);
+    $('pModel').value = 'two'; $('pModel').onchange(); computeCalls(); const two = !!RT.calls; $('pModel').value = 'blended'; $('pModel').onchange(); return { rows, two, n: RT.f2.meters().length }; });
+  assert(tl.n >= 3 && tl.rows.length === tl.n + 1 && /^All\s*\d+%\d+%/.test(tl.rows[tl.rows.length - 1]), 'Predict tab compares blended and two layers: ' + JSON.stringify(tl.rows));
+  assert(tl.two, 'the call can run on the two-layer forecast');
   // live mode against the mock base
   await p.click('#modeLive');
   await p.waitForFunction(() => ST.mode === 'live' && ST.meters.length === 3 && RT.calls, null, { timeout: 15000 });

@@ -1492,6 +1492,122 @@
   };
 
   /*
+   * Two layers (test): Relations is the map of who warns whom and by how
+   * much; this predictor takes that map as given and only extrapolates.
+   * One linear model per meter, horizon and set of map leaders (so each wind
+   * keeps its own), on fixed inputs: the meter now, its 1 and 5 min means,
+   * its 5 s and 30 s changes, the field's mean and 30 s change, each map
+   * Sentinel as it was lag - h seconds ago (or its latest, plus its 1 min
+   * mean, when the air it saw has not arrived yet), and the sensors' level
+   * and 1 / 10 min change. No search, no pool: the map decides the inputs.
+   *   new MapForecaster({H: [10, 30, 60], mapFn: id -> [{by, lagS}]})
+   *   add(id, t, mph, dir, env), addEnv(t, env), predictAt(id, h) -> {x, y}
+   */
+  function MapForecaster(cfg) {
+    cfg = cfg || {};
+    this.H = cfg.H || [10, 30, 60]; this.mapFn = cfg.mapFn || null; this.lam = cfg.lam || 0.999;
+    this.maxLeaders = cfg.maxLeaders || 3; this.useEnv = cfg.useEnv !== false; this.spread = cfg.spread != null ? cfg.spread : 3;
+    this.rt = {}; this.env = { s: {}, cs: {} }; this.M = {}; this.pend = {}; this.S = {}; this.chan = {};
+  }
+  MapForecaster.prototype._at = function (id, s) { var R = this.rt[id]; return R ? R.s[s] || R.s[s - 1] || R.s[s + 1] || null : null; };
+  MapForecaster.prototype._latest = function (id, s) { var R = this.rt[id]; if (!R) return null; var o = R.s[Math.min(s, R.last)]; return o && R.last > s - 10 ? o : null; };
+  MapForecaster.prototype.addEnv = function (t, x) { if (!x) return; var sec = Math.round(t); this.env.s[sec] = x; chanStats(this.env.cs, x); for (var k in x) this.chan[k] = true; for (var q in this.env.s) if (+q < sec - 700) delete this.env.s[q]; };
+  MapForecaster.prototype._envAt = function (k, s) { for (var j = 0; j <= 3; j++) { var o = this.env.s[s - j]; if (o && o[k] != null) return o[k]; } return null; };
+  MapForecaster.prototype._leaders = function (id) { var L = this.mapFn ? this.mapFn(id) || [] : []; return L.filter(function (l) { return l && l.by !== id && l.lagS > 0; }).slice(0, this.maxLeaders); };
+  MapForecaster.prototype._feat = function (id, s0, h, L) {
+    var cur = this._at(id, s0); if (!cur) return null;
+    var p5 = this._at(id, s0 - 5) || cur, p30 = this._at(id, s0 - 30) || cur, me = this;
+    var fu = 0, fv = 0, f30u = 0, f30v = 0, nf = 0;
+    for (var o in this.rt) { if (o === id) continue; var a = this._latest(o, s0), b = this._at(o, s0 - 30) || a; if (a) { fu += a.u; fv += a.v; f30u += a.u - b.u; f30v += a.v - b.v; nf++; } }
+    if (nf) { fu /= nf; fv /= nf; f30u /= nf; f30v /= nf; } else { fu = cur.u; fv = cur.v; }
+    var xu = [1, cur.u, cur.m60u, cur.m300u, cur.u - p5.u, cur.u - p30.u, fu, f30u], xv = [1, cur.v, cur.m60v, cur.m300v, cur.v - p5.v, cur.v - p30.v, fv, f30v];
+    L.forEach(function (l) {
+      var tq = s0 + h - Math.round(l.lagS), lv = tq <= s0 ? me._at(l.by, tq) : null, lt = me._latest(l.by, s0);
+      var a = lv || lt; xu.push(a ? a.u : cur.u, lt ? lt.m60u : cur.m60u); xv.push(a ? a.v : cur.v, lt ? lt.m60v : cur.m60v);
+      // the map's lag is good to a bin of travel: the readings either side let the fit settle the exact lead
+      if (me.spread) [-me.spread, me.spread].forEach(function (dk) { var q = tq + dk, o2 = q <= s0 ? me._at(l.by, q) : null, b2 = o2 || a; xu.push(b2 ? b2.u : cur.u); xv.push(b2 ? b2.v : cur.v); });
+    });
+    if (this.useEnv) Object.keys(this.chan).sort().forEach(function (k) {
+      var st = me.env.cs[k], v = me._envAt(k, s0), z = 0, d1 = 0, d10 = 0;
+      if (st && st.n >= 10 && v != null) {
+        var sd = Math.sqrt(Math.max(st.v, 1e-9)), o1 = me._envAt(k, s0 - 60), o10 = me._envAt(k, s0 - 600);
+        z = Math.max(-4, Math.min(4, (v - st.m) / sd)); d1 = o1 == null ? 0 : Math.max(-4, Math.min(4, (v - o1) / sd)); d10 = o10 == null ? 0 : Math.max(-4, Math.min(4, (v - o10) / sd));
+      }
+      xu.push(z, d1, d10); xv.push(z, d1, d10);
+    });
+    return { u: xu, v: xv };
+  };
+  function mapModel(n) { var w = new Array(n).fill(0); w[1] = 1; return { w: w, P: eye(new Array(n).fill(0).map(function (_, i) { return i === 0 ? 1 : i < 4 ? 0.01 : 0.2; })) }; }
+  MapForecaster.prototype._model = function (id, h, sig, n) {
+    var k = id + '|' + h + '|' + sig, m = this.M[k];
+    if (!m || m.u.w.length !== n) m = this.M[k] = { u: mapModel(n), v: mapModel(n), n: 0 };
+    return m;
+  };
+  MapForecaster.prototype.add = function (id, t, mph, dir, extra) {
+    var sec = Math.round(t); id = String(id); if (!isFinite(mph) || !isFinite(dir)) return;
+    var R = this.rt[id] || (this.rt[id] = { s: {}, k: 0, last: -Infinity, m60u: null });
+    if (R.s[sec]) return;
+    if (sec < R.last - 120) { R.s = {}; R.last = -Infinity; this.pend[id] = []; }
+    var d = dir * Math.PI / 180, u = -Math.sin(d) * mph, v = -Math.cos(d) * mph;
+    if (R.m60u == null) { R.m60u = R.m300u = u; R.m60v = R.m300v = v; }
+    R.k++; var a1 = 1 / Math.min(R.k, 60), a5 = 1 / Math.min(R.k, 300);
+    R.m60u += a1 * (u - R.m60u); R.m60v += a1 * (v - R.m60v); R.m300u += a5 * (u - R.m300u); R.m300v += a5 * (v - R.m300v);
+    R.s[sec] = { u: u, v: v, m60u: R.m60u, m60v: R.m60v, m300u: R.m300u, m300v: R.m300v };
+    if (extra) { var ex = {}; for (var ek in extra) ex[ek] = extra[ek]; if (!this.env.s[sec]) this.addEnv(sec, ex); }
+    var newest = sec > R.last; if (newest) R.last = sec;
+    for (var q in R.s) if (+q < R.last - 400) delete R.s[q];
+    // check and learn from what was predicted for this second
+    var P = this.pend[id] || (this.pend[id] = []), keep = [], me = this;
+    P.forEach(function (p) {
+      if (p.due > sec) { keep.push(p); return; }
+      if (p.due < sec) return;
+      var m = me._model(id, p.h, p.sig, p.x.u.length);
+      var S = (me.S[id] || (me.S[id] = {}))[p.h] || (me.S[id][p.h] = { e2: 0, p2: 0, n: 0 });
+      var e = ((p.px - u) * (p.px - u) + (p.py - v) * (p.py - v)) / 2, es = ((p.sx - u) * (p.sx - u) + (p.sy - v) * (p.sy - v)) / 2;
+      S.n++; var al = Math.max(1 / S.n, 1 / 600); S.e2 += al * (e - S.e2); S.p2 += al * (es - S.p2);
+      rlsStep(m.u, p.x.u, u, me.lam); rlsStep(m.v, p.x.v, v, me.lam); m.n++;
+    });
+    this.pend[id] = keep;
+    if (!newest) return;
+    var L = this._leaders(id), sig = L.map(function (l) { return l.by; }).join(',') + '|' + Object.keys(this.chan).sort().join(',');
+    this.H.forEach(function (h) {
+      var x = me._feat(id, sec, h, L); if (!x) return;
+      var m = me._model(id, h, sig, x.u.length), pu = 0, pv = 0;
+      for (var i = 0; i < x.u.length; i++) { pu += m.u.w[i] * x.u[i]; pv += m.v.w[i] * x.v[i]; }
+      me.pend[id].push({ due: sec + h, h: h, sig: sig, x: x, px: pu, py: pv, sx: u, sy: v });
+    });
+  };
+  // the latest prediction made for h seconds ahead of the newest second
+  MapForecaster.prototype.predictAt = function (id, h) {
+    var P = this.pend[String(id)] || [], best = null;
+    for (var i = 0; i < P.length; i++) if (P[i].h === h && (!best || P[i].due > best.due)) best = P[i];
+    return best ? { x: best.px, y: best.py, t: best.due } : null;
+  };
+  MapForecaster.prototype.latest = function (id) { var R = this.rt[String(id)]; return R && isFinite(R.last) ? R.last : null; };
+  MapForecaster.prototype.meters = function () { return Object.keys(this.rt).sort(); };
+  // the wind at time t, between the horizons by straight line (same shape as Forecaster.predict)
+  MapForecaster.prototype.predict = function (id, t) {
+    id = String(id); var s0 = this.latest(id); if (s0 == null) return null;
+    var c = this.rt[id].s[s0], h = t - s0, me = this, S = this.S[id] || {};
+    var lo = { h: 0, f: { x: c.u, y: c.v } }, hi = null;
+    if (h <= 0.5) return { x: c.u, y: c.v, sd: 0, h: 0, n: 0, ready: true };
+    var H = this.H.slice().sort(function (a, b) { return a - b; });
+    for (var i = 0; i < H.length; i++) {
+      var f = this.predictAt(id, H[i]); if (!f || f.t !== s0 + H[i]) break;
+      var st = S[H[i]]; f.sd = st && st.n ? Math.sqrt(st.e2) : null; f.n = st ? st.n : 0;
+      if (H[i] <= h) lo = { h: H[i], f: f }; else { hi = { h: H[i], f: f }; break; }
+    }
+    var ready = function (f) { return f.n == null || f.n >= 60; };
+    if (!hi) return { x: lo.f.x, y: lo.f.y, sd: lo.f.sd || 0, h: h, n: lo.f.n || 0, ready: lo.h === 0 || ready(lo.f) };
+    var a = (h - lo.h) / (hi.h - lo.h);
+    return { x: lo.f.x + a * (hi.f.x - lo.f.x), y: lo.f.y + a * (hi.f.y - lo.f.y), sd: (lo.f.sd || 0) + a * ((hi.f.sd || 0) - (lo.f.sd || 0)), h: h, n: hi.f.n, ready: ready(hi.f) && (lo.h === 0 || ready(lo.f)) };
+  };
+  MapForecaster.prototype.stats = function (id) {
+    var S = this.S[String(id)] || {};
+    return this.H.map(function (h) { var B = S[h]; if (!B || !B.n) return { h: h, n: 0 }; var e = Math.sqrt(B.e2), q = Math.sqrt(B.p2); return { h: h, n: B.n, rmse: e, rmseStay: q, skill: q > 0 ? 1 - e / q : 0 }; });
+  };
+
+  /*
    * Lines /windsec readings (or simulator seconds) up on whole seconds.
    * add(id, tSec, spd, dir) as readings arrive (any order, repeats fine);
    * release(nowSec, fn) hands every second older than nowSec - settle to
@@ -1589,7 +1705,7 @@
     lineOfFire: lineOfFire, components: components, fromDeg: fromDeg, sectorOf: sectorOf,
     geometry: geometry, physicsWeights: physicsWeights, Learner: Learner,
     Relations: Relations, relationKind: relationKind, expectedLag: expectedLag, upwindOk: upwindOk,
-    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, geometryPairs: geometryPairs, Forecaster: Forecaster, ForecastLoop: ForecastLoop, regimeKey: regimeKey, regimeName: regimeName,
+    SecondAligner: SecondAligner, buildLiveModel: buildLiveModel, geometryPairs: geometryPairs, Forecaster: Forecaster, ForecastLoop: ForecastLoop, MapForecaster: MapForecaster, regimeKey: regimeKey, regimeName: regimeName,
     hitChance: hitChance
   };
 })(typeof window !== 'undefined' ? window : globalThis);
