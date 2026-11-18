@@ -28,6 +28,11 @@ int main() {
     CHECK(loraAirtimeMs(49, 9, 125.0f, 7, 8) == 427, "49 B %u", loraAirtimeMs(49, 9, 125.0f, 7, 8));
     CHECK(loraAirtimeMs(46, 9, 125.0f, 7, 8) + 50 <= 450, "46 B fits the 450 ms slot with a guard");
 
+    // ---- airtime, current FCC profile SF11 BW500 CR4/7 preamble 8 (Telemetry.h); 46 B + 50 ms guard fits SLOT_MS 450
+    CHECK(loraAirtimeMs(36, 11, 500.0f, 7, 8) == 284, "36 B %u", loraAirtimeMs(36, 11, 500.0f, 7, 8));
+    CHECK(loraAirtimeMs(46, 11, 500.0f, 7, 8) == 341, "46 B %u", loraAirtimeMs(46, 11, 500.0f, 7, 8));
+    CHECK(loraAirtimeMs(49, 11, 500.0f, 7, 8) == 341, "49 B %u", loraAirtimeMs(49, 11, 500.0f, 7, 8));
+
     // ---- parse after a 36-byte packet (sizeof(NodePacket))
     uint8_t buf[64] = {0};
     WindExt e{}; e.tag = WIND_EXT_TAG | WIND_EXT_SYNCED | 3; e.beacon = 7; e.t_ms = 1234;

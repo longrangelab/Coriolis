@@ -22,16 +22,20 @@
 #define RADIO_RST   23
 #define RADIO_GPIO  33
 
-// ---- radio profile (SF9 = good margin at ~1 mile) ----
-#define LORA_FREQ_MHZ   915.0
-#define LORA_BW_KHZ     125.0
-#define LORA_SF         9
+// ---- radio profile (SF11/BW500, see FCC note) ----
+// FCC: a single fixed channel must be >=500 kHz wide (47 CFR 15.247 DTS); the
+// RAK3172 grant (2AF6B-RAK3172) covers 500 kHz on 903.0-914.2 MHz. SF11/BW500
+// has the same 4.1 ms symbol as the old SF9/BW125, ~14% shorter airtime and
+// ~1 dB less sensitivity. Node and receiver MUST match: reflash the whole network.
+#define LORA_FREQ_MHZ   914.2
+#define LORA_BW_KHZ     500.0
+#define LORA_SF         11
 #define LORA_CR         7
 #define LORA_TX_DBM     17
 #define LORA_PREAMBLE   8
 
 // ---- TDMA timing (must match receiver) ----
-#define SLOT_MS         450          // per-node slot (SF9 data airtime ~312ms + guard)
+#define SLOT_MS         450          // per-node slot (SF11/BW500 data airtime ~341 ms at 46 B + guard)
 #define MIN_SLOTS       4            // smallest cycle capacity (bootstrapping)
 
 // ---- packet identity ----

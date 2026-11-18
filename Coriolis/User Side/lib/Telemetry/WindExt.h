@@ -13,8 +13,8 @@
  * the ATtiny every 100 ms, notes when each new publish appears, and sends the
  * newest 1..3 publishes with the time the newest one appeared.
  *
- * Wire format: 10 bytes after the 36-byte NodePacket = 46 bytes, 398 ms at
- * SF9/BW125/CR4-7 (the 450 ms slot keeps a 52 ms guard). The NodePacket CRC
+ * Wire format: 10 bytes after the 36-byte NodePacket = 46 bytes, 341 ms at
+ * SF11/BW500/CR4-7 (398 ms on the old SF9/BW125; 450 ms slot). The NodePacket CRC
  * still covers only its own 36 bytes and the base has always accepted
  * len >= 36, so an older base reads the packet exactly as before and ignores
  * the extra bytes. A newer base reads an older node's 36-byte packet with no
