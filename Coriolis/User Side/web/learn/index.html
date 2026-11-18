@@ -80,6 +80,8 @@ main{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px;m
 .outlook div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:4px 6px;text-align:center}
 .outlook b{display:block;font-family:"IBM Plex Mono",monospace;font-size:.9rem}
 .outlook .muted{font-size:.72rem}
+.outlook .past{opacity:.45}
+#reach .ok{color:var(--good,#2e7d32);font-weight:600}#reach .warn{color:var(--warn,#b26a00);font-weight:600}
 .wbad{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:.8rem}
 .wbad>div{border:1px solid var(--line);border-left:4px solid var(--muted);border-radius:6px;padding:4px 8px;background:var(--panel2)}
 .wbad b{font-family:var(--f-display);font-size:1.05rem;letter-spacing:.03em;margin-right:6px}
@@ -178,6 +180,7 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="call learned"><div class="lbl">Learned call</div><div class="v" id="callLearn">–</div><div class="s" id="callLearnS">relevant meters, lead time, learned multipliers</div></div>
       </div>
       <div class="outlook" id="outlook" aria-live="off"></div>
+      <div class="note" id="reach" aria-live="off"></div>
       <div class="wbad" id="winBad" aria-live="off"></div>
       <div>
         <div class="lbl" style="margin-bottom:6px">Scope dialed (windage)</div>
@@ -255,6 +258,18 @@ textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:
         <div class="chip"><div class="lbl">Pairs proven</div><div class="v" id="kPp">0</div><div class="note">Sentinel → meter</div></div>
       </div>
       <div class="note" id="pChan"></div>
+      <div>
+        <div class="lbl" style="margin-bottom:4px">Field map: who warns whom</div>
+        <div class="note">A long look at the wind first. Every 10 s the meter pairs that warn each other are counted, wind direction by wind direction. A pair that holds for most of the look with a steady lag is kept, and after the look the map for that wind locks. The two-layer predictor then works from the locked map only, and the call holds for the wind each stretch of the path will have when the bullet gets there.</div>
+        <div class="note" id="fmStat"></div>
+        <div class="tblwrap"><table id="fmTbl"></table></div>
+        <div class="row">
+          <label class="f" style="min-width:120px">Look before locking (min)<input id="fmMin" type="number" min="5" max="240" step="5"></label>
+          <label class="ck" style="align-self:flex-end;display:flex;gap:6px"><input id="fmAuto" type="checkbox"> Lock on its own</label>
+          <button class="btn" id="fmLock" style="align-self:flex-end">Lock this wind now</button>
+          <button class="btn" id="fmClear" style="align-self:flex-end">Look again</button>
+        </div>
+      </div>
       <div>
         <div class="lbl" style="margin-bottom:4px">Test: two layers against the blended model</div>
         <div class="note"><b>Blended</b> (above) searches for its own Sentinels and lags while it predicts. <b>Two layers</b> keeps the jobs apart: the Relations map says who warns whom and by how much, and a fixed predictor on that map extrapolates (each meter's trend, the field, the map's Sentinels, pressure / temperature / light trends). Both run on the same wind; skill is error removed vs "stays as it is".</div>
@@ -713,7 +728,7 @@ function computeCalls(delay) {
   var geo = WL.geometry(have, ST.shooter, ST.target, avg, {});
   var wL = WL.physicsWeights(geo.rows, lof.R, bl.kernel);
   var sector = WL.sectorOf(WL.fromDeg(avg));
-  var feats = [], used = {}, fcVar = 0, nFc = 0;
+  var feats = [], used = {}, fcVar = 0, fcSum = 0, nFc = 0;
   geo.rows.forEach(function (r) {
     if (!r.included) return;
     var m = have.find(function (x) { return x.id === r.id; });
@@ -729,22 +744,26 @@ function computeCalls(delay) {
     if (!v) v = valueAt(r.id, tq);
     var c = WL.components(v, lof).cross, w = wL[r.id] || 0;
     feats.push({ lkey: lkey(m), x: w * c, id: r.id });
-    fcVar += Math.pow(w * sdk / Math.SQRT2, 2);          // forecast doubt, crosswind share
-    used[r.id] = { cross: c, age: RT.t - v.t, w: w, src: src, sd: sdk };
+    fcVar += Math.pow(w * sdk / Math.SQRT2, 2); fcSum += w * sdk / Math.SQRT2;   // forecast doubt, crosswind share
+    used[r.id] = { cross: c, age: RT.t - v.t, w: w, src: src, sd: sdk, nf: !!(s.useForecast && src === 'reading' && tq > RT.t + 0.5) };   // nf: wanted a forecast, none ready yet
   });
   var pred = RT.learner.predict(feats, sector);
   // the whole call's doubt (mil, 1 SD): what the model is unsure of, the
   // forecasts' own error and the wind no meter sees
   // scaled by how big the surprises have really been (learned, shot by shot)
+  // meters' forecast misses are partly shared (one gust misses at several):
+  // between independent and all-together; checked against the sim's real
+  // hold error at 5-30 s ahead
+  var fcSd = (Math.sqrt(fcVar) + fcSum) / 2; fcVar = fcSd * fcSd;
   var rifleMph = s.rifleSd / bl.mpm, base = pred.sd * pred.sd + fcVar + s.unmeasured * s.unmeasured, k2 = Math.pow(RT.learner.noiseScale(), 2);
   var mphSd = Math.sqrt(Math.max(base * Math.min(1, k2), k2 * (base + rifleMph * rifleMph) - rifleMph * rifleMph)), callSd = bl.mpm * mphSd;
   var k = lof.R * 0.036, round = s.plateShape === 'circle';
   var hit = WL.hitChance({ windSd: callSd, rifleSd: s.rifleSd, halfW: s.plateW / k / 2, halfH: (round ? s.plateW : s.plateH) / k / 2, round: round });
   return { lof: lof, bl: bl, today: -bl.mpm * cT, learned: -bl.mpm * pred.mean, learnedSd: bl.mpm * pred.sd, callSd: callSd, hit: hit,
-    delay: delay, nFc: nFc, feats: feats, sector: sector, geo: geo, wToday: wToday, wL: wL, used: used, avg: avg, have: have };
+    delay: delay, nFc: nFc, fcSd: fcSd, feats: feats, sector: sector, geo: geo, wToday: wToday, wL: wL, used: used, avg: avg, have: have };
 }
 // the learned call if the shot breaks d seconds from now, for a few d
-function outlook() { return [0, 3, 6, 10].map(function (d) { var C = computeCalls((ST.settings.delay || 0) + d); return C ? { d: d, v: C.learned, sd: C.callSd, hit: C.hit } : null; }); }
+function outlook() { return [0, 10, 20, 30].map(function (d) { var C = computeCalls((ST.settings.delay || 0) + d); return C ? { d: d, v: C.learned, sd: C.callSd, hit: C.hit, t: (ST.settings.delay || 0) + d + C.bl.tAt(C.lof.R) } : null; }); }
 // best early-warning meter for each meter in the current wind (for the forecaster)
 // the wind model (no shots): an older save's plain forecaster starts over
 // Two-layer test: Relations' map in, a fixed predictor out (WL.MapForecaster), run beside the blended loop
@@ -769,6 +788,71 @@ function lagNow(p) {
   var v = RT.calls && RT.calls.avg, mph = v ? Math.hypot(v.x, v.y) : 0;
   return p.alongYd > 0 && mph > 1 ? Math.max(1, Math.round(p.alongYd / (mph * WL.YD_PER_S_PER_MPH))) : p.lagS;
 }
+// ---- the field map: a long look at the wind first, then a fixed map of
+// who warns whom and by how long. Every 10 s each wind direction (45°
+// sector) counts the pairs Relations trusts; a pair that has held for most
+// of the look with a steady lag is kept. After minS of wind from one
+// direction the map for that direction locks (or lock it by hand).
+function fm() { var F = ST.fieldMap || (ST.fieldMap = {}); if (!F.track) F.track = {}; if (!F.locked) F.locked = {}; if (!(F.minS > 0)) F.minS = 1800; if (F.auto == null) F.auto = true; return F; }
+function fieldTrack(sec, map) {
+  var F = fm(), T = F.track[sec] || (F.track[sec] = { s: 0, pairs: {} });
+  T.s += 10;
+  Object.keys(map).forEach(function (f) { map[f].forEach(function (l) {
+    var k = l.by + '>' + f, q = T.pairs[k] || (T.pairs[k] = { by: l.by, f: f, n: 0, first: T.s, m: 0, v: 0 }), x = l.lag0 || l.lagS, d = x - q.m;
+    q.n++; q.m += d / q.n; q.v += d * (x - q.m); q.r = l.r || 0; q.yd = l.alongYd || 0; q.last = T.s;
+  }); });
+  // locks once the look is long enough and the steady pairs have stopped changing for 10 min (or a third of the look)
+  var sig = steadyPairs(sec).filter(function (q) { return q.ok; }).map(function (q) { return q.by + '>' + q.f; }).sort().join(' ');
+  if (sig !== T.sig) { T.sig = sig; T.sigAt = T.s; }
+  if (F.auto && !F.locked[sec] && T.s >= F.minS && sig && T.s - T.sigAt >= Math.max(600, F.minS / 3)) lockSector(sec);
+}
+// a pair is steady: seen in 70% of the checks since it first showed, for
+// at least half the look, with its lag wandering less than 2 s or 20%
+function steadyPairs(sec) {
+  var F = fm(), T = F.track[sec]; if (!T) return [];
+  return Object.keys(T.pairs).map(function (k) { var q = T.pairs[k], span = T.s - q.first + 10, sd = q.n > 1 ? Math.sqrt(q.v / (q.n - 1)) : 0;
+    return { by: q.by, f: q.f, lagS: q.m, sd: sd, r: q.r, alongYd: q.yd, seen: q.n * 10 / span, span: span, ok: q.n * 10 / span >= 0.7 && span >= F.minS / 2 && sd <= Math.max(2, 0.2 * q.m) && q.last === T.s };
+  });
+}
+function lockSector(sec) {
+  var F = fm(), v = RT.calls && RT.calls.avg, L = {}, n = 0;
+  steadyPairs(sec).forEach(function (q) { if (!q.ok) return; (L[q.f] || (L[q.f] = [])).push({ by: q.by, lagS: q.lagS, alongYd: q.alongYd, r: q.r }); n++; });
+  Object.keys(L).forEach(function (k) { L[k].sort(function (a, b) { return (b.r || 0) - (a.r || 0); }); });
+  F.locked[sec] = { at: Date.now(), simT: RT.t, mph: v ? Math.hypot(v.x, v.y) : 0, n: n, list: L, look: (F.track[sec] || {}).s || 0 };
+  RT.dirty = true;
+}
+// the locked map, its lags moved with today's wind speed (air takes longer to cover the same yards in lighter wind)
+function lockedList(sec) {
+  var K = fm().locked[sec], v = RT.calls && RT.calls.avg, mph = v ? Math.hypot(v.x, v.y) : 0, out = {};
+  Object.keys(K.list).forEach(function (f) { out[f] = K.list[f].map(function (l) {
+    var lag = l.alongYd > 0 && mph > 1 ? l.alongYd / (mph * WL.YD_PER_S_PER_MPH) : (K.mph > 1 && mph > 1 ? l.lagS * Math.max(0.5, Math.min(2, K.mph / mph)) : l.lagS);
+    return { by: l.by, lagS: Math.max(1, Math.round(lag)), alongYd: l.alongYd, r: l.r };
+  }); });
+  return out;
+}
+// the time you have: how long after the call the shot can still break and
+// keep its hit chance within 5 points of breaking now. Each break time's
+// hold carries the forecasts' own checked error at that horizon (air the
+// upwind meters already measured costs nothing). Worked out every 5 s.
+var REACH_D = [0, 2, 5, 10, 15, 20, 30, 45, 60];
+function hitFor(C, sd) { var s = ST.settings, k = C.lof.R * 0.036, round = s.plateShape === 'circle'; return WL.hitChance({ windSd: sd, rifleSd: s.rifleSd, halfW: s.plateW / k / 2, halfH: (round ? s.plateW : s.plateH) / k / 2, round: round }); }
+function reachNow() {
+  if (!RT.calls) return null;
+  if (RT.reach && Math.abs(RT.t - RT.reach.at) < 5 && RT.reach.key === ST.settings.fcModel + '|' + ST.settings.useForecast) return RT.reach;
+  var P = [], ready = true;
+  for (var i = 0; i < REACH_D.length; i++) {
+    var C = computeCalls(REACH_D[i]); if (!C) return null;
+    // the call's doubt when breaking now, plus what the forecast adds by then
+    var C0 = P.length ? P[0].C : C, sd = Math.sqrt(C0.callSd * C0.callSd + Math.max(0, C.fcSd * C.fcSd - C0.fcSd * C0.fcSd) * C.bl.mpm * C.bl.mpm);
+    P.push({ d: REACH_D[i], hit: hitFor(C0, sd), sd: sd, C: C0 });
+    Object.keys(C.used).forEach(function (id) { var u = C.used[id]; if (REACH_D[i] <= 30 && u.w > 0.05 && u.nf) ready = false; });
+  }
+  P.forEach(function (q) { delete q.C; });
+  var lim = P[0].hit - 0.05, reach = P[P.length - 1].d, open = true;
+  for (var j = 1; j < P.length; j++) if (P[j].hit < lim) { var a = P[j - 1], b = P[j]; reach = a.d + (a.hit - lim) / Math.max(1e-9, a.hit - b.hit) * (b.d - a.d); open = false; break; }
+  RT.reach = { at: RT.t, key: ST.settings.fcModel + '|' + ST.settings.useForecast, reach: ready ? reach : null, open: open, hit0: P[0].hit, P: P, need: ST.settings.delay || 0 };
+  return RT.reach;
+}
 function refreshLeaders() {
   var sec = RT.calls ? RT.calls.sector : null, out = {};
   if (sec != null) {
@@ -784,11 +868,13 @@ function refreshLeaders() {
   if (sec != null) RT.rel.summary(sec).pairs.forEach(function (x) {
     var p = x.p; if (!p || !p.significant || p.lagS < 2 || WL.relationKind(p) !== 'leads') return;
     var A = ST.meters.find(function (m) { return m.id === p.lead; }), B = ST.meters.find(function (m) { return m.id === p.follow; });
-    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: lagNow(p), alongYd: p.alongYd, r: p.r });
+    if (A && B && WL.upwindOk(A, B, sectorWind(sec, 10))) (all[p.follow] || (all[p.follow] = [])).push({ by: p.lead, lagS: lagNow(p), lag0: p.lagS, alongYd: p.alongYd, r: p.r });
   });
-  // the two-layer test's map: wind-data pairs only, strongest first (no layout guesses)
+  // the two-layer test's map: wind-data pairs only, strongest first (no layout guesses);
+  // once the field map is locked for this wind, that fixed map instead
   var map = {}; Object.keys(all).forEach(function (k) { map[k] = all[k].slice().sort(function (a, b) { return (b.r || 0) - (a.r || 0); }); });
-  RT.mapList = map;
+  if (sec != null) fieldTrack(sec, map);
+  RT.mapList = sec != null && fm().locked[sec] ? lockedList(sec) : map;
   if (sec != null && RT.calls) WL.geometryPairs(ST.meters, RT.calls.avg).forEach(function (q) { var L = all[q.nodeId] || (all[q.nodeId] = []); if (!L.some(function (o) { return o.by === q.sentId; })) L.push({ by: q.sentId, lagS: q.lagS, alongYd: q.alongYd }); });
   RT.pairsNow = sec != null ? pairsFor(sec, RT.calls ? RT.calls.avg : null) : [];
   RT.leadList = all;
@@ -1193,11 +1279,17 @@ function renderCalls() {
 // the learned call if the trigger breaks later than planned
 function renderOutlook() {
   var el = $('outlook'), O = RT.calls ? outlook() : [];
-  if (!O.length || !O[0]) { el.innerHTML = ''; return; }
+  if (!O.length || !O[0]) { el.innerHTML = ''; $('reach').innerHTML = ''; return; }
+  var R = reachNow(), past = function (o) { return R && R.reach != null && !R.open && (ST.settings.delay || 0) + o.d > R.reach + 0.5; };
   el.innerHTML = O.map(function (o, i) {
     if (!o) return '<div>–</div>';
-    return '<div><span class="muted">' + (i ? '+' + o.d + ' s' : 'at ' + (ST.settings.delay || 0) + ' s') + '</span><b>' + lr(o.v) + '</b><span class="muted">± ' + o.sd.toFixed(2) + ' · ' + Math.round(o.hit * 100) + '%</span></div>';
+    return '<div' + (past(o) ? ' class="past" title="past what the forecast can see: this is close to today\'s reading"' : '') + '><span class="muted">' + (i ? 'in ' + ((ST.settings.delay || 0) + o.d) + ' s' : 'at ' + (ST.settings.delay || 0) + ' s') + '</span><b>' + lr(o.v) + '</b><span class="muted">± ' + o.sd.toFixed(2) + ' · ' + Math.round(o.hit * 100) + '%</span></div>';
   }).join('');
+  var F = fm(), sec = RT.calls.sector, K = F.locked[sec], T = F.track[sec];
+  var mapS = K ? 'Field map locked for this wind (' + K.n + ' pair' + (K.n === 1 ? '' : 's') + ')' : 'Learning the field: ' + fmtDur((T && T.s) || 0) + ' of ' + fmtDur(F.minS) + ' in this wind';
+  $('reach').innerHTML = !ST.settings.useForecast ? '<span class="muted">Forecast is off: each hold is the meters as they read. ' + mapS + '</span>' :
+    !R || R.reach == null ? '<span class="muted">Time you have: the forecasts are still being checked · ' + mapS + '</span>' :
+    '<span class="' + (R.need <= R.reach ? 'ok' : 'warn') + '">Time you have: break within ' + (R.open ? '60+ s' : 'about ' + Math.round(R.reach) + ' s') + '</span> <span class="muted">of the call and the hit chance stays within 5 points of ' + Math.round(R.hit0 * 100) + '% · your delay is ' + R.need + ' s · ' + mapS + '</span>';
 }
 // what the screen said `ago` seconds back (the call the shooter acted on)
 function callAt(t) {
@@ -1343,7 +1435,20 @@ function renderP2() {
   el.innerHTML = h + '</tbody>';
   $('pModel').value = ST.settings.fcModel === 'two' ? 'two' : 'blended';
 }
+var SECN = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+function renderFieldMap() {
+  var F = fm(), sec = RT.calls ? RT.calls.sector : null, K = sec != null ? F.locked[sec] : null, T = sec != null ? F.track[sec] : null;
+  $('fmMin').value = Math.round(F.minS / 60); $('fmAuto').checked = !!F.auto;
+  var locked = Object.keys(F.locked).map(function (k) { return 'from ' + SECN[k]; });
+  $('fmStat').innerHTML = sec == null ? 'Waiting for wind.' : (K ? '<b>Locked</b> for wind from ' + SECN[sec] + ' after ' + fmtDur(K.look) + ' of wind: ' + K.n + ' steady pair' + (K.n === 1 ? '' : 's') + '.' :
+    '<b>Looking</b> at wind from ' + SECN[sec] + ': ' + fmtDur((T && T.s) || 0) + ' of ' + fmtDur(F.minS) + '.') + (locked.length ? ' Locked so far: ' + locked.join(', ') + '.' : '');
+  var P = sec != null ? steadyPairs(sec).sort(function (a, b) { return (b.ok - a.ok) || (b.r - a.r); }) : [], inK = function (q) { return K && (K.list[q.f] || []).some(function (l) { return l.by === q.by; }); };
+  var h = '<thead><tr><th>Meter</th><th>Warned by</th><th>Lag</th><th>Steady ±</th><th>r</th><th>Held</th><th></th></tr></thead><tbody>';
+  P.slice(0, 20).forEach(function (q) { h += '<tr><td><b>' + esc(q.f) + '</b></td><td>' + esc(q.by) + '</td><td class="n">' + q.lagS.toFixed(0) + ' s</td><td class="n">' + q.sd.toFixed(1) + ' s</td><td class="n">' + (q.r || 0).toFixed(2) + '</td><td class="n">' + Math.round(q.seen * 100) + '% of ' + fmtDur(q.span) + '</td><td>' + (inK(q) ? '<b>locked</b>' : q.ok ? 'steady' : '<span class="muted">not yet</span>') + '</td></tr>'; });
+  $('fmTbl').innerHTML = h + (P.length ? '' : '<tr><td colspan="7" class="muted">No pairs yet.</td></tr>') + '</tbody>';
+}
 function renderPred() {
+  renderFieldMap();
   renderP2();
   var F = RT.fc, ids = F.meters(), sel = $('pMeter'), h = +$('pH').value || 10;
   if (sel.options.length !== ids.length || ids.some(function (id, i) { return sel.options[i].value !== id; })) {
@@ -1419,6 +1524,10 @@ $('pTrain').onclick = function () {
   })();
 };
 $('pModel').onchange = function () { ST.settings.fcModel = $('pModel').value; RT.dirty = true; };
+$('fmMin').onchange = function () { var v = +$('fmMin').value; if (v >= 1) fm().minS = Math.round(v * 60); RT.dirty = true; renderFieldMap(); };
+$('fmAuto').onchange = function () { fm().auto = $('fmAuto').checked; RT.dirty = true; };
+$('fmLock').onclick = function () { if (!RT.calls) return; lockSector(RT.calls.sector); refreshLeaders(); renderPred(); toast('Field map locked for this wind: ' + fm().locked[RT.calls.sector].n + ' pairs.'); };
+$('fmClear').onclick = function () { ST.fieldMap = null; fm(); RT.dirty = true; refreshLeaders(); renderPred(); toast('The field map starts a new look. The forecasts keep what they learned.'); };
 $('pReset').onclick = function () { RT.fc = newLoop(null); RT.f2 = newMap(); renderPred(); toast('The wind model starts over. The shot model is unchanged.'); };
 function renderForecasts() {
   var ids = RT.fc.meters(), H = RT.fc.H, h = '<thead><tr><th>Meter</th>' + H.map(function (x) { return '<th>' + x + ' s</th>'; }).join('') + '<th>Early warning</th></tr></thead><tbody>';
@@ -1931,7 +2040,7 @@ function fileName(n, ext) { return String(n).replace(/[^\w\- ]+/g, '').trim().re
 function modelSnapshot(name) {
   return { kind: 'coriolis-learned-model', v: 1, name: name, savedAt: new Date().toISOString(), mode: ST.mode,
     meters: JSON.parse(JSON.stringify(ST.meters)), shooter: ST.shooter, target: ST.target, live: ST.mode === 'live' ? { rangeYd: ST.live.rangeYd, az: ST.live.az, anchors: ST.live.anchors, roles: ST.live.roles || {} } : null,
-    nodeMap: ST.nodeMap, drive: ST.drive, settings: { mv: ST.settings.mv, bc: ST.settings.bc, rifleSd: ST.settings.rifleSd, unmeasured: ST.settings.unmeasured },
+    nodeMap: ST.nodeMap, drive: ST.drive, fieldMap: ST.fieldMap || null, settings: { mv: ST.settings.mv, bc: ST.settings.bc, rifleSd: ST.settings.rifleSd, unmeasured: ST.settings.unmeasured },
     learner: RT.learner.toJSON(), relations: RT.rel.toJSON(), forecaster: RT.fc.toJSON(), shots: RT.learner.n };
 }
 function loadModel(o) {
@@ -1941,6 +2050,7 @@ function loadModel(o) {
   RT.f2 = newMap();
   if (o.drive) ST.drive = Object.assign(ST.drive, o.drive);
   if (o.nodeMap) ST.nodeMap = o.nodeMap;
+  if (o.fieldMap) ST.fieldMap = o.fieldMap;
   if (o.settings) Object.assign(ST.settings, o.settings);
   if (ST.mode === 'sim' && o.mode === 'sim' && o.meters) {
     ST.meters = o.meters; ST.target = o.target || ST.target; RT.nodes = {}; RT.base = { latest: {}, hist: {} }; resetRadio();

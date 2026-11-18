@@ -590,6 +590,16 @@ async function pageTest() {
     $('pModel').value = 'two'; $('pModel').onchange(); computeCalls(); const two = !!RT.calls; $('pModel').value = 'blended'; $('pModel').onchange(); return { rows, two, n: RT.f2.meters().length }; });
   assert(tl.n >= 3 && tl.rows.length === tl.n + 1 && /^All\s*\d+%\d+%/.test(tl.rows[tl.rows.length - 1]), 'Predict tab compares blended and two layers: ' + JSON.stringify(tl.rows));
   assert(tl.two, 'the call can run on the two-layer forecast');
+  // the field map: a long look, then locked; the two-layer predictor works from the locked map
+  const fmr = await p.evaluate(() => { const sec = RT.calls.sector, P = steadyPairs(sec), look = fm().track[sec].s;
+    $('fmLock').click(); const K = fm().locked[sec], L = lockedList(sec); renderPred();
+    return { look, n: P.filter(q => q.ok).length, K: !!K, kn: K && K.n, same: JSON.stringify(Object.keys(RT.mapList).sort()) === JSON.stringify(Object.keys(L).sort()), stat: $('fmStat').textContent, rows: document.querySelectorAll('#fmTbl tbody tr').length,
+      saved: !!modelSnapshot('x').fieldMap.locked[sec] }; });
+  assert(fmr.look >= 1700 && fmr.K && fmr.kn === fmr.n && fmr.same && /Locked/.test(fmr.stat) && fmr.rows >= 1 && fmr.saved, 'field map: looked, locked by hand, used, saved: ' + JSON.stringify(fmr));
+  // the time you have and the future hold, at break times past your delay
+  const rc = await p.evaluate(() => { RT.reach = null; const R = reachNow(); renderOutlook(); return { R, txt: $('reach').textContent, past: document.querySelectorAll('#outlook .past').length }; });
+  assert(rc.R && rc.R.P.length === 9 && rc.R.P[0].d === 0 && rc.R.P.every((q, i) => !i || q.sd >= rc.R.P[0].sd - 1e-9), 'doubt grows with the break time: ' + JSON.stringify(rc.R && rc.R.P));
+  assert(/Time you have/.test(rc.txt) && /Field map locked/.test(rc.txt), 'Shoot tab says the time you have: ' + rc.txt);
   // live mode against the mock base
   await p.click('#modeLive');
   await p.waitForFunction(() => ST.mode === 'live' && ST.meters.length === 3 && RT.calls, null, { timeout: 15000 });
