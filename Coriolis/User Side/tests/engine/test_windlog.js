@@ -144,6 +144,27 @@ const server = http.createServer((req, res) => {
   check('Basic: aimbot buttons stay off the Basic tab (even with a stepper)', await A.evaluate(() => getComputedStyle(document.getElementById('aimRow')).display === 'none'));
   base.aim = false;
 
+  // ---- live phone compass on the wind wheel ----
+  check('Compass: switch shown under the wind wheel', await A.evaluate(() => getComputedStyle(document.getElementById('compRow')).display !== 'none'));
+  await A.click('#compSw', { force: true });
+  const comp = await A.evaluate(async () => {
+    const send = a => window.dispatchEvent(Object.assign(new Event('deviceorientationabsolute'), { alpha: a, absolute: true }));
+    for (let i = 0; i < 8; i++) { send(360 - 123); await new Promise(r => setTimeout(r, 30)); }
+    await new Promise(r => setTimeout(r, 250)); send(360 - 123);
+    const a1 = fireAz, slider = +document.getElementById('az').value, saved = localStorage.getItem('fireAz'), sub = document.getElementById('compSub').textContent;
+    for (let i = 0; i < 10; i++) { send(360 - 200); await new Promise(r => setTimeout(r, 60)); }
+    await new Promise(r => setTimeout(r, 250)); send(360 - 200);
+    const a2 = fireAz;
+    bump(1);   // moving it by hand switches the compass off
+    const off = !document.getElementById('compSw').checked;
+    send(360 - 10); await new Promise(r => setTimeout(r, 250)); send(360 - 10);
+    return { a1, slider, saved, sub, a2, off, after: fireAz };
+  });
+  check('Compass: direction of fire follows the phone', comp.a1 === 123 && comp.slider === 123 && comp.saved === '123' && /123/.test(comp.sub), comp);
+  check('Compass: follows a turn', comp.a2 === 200, comp);
+  check('Compass: moving it by hand turns the compass off', comp.off && comp.after === 201, comp);
+  await A.evaluate(() => { fireAz = 0; localStorage.setItem('fireAz', 0); document.getElementById('az').value = 0; saveAz(); });
+
   // ---- Forecast ----
   base.aim = true;
   await A.evaluate(() => setSection('forecast'));

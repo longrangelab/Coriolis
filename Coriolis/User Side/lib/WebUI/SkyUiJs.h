@@ -2464,6 +2464,8 @@ root.SkyUI={
   logo:LOGO,
   // the Solver's turret maths, so Wind Lab's big WIND HOLD reads like WINDAGE here
   adjust:Adjust,
+  // the phone compass, so Wind Lab's wind wheel can follow it live
+  compass:Compass,
   screen:function(){var sc=current();return sc?(sc.tab||sc.sub||''):'';},
   // for tests
   _solveNow:function(){return solveNow();},_params:function(){return params();},_goTab:function(id){goTab(id);}

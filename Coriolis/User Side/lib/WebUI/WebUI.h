@@ -571,6 +571,13 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
       <button class="step" onclick="bump(-1)">&minus;1</button>
       <button class="step" onclick="bump(1)">+1</button>
       <button class="step" onclick="bump(5)">+5</button></div>
+    <!-- live phone compass (shown only where the browser may have one) -->
+    <div id="compRow" class="hide">
+      <label class="swRow" style="margin-top:12px"><span><b>Live phone compass</b><br>
+        <span id="compSub" style="color:var(--dim);font-size:.75rem">Point the top of the phone at the target</span></span>
+        <input type="checkbox" id="compSw" class="sw" onchange="setLiveCompass(this.checked)"></label>
+      <div id="compMsg" class="hide" style="color:var(--warnY);font-size:.75rem;margin-top:8px;line-height:1.5"></div>
+    </div>
   </div>
 </div>
 
@@ -777,8 +784,45 @@ function relAngle(fromDeg){return (((fromDeg-fireAz)%360)+360)%360;}
   document.getElementById('ticks').innerHTML=t;})();
 
 var azEl=document.getElementById('az');azEl.value=fireAz;
-azEl.addEventListener('input',function(){fireAz=parseInt(azEl.value,10);saveAz();drawWheel();if(view==='solver')maybeAutoSolve();});
-function bump(d){fireAz=((fireAz+d)%360+360)%360;azEl.value=fireAz;saveAz();drawWheel();if(view==='solver')maybeAutoSolve();}
+azEl.addEventListener('input',function(){setLiveCompass(false);fireAz=parseInt(azEl.value,10);saveAz();drawWheel();if(view==='solver')maybeAutoSolve();});
+function bump(d){setLiveCompass(false);fireAz=((fireAz+d)%360+360)%360;azEl.value=fireAz;saveAz();drawWheel();if(view==='solver')maybeAutoSolve();}
+
+// ---- live phone compass -> direction of fire ----
+// The same compass as the Solver's "Use phone compass" (sky.js), but live: while
+// the switch is on, the direction of fire follows the phone, so the wheel, the
+// wind hold and the log follow where you point. Moving the slider or the step
+// buttons switches it off (your number wins). Headings are averaged as vectors
+// over the last ~1 s so the needle doesn't jitter; the Solver's declination
+// setting is applied the same way.
+var compStop=null,compSamples=[],compLastSet=0;
+function compAvailable(){return !!(window.SkyUI&&SkyUI.compass&&SkyUI.compass.maybe());}
+function renderCompRow(){
+  var row=document.getElementById('compRow');if(!row)return;
+  row.className=compAvailable()?'':'hide';
+  var sw=document.getElementById('compSw');if(sw)sw.checked=!!compStop;
+}
+function compMsg(t){var m=document.getElementById('compMsg');if(!m)return;m.textContent=t||'';m.className=t?'':'hide';}
+function setLiveCompass(on){
+  if(!on){if(compStop){compStop();compStop=null;compSamples=[];
+      var sub=document.getElementById('compSub');if(sub)sub.textContent='Off · direction of fire stays at '+fireAz+'°';}
+    renderCompRow();return;}
+  if(compStop||!compAvailable()){renderCompRow();return;}
+  compMsg('');var sub=document.getElementById('compSub');if(sub)sub.textContent='Waiting for the compass…';
+  compStop=SkyUI.compass.start(function(hd){
+    compSamples.push(hd);if(compSamples.length>8)compSamples.shift();
+    var x=0,y=0;compSamples.forEach(function(a){x+=Math.cos(a*Math.PI/180);y+=Math.sin(a*Math.PI/180);});
+    var v=Math.round((Math.atan2(y,x)*180/Math.PI+360)%360)%360,now=Date.now();
+    if(sub)sub.textContent='Following the phone · '+v+'°'+(SkyUI.compass.decl()?' (incl. declination)':' magnetic');
+    if(v!==fireAz&&now-compLastSet>=200){compLastSet=now;fireAz=v;azEl.value=v;saveAz();drawWheel();if(view==='solver')maybeAutoSolve();}
+  },function(why){
+    if(compStop){compStop();compStop=null;}renderCompRow();
+    if(sub)sub.textContent='Point the top of the phone at the target';
+    compMsg(why==='insecure'?'This browser only gives the compass to secure (https) pages, and the base station page is http. On Android Chrome you can allow it once: open chrome://flags, find “Insecure origins treated as secure”, add http://192.168.4.1, set it to Enabled and relaunch Chrome.'
+      :why==='denied'?'Compass access was refused. Allow motion and orientation for this page in the browser settings, then try again.'
+      :'This device does not report a compass heading (no magnetometer). Set the direction of fire with the slider.');
+  });
+  renderCompRow();
+}
 function saveAz(){localStorage.setItem('fireAz',fireAz);document.getElementById('azVal').innerHTML=fireAz+'&deg;';}
 
 // ---- per-meter weighting (client-side; overrides the firmware's plain average) ----
@@ -2899,7 +2943,7 @@ function startGear(){
   if(Gear.migrated)flash(Gear.migrated+' rifle profile(s) moved to the new gear store');
 }
 startGear();
-setSection(section);saveAz();drawWheel();poll();pollTimer=setInterval(poll,350);
+setSection(section);saveAz();drawWheel();renderCompRow();poll();pollTimer=setInterval(poll,350);
 </script></body></html>
 )HTMLPAGE";
 
