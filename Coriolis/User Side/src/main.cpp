@@ -490,8 +490,22 @@ String handleWindSec(WebServer& srv) {
     if (haveSince) since = (uint32_t)strtoul(srv.arg("since").c_str(), nullptr, 10);
     double utc;
     bool haveUtc = gps.utcUnixMs(utc);
+    // Size the reply once up front (each reading is at most ~26 chars): a phone
+    // catching up after its screen was off asks for minutes of readings, and
+    // growing the String by doubling would need twice that in one free block.
+    size_t want = 160;
+    for (int id = 1; id < MAX_NODES; id++) {
+        int n = windSec.size(id);
+        if (!n) continue;
+        int k = 0;
+        for (int i = n - 1; i >= 0; i--) {              // newest first: stop at the first old one
+            if (haveSince && (int32_t)(windSec.at(id, i).t - since) <= 0) break;
+            k++;
+        }
+        want += 64 + 26 * (size_t)k;
+    }
     String out;
-    out.reserve(512);
+    out.reserve(want);
     out += F("{\"now\":"); out += now;
     out += F(",\"utc\":");
     if (haveUtc) { char b[24]; snprintf(b, sizeof b, "%.0f", utc); out += b; } else out += F("null");

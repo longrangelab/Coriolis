@@ -3,6 +3,7 @@
 #   test_engine.js  engine vs the ESP32 solver (Ballistics.h, built on the host)
 #   test_gear.js    Skyward gear format, profile migration, merge rules
 #   test_page.js    the real page in headless Chromium against a mock base station
+#   test_windlog.js the Basic/Forecast wind call and the wind log against a mock /windsec
 name: Phone engine
 
 on:
@@ -37,3 +38,4 @@ jobs:
           npm install --no-save --no-package-lock playwright@1.49.1
           npx playwright install --with-deps chromium
           node test_page.js
+          node test_windlog.js
