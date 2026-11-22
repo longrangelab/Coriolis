@@ -247,9 +247,19 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
     #glance{grid-column:1;grid-row:3/span 80;position:sticky;top:76px}
     #sleepBar,#windView>*:not(#glance),#wheelBlock,#predBottom{grid-column:2}
     #windView>h2:first-of-type,#stabView>h2:first-child{margin-top:6px}
-    .callBig{font-size:6rem}
-    .spd{font-size:5.2rem}
+    /* compact enough that the whole pair (and AIMBOT) fits above the bottom bar */
+    .hero{padding:12px 18px}
+    .spd{font-size:3.8rem}
+    .rel{font-size:2.1rem}
+    .callCard{padding:12px 18px;margin-top:10px}
+    .callBig{font-size:5rem;margin-top:4px}
+    .distBox{margin-top:10px;padding-top:8px}
+    .distRow{margin-top:4px}
+    .distIn{font-size:1.7rem;padding:4px}
+    .distBtn{padding:6px 0}
   }
+  /* too short for the pair to stay put: let it scroll with the page */
+  @media (min-width:960px) and (max-height:620px){#glance{position:static}}
   /* wind call card (AVG + PRED) */
   /* wind call card (AVG + PRED) */
   .callCard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-top:12px}

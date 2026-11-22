@@ -247,7 +247,8 @@ const server = http.createServer((req, res) => {
   check('Log tab: fleet sleep bar stays off', await A.evaluate(() => getComputedStyle(document.getElementById('sleepBar')).display === 'none'));
   // delete
   await A.click('button:has-text("Delete log")');
-  check('Log: delete clears it', await A.evaluate(() => wlMeta() === null && /Nothing logged/.test(document.getElementById('wlTable').textContent)));
+  const cleared = await A.waitForFunction(() => wlMeta() === null && /Nothing logged/.test(document.getElementById('wlTable').textContent), null, { timeout: 5000 }).then(() => true, () => false);
+  check('Log: delete clears it', cleared);
 
   // ---- regressions on the classic views ----
   await A.evaluate(() => setSection('basic'));
