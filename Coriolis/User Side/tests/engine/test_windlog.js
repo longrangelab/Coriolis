@@ -244,6 +244,7 @@ const server = http.createServer((req, res) => {
   // gear export is no longer blocked by an empty log
   await A.evaluate(() => { localStorage.removeItem('windlog'); });
 
+  check('Log tab: fleet sleep bar stays off', await A.evaluate(() => getComputedStyle(document.getElementById('sleepBar')).display === 'none'));
   // delete
   await A.click('button:has-text("Delete log")');
   check('Log: delete clears it', await A.evaluate(() => wlMeta() === null && /Nothing logged/.test(document.getElementById('wlTable').textContent)));
@@ -251,7 +252,9 @@ const server = http.createServer((req, res) => {
   // ---- regressions on the classic views ----
   await A.evaluate(() => setSection('basic'));
   await A.evaluate(() => setView(2));
-  const nodeTab = await A.evaluate(() => ({ sd: getComputedStyle(document.getElementById('sdRow')).display, call: document.getElementById('callCard').className }));
+  const nodeTab = await A.evaluate(() => ({ sd: getComputedStyle(document.getElementById('sdRow')).display, call: document.getElementById('callCard').className,
+    fleet: getComputedStyle(document.getElementById('sleepBar')).display }));
+  check('Node tab: fleet sleep bar stays off (it is for Basic/Forecast)', nodeTab.fleet === 'none', nodeTab);
   check('Node tab: keeps its SD cards, no wind call card', nodeTab.sd !== 'none' && /hide/.test(nodeTab.call), nodeTab);
   await A.evaluate(() => setView('avg'));
 

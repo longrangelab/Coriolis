@@ -137,7 +137,7 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   .res .card{text-align:center}
   .res .big{color:var(--fireInk)}
   .warn{color:var(--warn);font-size:.78rem;margin-top:10px;line-height:1.5}
-  .hide{display:none}
+  .hide{display:none!important}   /* beats inline display:flex on bars that hide (sleep bar, aimbot row) */
   /* Basic / Forecast section switch */
   .sections{display:flex;gap:8px;margin:10px 0 2px}
   .sec{flex:1;padding:14px;border:1px solid var(--line);background:var(--panel);color:var(--dim);
