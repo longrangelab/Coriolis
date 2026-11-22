@@ -229,6 +229,28 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   .field input,.field select{background:var(--panel)}
   .lm.live{color:#FCF9F5}
   :root[data-theme=dark] .lm.live{color:#00140a}
+  /* The top bar spans the whole screen (the page column is narrower on a tablet). */
+  header{margin-left:calc(50% - 50vw);margin-right:calc(50% - 50vw);
+    padding-left:calc(50vw - 50%);padding-right:calc(50vw - 50% - 4px)}
+  html{overflow-x:clip}   /* a desktop scrollbar makes 100vw a few px too wide */
+  /* bottom bar: buttons keep a sensible width instead of spreading across a wide screen */
+  .sections{justify-content:center}
+  .sec{flex:1 1 0;max-width:170px}
+  /* Wide screen (tablet on its side): two columns. Left: the at-a-glance wind and
+     wind hold, which stay in view; right: everything else on the tab. Sections with
+     no glance pair (Log, Sandbox, classic Solver) use the full width. */
+  @media (min-width:960px){
+    .wrap{max-width:1240px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:20px;align-items:start}
+    .wrap>*{grid-column:1/-1}
+    #windView{display:contents}
+    /* rows 1-2: top bar, tabs; the glance column starts under them */
+    #glance{grid-column:1;grid-row:3/span 80;position:sticky;top:76px}
+    #sleepBar,#windView>*:not(#glance),#wheelBlock,#predBottom{grid-column:2}
+    #windView>h2:first-of-type,#stabView>h2:first-child{margin-top:6px}
+    .callBig{font-size:6rem}
+    .spd{font-size:5.2rem}
+  }
+  /* wind call card (AVG + PRED) */
   /* wind call card (AVG + PRED) */
   .callCard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-top:12px}
   .callBig{font-family:var(--mono);font-size:4.6rem;line-height:1;font-weight:800;text-align:center;margin-top:10px;color:var(--fireInk)}
@@ -399,6 +421,8 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
 
 <!-- WIND VIEW (avg / pred / node) -->
 <div id="windView">
+  <!-- the at-a-glance pair (wind + hold); its own column on a wide screen -->
+  <div id="glance">
   <div class="hero">
     <div class="heroTop"><span class="heroLbl" id="viewName">Average</span>
       <span class="heroLbl" id="gustLbl"></span></div>
@@ -439,6 +463,7 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
         letter-spacing:.06em">ZERO</button>
     </div>
   </div>
+  </div><!-- /glance -->
 
   <!-- STABILITY (Forecast / Prediction tab only) -->
   <div id="stabView" class="hide">
