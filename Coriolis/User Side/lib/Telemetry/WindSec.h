@@ -17,7 +17,8 @@
 #include "WindExt.h"
 
 #ifndef WSEC_CAP
-#define WSEC_CAP 120          // readings kept per node (about 2 minutes)
+#define WSEC_CAP 300          // readings kept per node (about 5 minutes): the phone's wind
+                              // log catches up from here after its screen was off a while
 #endif
 #define WSEC_DEDUP_MS   500   // a reading within this of one we have is the same publish
 #define BEACON_LOG_N    16    // beacons remembered (43 s at a 2.7 s cycle)

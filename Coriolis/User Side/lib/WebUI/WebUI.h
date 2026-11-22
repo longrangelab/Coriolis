@@ -5,7 +5,10 @@
  * WebUI.h  --  phone dashboard hosted by the receiver
  * ===================================================
  * WiFi AP + web server. Phone joins the AP and opens http://192.168.4.1.
- * Tabs: AVG, each node, and SOLVER (ballistic calculator).
+ * Sections: Basic (AVG: field wind, big wind hold + distance), Forecast (the same
+ * plus stability, the wind log controls and the aimbot switch), Sandbox, Log
+ * (the per-meter wind log: /windsec readings kept in the phone's IndexedDB,
+ * exported as CSV), and the Solver.
  *
  * Ballistics run on the PHONE: /engine.js (EngineJs.h) is a JavaScript port of
  * the Skyward Ballistics engine. The ESP32 solver (Ballistics.h) still answers
@@ -226,6 +229,30 @@ static const char WEBUI_PAGE[] PROGMEM = R"HTMLPAGE(
   .field input,.field select{background:var(--panel)}
   .lm.live{color:#FCF9F5}
   :root[data-theme=dark] .lm.live{color:#00140a}
+  /* wind call card (AVG + PRED) */
+  .callCard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;margin-top:12px}
+  .callBig{font-family:var(--mono);font-size:4.6rem;line-height:1;font-weight:800;text-align:center;margin-top:10px;color:var(--fireInk)}
+  .callBig .u{font-size:1.5rem;color:var(--dim);margin-left:10px;font-weight:700}
+  .callMsg{font-size:1.4rem;font-weight:800;text-align:center;margin:14px 0 4px}
+  .callSub{font-family:var(--mono);color:var(--dim);font-size:.9rem;text-align:center;margin-top:6px}
+  .distBox{margin-top:16px;padding-top:12px;border-top:1px solid var(--line)}
+  .distRow{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .distBtn{flex:0 0 64px;font-size:1.6rem;padding:10px 0}
+  .distIn{flex:1;min-width:0;width:100%;text-align:center;font-family:var(--mono);font-size:2rem;font-weight:800;padding:8px;
+    background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:12px}
+  .distU{color:var(--dim);font-weight:700;font-size:1.1rem}
+  /* on/off switch */
+  .swRow{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:.9rem}
+  .sw{appearance:none;-webkit-appearance:none;flex:0 0 auto;width:52px;height:32px;border-radius:16px;background:var(--line);
+    position:relative;cursor:pointer;transition:background .15s;margin:0}
+  .sw::after{content:"";position:absolute;top:4px;left:4px;width:24px;height:24px;border-radius:50%;background:#fff;transition:left .15s}
+  .sw:checked{background:var(--fire)}
+  .sw:checked::after{left:24px}
+  /* wind log */
+  .wlTbl{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:.8rem}
+  .wlTbl th{color:var(--dim);text-align:left;padding:6px 4px;border-bottom:1px solid var(--line);font-weight:700}
+  .wlTbl td{padding:6px 4px;border-bottom:1px solid var(--line)}
+  .wlKey{display:flex;flex-wrap:wrap;gap:10px;font-size:.75rem;color:var(--dim);margin-top:6px}
 </style>
 <script>
 // Light or dark, the same as the Solver's Settings -> Colours (default: same as the phone).
@@ -370,36 +397,7 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
 </div>
 
 
-<!-- STABILITY (Forecast / Prediction tab only) -->
-<div id="stabView" class="hide">
-  <h2 id="stabTitle">Stability</h2>
-  <div id="logBar" class="logbar">
-    <div class="logbtns">
-      <button id="btnStart" class="step" onclick="startLog()">&#9679; START</button>
-      <button id="btnStop" class="step" onclick="stopLog()" disabled>&#9632; STOP</button>
-      <button id="btnMark" class="step" onclick="markShot()" disabled>&#9670; MARK</button>
-    </div>
-    <div id="logStat" class="logstat">not recording</div>
-  </div>
-  <div id="sentBadge" class="stabBadge bg-warn hide" style="margin-bottom:10px"><div class="word">--</div><div class="sub"></div></div>
-  <div id="windHold" class="win" style="margin-bottom:10px"><div class="wt">WIND HOLD</div><div class="wv">--</div></div>
-  <!-- AIMBOT: drives the windage stepper to the hold above. Sits directly
-       under WIND HOLD so it rides along in both BASIC (avg) and FORECAST (pred). -->
-  <div id="aimRow" class="hide" style="display:flex;gap:8px;margin-bottom:10px">
-    <button id="aimBtn" onclick="aimGo()" style="flex:2;padding:14px;border-radius:12px;
-      border:1px solid var(--fire);background:var(--fire);color:var(--onFire);font-weight:800;
-      letter-spacing:.06em;font-size:1rem">AIMBOT</button>
-    <button id="zeroBtn" onclick="aimZero()" style="flex:1;padding:14px;border-radius:12px;
-      border:1px solid var(--line);background:var(--bg);color:var(--ink);font-weight:800;
-      letter-spacing:.06em">ZERO</button>
-  </div>
-  <div id="stabBadge" class="stabBadge bg-warn"><div class="word">--</div><div class="sub"></div></div>
-  <div id="stabWindows" style="margin-top:2px"></div>
-  <div id="stabThPanel" class="wheelWrap" style="margin-top:14px"></div>
-  <div id="sentPanel" class="wheelWrap" style="margin-top:14px"></div>
-</div>
-
-<!-- WIND VIEW (avg / node) -->
+<!-- WIND VIEW (avg / pred / node) -->
 <div id="windView">
   <div class="hero">
     <div class="heroTop"><span class="heroLbl" id="viewName">Average</span>
@@ -408,12 +406,50 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
     <div style="margin-top:10px"><span class="rel" id="rel">--</span>
       <span class="unit">REL</span>
       <div class="relSub" id="relSub"></div></div>
-    <div class="row">
+    <!-- per-meter detail; hidden on the AVG and PRED views (see render) -->
+    <div class="row" id="sdRow">
       <div class="card"><div class="k">Speed SD</div><div class="v" id="spdSd">--</div></div>
       <div class="card"><div class="k">Dir SD</div><div class="v" id="dirSd">--</div></div>
       <div class="card"><div class="k">Crosswind</div><div class="v" id="xwSd">--</div></div>
     </div>
   </div>
+
+  <!-- WIND CALL: the hold for the whole field, big, plus the distance to target
+       (the same distance the Solver uses). AVG and PRED views. -->
+  <div id="callCard" class="callCard hide">
+    <div class="heroTop"><span class="heroLbl">Wind hold</span><span class="heroLbl" id="callRifle"></span></div>
+    <div id="windHold"><div class="callBig">--</div></div>
+    <div class="distBox">
+      <div class="heroLbl" style="text-align:center">Distance to target</div>
+      <div class="distRow">
+        <button class="step distBtn" onclick="distStep(-1)" aria-label="Closer">&minus;</button>
+        <input id="distIn" class="distIn" type="number" inputmode="decimal" min="1" step="any" onchange="distTyped(this.value)">
+        <span class="distU" id="distU">yd</span>
+        <button class="step distBtn" onclick="distStep(1)" aria-label="Farther">+</button>
+      </div>
+    </div>
+    <!-- AIMBOT: drives the windage stepper to the hold above (Forecast, when
+         switched on at the bottom of that tab and a stepper is connected). -->
+    <div id="aimRow" class="hide" style="display:flex;gap:8px;margin-top:12px">
+      <button id="aimBtn" onclick="aimGo()" style="flex:2;padding:14px;border-radius:12px;
+        border:1px solid var(--fire);background:var(--fire);color:var(--onFire);font-weight:800;
+        letter-spacing:.06em;font-size:1rem">AIMBOT</button>
+      <button id="zeroBtn" onclick="aimZero()" style="flex:1;padding:14px;border-radius:12px;
+        border:1px solid var(--line);background:var(--bg);color:var(--ink);font-weight:800;
+        letter-spacing:.06em">ZERO</button>
+    </div>
+  </div>
+
+  <!-- STABILITY (Forecast / Prediction tab only) -->
+  <div id="stabView" class="hide">
+    <h2 id="stabTitle">Stability</h2>
+    <div id="sentBadge" class="stabBadge bg-warn hide" style="margin-bottom:10px"><div class="word">--</div><div class="sub"></div></div>
+    <div id="stabBadge" class="stabBadge bg-warn"><div class="word">--</div><div class="sub"></div></div>
+    <div id="stabWindows" style="margin-top:2px"></div>
+    <div id="stabThPanel" class="wheelWrap" style="margin-top:14px"></div>
+    <div id="sentPanel" class="wheelWrap" style="margin-top:14px"></div>
+  </div>
+
   <h2>Telemetry</h2><div class="grid" id="tele"></div>
   <div id="nodeSleepRow" class="hide" style="margin-top:14px"></div>
   <div id="weightsPanel" class="wheelWrap hide" style="margin-top:14px"></div>
@@ -505,7 +541,25 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
 
 </div><!-- /wheelBlock -->
 
-<!-- SESSION LOG + ANALYSIS -->
+<!-- FORECAST bottom: wind log controls, then the aimbot switch -->
+<div id="predBottom" class="hide">
+  <h2>Wind log</h2>
+  <div class="wheelWrap">
+    <div class="logbtns">
+      <button id="btnStart" class="step" onclick="wlStart()">&#9679; START LOG</button>
+      <button id="btnStop" class="step" onclick="wlStop()" disabled>&#9632; STOP</button>
+    </div>
+    <div id="logStat" class="logstat">not recording</div>
+    <div style="color:var(--dim);font-size:.75rem;margin-top:8px;text-align:center">Every meter's second-by-second wind, the weighted wind and your wind hold. See it and download it on the Log tab.</div>
+  </div>
+  <h2>Aimbot</h2>
+  <div class="wheelWrap">
+    <label class="swRow"><span><b>Aimbot and zero buttons</b><br><span id="aimSwSub" style="color:var(--dim);font-size:.75rem"></span></span>
+      <input type="checkbox" id="aimSw" class="sw" onchange="setAimOn(this.checked)"></label>
+  </div>
+</div>
+
+<!-- WIND LOG (Log section) -->
 <div id="logView" class="hide"></div>
 
 <footer id="base">Base station: waiting&hellip;</footer>
@@ -1136,12 +1190,18 @@ async function aimZero(){
   }catch(e){flash('zero failed');}
   finally{aimBusy=false;btn.textContent=old;}
 }
-// Show the Aimbot/Zero row only where WIND HOLD shows (avg + pred) AND only
-// when the controller is actually present. Absent -> hidden, so nobody taps a
-// dead button.
+// The Aimbot/Zero buttons sit under the wind hold on the Forecast tab. They show
+// only when they are switched on (switch at the bottom of that tab) AND the
+// controller is actually present, so nobody taps a dead button.
+function aimOn(){return (localStorage.getItem('aimOn')||'1')==='1';}
+function setAimOn(v){localStorage.setItem('aimOn',v?'1':'0');renderAimRow();}
 function renderAimRow(){
   var row=document.getElementById('aimRow');if(!row)return;
-  var show=data&&data.aim&&data.aim.present&&(view==='avg'||view==='pred')&&activeName();
+  var present=!!(data&&data.aim&&data.aim.present);
+  var sw=document.getElementById('aimSw');if(sw)sw.checked=aimOn();
+  var sub=document.getElementById('aimSwSub');
+  if(sub)sub.textContent=(aimOn()?'Shown under the wind hold':'Hidden')+' · '+(present?'stepper connected':'no stepper connected');
+  var show=present&&aimOn()&&view==='pred'&&activeName();
   row.className=show?'':'hide';
   if(show)row.style.display='flex';
   if(show){
@@ -1155,12 +1215,31 @@ function renderAimRow(){
 var WINDHOLD_MIN_MS=2000, AUTOSOLVE_MIN_MS=2000;
 function minMs(ms){return engineLocal()?500:ms;}
 
+// ---- wind hold in the selected rifle's own units ----
+// The Solver's firearm says how its windage turret reads (MIL, MOA or IPHY), its
+// click value and any correction factor; the Solver's settings say how precise
+// and whether to write +/- instead of R/L. The big number uses exactly those, so
+// it reads like the Solver's WINDAGE. The line under it keeps MOA and mil.
+function activeRifle(){var id=activeLoadId();var l=id&&Gear.load(id);return (l&&Gear.rifle)?Gear.rifle(l.rifleId):null;}
+function skySet(){try{return JSON.parse(localStorage.getItem('skySettings'))||{};}catch(e){return {};}}
+function holdFmt(mil){
+  var r=activeRifle()||{},unit=r.windageUnit||'MIL',click=parseFloat(r.windageClick)>0?parseFloat(r.windageClick):0.1,
+      corr=parseFloat(r.windageCorrection)>0?parseFloat(r.windageCorrection):1,st=skySet(),A=window.SkyUI&&SkyUI.adjust;
+  if(A){var pm=!!st.usePlusMinus;
+    return {text:A.text(A.dial(mil,unit,corr),'W',st.outputPrecision||'tenth',click,pm),unit:A.unitLabel(unit),
+      clicks:A.clicksText(A.clicks(mil,unit,click,corr),'W',pm)};}
+  var moa=unit==='MOA',v=(moa?mil*3.43774677:mil)*corr;
+  return {text:(Math.abs(v)<0.05?'0':((v>=0?'R':'L')+Math.abs(v).toFixed(1))),unit:moa?'MOA':'MIL',clicks:''};
+}
+function holdMsg(el,msg,color){aimHoldOk=false;
+  el.innerHTML='<div class="callMsg"'+(color?' style="color:var(--'+color+')"':'')+'>'+msg+'</div>';}
 async function updateWindHold(force){
   var el=document.getElementById('windHold');
   if(!el)return;
-  if(!data){el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';return;}
-  if(!activeName()){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">-- (no rifle profile)</div>';return;}
-  if(liveWindMissing()){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv" style="color:var(--warn)">NO VALID WIND METER</div>';return;}
+  renderCallCard();
+  if(!data){holdMsg(el,'--');return;}
+  if(!activeName()){holdMsg(el,'Pick a rifle in the Solver');return;}
+  if(liveWindMissing()){holdMsg(el,liveStale()?'NO LIVE WIND (base station lost)':'NO VALID WIND METER','warn');return;}
   if(!force){
     if(solveBusy)return;
     if(Date.now()-windHoldLast<minMs(WINDHOLD_MIN_MS))return;
@@ -1171,7 +1250,7 @@ async function updateWindHold(force){
     var s=await solveP(p);
     // The aimbot may only dial the hold that is on screen. A solver error or a
     // failed request shows no hold, so the previous one must not stay armed.
-    if(!s.ok){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">solver error</div>';return;}
+    if(!s.ok){holdMsg(el,s.err==='range'?'Out of range for this load':'Solver error','warn');return;}
     noteMilPerMph(p,s);   // learn mil per mph of crosswind for the variability card
     var wmag=parseFloat(getv('zeroWindMag',0))||0, wdir=getv('zeroWindDir','right');
     var zw=(wdir==='right')?-wmag:wmag;
@@ -1180,10 +1259,38 @@ async function updateWindHold(force){
     // wMOA>=0 means hold RIGHT; the ATtiny's DIR_INVERT sorts out which way that
     // physically turns. We send signed MOA and let the controller do clicks.
     aimHoldMOA=wMOA; aimHoldOk=true;
-    el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">'+Math.abs(wMOA).toFixed(1)+' '+(wMOA>=0?'R':'L')+
-      ' MOA &middot; '+Math.abs(wMil).toFixed(2)+' '+(wMil>=0?'R':'L')+' mil</div>';
-  }catch(e){aimHoldOk=false;el.innerHTML='<div class="wt">WIND HOLD</div><div class="wv">--</div>';
+    var f=holdFmt(wMil),big=escHtml(f.text).replace(/^([RL+\-])/,'$1&thinsp;');
+    el.innerHTML='<div class="callBig">'+big+'<span class="u">'+f.unit+'</span></div>'+
+      '<div class="callSub">'+(f.clicks?f.clicks+' clicks &middot; ':'')+Math.abs(wMOA).toFixed(1)+' '+(wMOA>=0?'R':'L')+
+      ' MOA &middot; '+Math.abs(wMil).toFixed(2)+' '+(wMil>=0?'R':'L')+' mil</div>'+
+      (liveOn('live_wind')?'':'<div class="callSub" style="color:var(--warnY)">Wind typed in the Solver (live wind is off)</div>');
+  }catch(e){holdMsg(el,'--');
   }finally{solveBusy=false;windHoldLast=Date.now();}
+}
+// ---- distance to target (the Solver's distance: sol_range, in yards) ----
+// Shown in the Solver's distance unit (Settings -> yd or m). Changing it here
+// changes the Solver's distance and the other way round: both read sol_range.
+function distMetric(){return skySet().distanceUnit==='m';}
+function ydToDisp(yd){return distMetric()?yd*0.9144:yd;}
+function dispToYd(v){return distMetric()?v/0.9144:v;}
+function curRangeYd(){var v=parseFloat(getv('range',500));return (isFinite(v)&&v>0)?v:500;}
+function setRangeYd(yd){
+  if(!(yd>0&&yd<=5000)){flash('Distance must be 1 to '+Math.round(ydToDisp(5000))+(distMetric()?' m':' yd'));renderCallCard(true);return;}
+  setv('range',Math.round(yd*1000)/1000);renderCallCard(true);updateWindHold(true);
+}
+var DIST_STEP=25;   // yd or m per tap
+function distStep(dir){var c=ydToDisp(curRangeYd());setRangeYd(dispToYd(Math.max(DIST_STEP,(Math.round(c/DIST_STEP)+dir)*DIST_STEP)));}
+function distTyped(v){var n=parseFloat(v);if(!isFinite(n)){renderCallCard(true);return;}setRangeYd(dispToYd(n));}
+function renderCallCard(forceDist){
+  var card=document.getElementById('callCard');if(!card)return;
+  var on=(view==='avg'||view==='pred');
+  card.className='callCard'+(on?'':' hide');
+  if(!on)return;
+  var r=document.getElementById('callRifle');if(r)r.textContent=activeName()||'';
+  var inp=document.getElementById('distIn');
+  // never overwrite what someone is typing
+  if(inp&&(forceDist||document.activeElement!==inp))inp.value=Math.round(ydToDisp(curRangeYd()));
+  var u=document.getElementById('distU');if(u)u.textContent=distMetric()?'m':'yd';
 }
 function renderStability(){
   if(!data)return;
@@ -1434,490 +1541,368 @@ function drawWheel(){
 }
 
 // ============================================================================
-// SESSION LOGGING + ANALYSIS  (client-side; localStorage; no firmware changes)
+// WIND LOG  (phone side, IndexedDB; the base keeps the last few minutes)
 // ============================================================================
-// Records a timestamped wind + wind-hold time series while you shoot a string.
-// START/STOP/MARK live on the Prediction tab (where you watch wind); the LOG
-// section reviews the session, lets you enter each shot's miss distance, and
-// gives a *rough* correlation between the wind call and the observed impact.
-// Every sample carries: weighted-average wind, per-node wind, the live wind
-// hold from the solver, stability, sentinel agreement, base atmosphere and
-// density altitude. Marks additionally carry the shot's hold + your miss entry.
-//
-// Honesty note baked into the UI: at low shot counts, and with shooter/rifle
-// error plus the solver's known hot-elevation bias mixed in, "correlation" is
-// indicative, not gospel. Bias +/- spread is the trustworthy headline; the
-// regression / implied-wind numbers are secondary and caveated.
+// A plain record of what every wind meter saw, second by second, for hours.
+//   * Source: the base's /windsec, the timed 1 s readings each node packet
+//     carries. A packet repeats the last few seconds, so the seconds of a lost
+//     or slow packet still arrive with the next one. The base keeps each
+//     reading once (WindSec.h); here each meter's reading is stored once more
+//     by its base-clock time, so no reading is ever stored twice.
+//   * Every whole second also gets the weighted wind (the same weights and
+//     multipliers as the live call, from each meter's newest reading at that
+//     second) and the wind hold for it (the Solver's rifle, distance and group
+//     offset, the direction of fire at that moment).
+//   * Rows go to IndexedDB on every poll, so hours of data never sit in the
+//     page's memory or in localStorage. The page keeps only 10 s averages for
+//     the charts. Start/stop state is in localStorage ('wlMeta').
+//   * One tab records at a time (a lease in localStorage). If that tab is
+//     frozen or closed, another open tab carries on from the same place, and a
+//     reloaded tab picks up where it left off.
+//   * Export is one CSV, one row per reading (long format). Meters don't tick
+//     on the same instant, so a row per reading keeps each meter's own times
+//     with nothing invented or repeated; the "weighted" rows carry the hold.
+//     It opens in any spreadsheet and filters or pivots by meter. About
+//     1.3 MB per hour with five meters.
+var WL_POLL_MS=2000;     // /windsec poll while recording
+var WL_LAG_MS=4000;      // a second is weighted once every meter's packet for it is in
+var WL_FRESH_MS=2500;    // a meter's reading older than this at a second sits that second out
+var WL_LEASE_MS=10000;   // another tab takes over after this long without a poll
+var WL_CATCHUP_S=600;    // after a long freeze, weight at most the last 10 min
+var WL_BUCKET_MS=10000;  // chart averages
+// This tab's id; kept across a reload of the same tab, so a reloaded recorder
+// carries straight on instead of waiting for its own lease to run out.
+var WL_TAB=(function(){var id='';try{id=sessionStorage.getItem('wlTab')||'';}catch(e){}
+  if(!id){id=Math.random().toString(36).slice(2);try{sessionStorage.setItem('wlTab',id);}catch(e){}}return id;})();
+var WL_COLORS=['#2F7FE0','#E8711A','#22A559','#9B5DE5','#C9A100','#E0458B','#14A3A3','#7FA11B'];
+var WLR={};              // node id -> recent readings [{t,s,d}] (base clock) for the weighted wind
+var WLS={};              // series key ('w' or node id) -> {bucket -> [n, sumSpd, sumCos, sumSin, max, sumHold, nHold]}
+var wlBusy=false, wlSeriesFor='', wlErr='';
 
-function milPerIn(range){return range>0?1000/(range*36):0;}   // mil per inch at target
-function moaPerIn(range){return range>0?(10800/Math.PI)/(range*36):0;}
-function fmtDur(s){s=Math.max(0,Math.floor(s));var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
-  function p(n){return (n<10?'0':'')+n;}
-  return (h>0?(h+':'):'')+p(m)+':'+p(ss);}
-// Density altitude (ft), standard approximation from station pressure + temp.
-function daFt(tempF,presInHg){
-  if(!(presInHg>0))return null;
-  var pa=(29.92-presInHg)*1000.0;                 // pressure altitude, ft
-  var isaC=15.0-1.98*(pa/1000.0);                 // ISA temp at that PA
-  var oatC=(tempF-32.0)*5.0/9.0;
-  return pa+118.8*(oatC-isaC);
-}
-
-function newLogState(){return {recording:false,startedAt:0,samples:[],marks:[],shotSeq:0,
-  profileName:'',profileParams:null,lastHold:null,nSinceSave:0,recovered:false};}
-function logGet(){try{var s=JSON.parse(localStorage.getItem('windlog'));
-  if(s&&s.recording){s.recording=false;s.recovered=true;}   // page died mid-record -> recover as stopped
-  return s;}catch(e){return null;}}
-function saveLog(){try{localStorage.setItem('windlog',JSON.stringify(logState));}catch(e){}}
-var logState=logGet()||newLogState();
-var logTimer=null, logBusy=false;
-var logCadence=parseInt(localStorage.getItem('logCadence')||'1000',10)||1000;
-
-function snapshotProfileParams(){var p={};LOAD.forEach(function(f){p[f.k]=getv(f.k,f.d);});
-  LIVE.forEach(function(f){p[f.k]=getv(f.k,f.d);});return p;}
-
-// Ask the receiver for the current wind hold, applying the same group-offset
-// ("dialed") math the solver screen uses. Returns null if no profile / no fix.
-async function solveNow(){
-  if(!data||!activeName())return null;
-  if(liveWindMissing())return null;          // no wind call -> nothing to log
-  var p=solverParams();
-  try{
-    var s=await solveP(p);if(!s.ok)return null;
-    var wmag=parseFloat(getv('zeroWindMag',0))||0,wdir=getv('zeroWindDir','right');
-    var emag=parseFloat(getv('zeroElevMag',0))||0,edir=getv('zeroElevDir','high');
-    var zw=(wdir==='right')?-wmag:wmag, ze=(edir==='high')?-emag:emag;
-    return {windMil:s.windMil,windMOA:s.windMOA,elevMil:s.elevMil,elevMOA:s.elevMOA,
-      dialedWindMil:s.windMil+zw/3.4377,dialedWindMOA:s.windMOA+zw,
-      dialedElevMil:s.elevMil+ze/3.4377,dialedElevMOA:s.elevMOA+ze,
-      tof:s.tof,vRemain:s.vRemain,sg:s.sg,range:parseFloat(p.range)||0};
-  }catch(e){return null;}
-}
-
-// Current weighted-wind reading, synchronous (no network) — shared by the
-// per-tick snapshot and the instant part of markShot().
-function curWtd(){
-  var a=weightedAvgWind();
-  var rel=relAngle(a.dir);
-  var ns=(data&&data.nodes)||[];
-  var gust=0;ns.forEach(function(n){if(n.gust>gust)gust=n.gust;});
-  return {spd:a.speed,dir:a.dir,relDir:rel,count:a.count,
-    cross:a.speed*Math.sin(rel*Math.PI/180), head:a.speed*Math.cos(rel*Math.PI/180),
-    spdSd:a.speedSd,dirSd:a.dirSd,gust:gust};
-}
-// Build one full sample from the current live data + a hold object.
-// NOTE: named logSample(), not snapshot() -- there's a pre-existing,
-// unrelated snapshot() (no args, builds a rifle-profile object for saving)
-// higher up in this file. Two top-level functions with the same name would
-// silently collide (the later one wins), which is exactly what happened
-// here until this rename -- saveProfile() was calling THIS function instead
-// of the profile one, so profile Save was silently storing wind-log data
-// instead of rifle data. If you're touching this file, keep these two
-// distinct.
-function logSample(hold){
-  var w=curWtd();
-  var ns=(data&&data.nodes)||[];
-  var base=data?data.base:{tempF:0,presInHg:0,battPct:0};
-  var st=(data&&data.stability)?data.stability:null;
-  var sent=null;
-  if(sentinelEnabled()){var ev=evalSentinel();var ag=ev.live.filter(function(p){return p.agree;}).length;
-    sent={agree:ag,live:ev.live.length,missing:ev.missing,frac:ev.live.length?ag/ev.live.length:null};}
-  return {
-    t:Date.now(), tRel:logState.startedAt?((Date.now()-logState.startedAt)/1000):0,
-    nCount:w.count, az:fireAz,
-    wtd:w,
-    da:daFt(base.tempF,base.presInHg),
-    base:{tempF:base.tempF,presInHg:base.presInHg,battPct:base.battPct},
-    // stab: the field variability figures (crosswind mph; mil when known).
-    // The legacy cur/w60 SDs from the receiver ride along for older analyses.
-    stab: (function(){var fv=fieldVar(),mpm=curMilPerMph();
-      return {tier:varTier(fv,mpm).go,gustMph:fv.gust,spreadMph:fv.spread,driftMph:fv.drift,
-        drift300Mph:fv.drift300,totalMph:fv.total,totalMil:(mpm&&fv.total!=null)?fv.total*mpm.v:null,
-        curSpdSd:st?st.cur.spdSd:null,curDirSd:st?st.cur.dirSd:null,
-        w60SpdSd:st?st.w60.spdSd:null,w60DirSd:st?st.w60.dirSd:null};})(),
-    sent:sent, hold:hold,
-    nodes: ns.map(function(n){var nv=nodeVar(n);return {id:n.id,spd:n.speed,dir:n.dir,gust:n.gust,spdSd:n.speedSd,dirSd:n.dirSd,
-      xwMph:nv.wob,gf:nv.gf,drift60Mph:nv.drift60,
-      tempF:n.tempF,presInHg:n.presInHg,battV:n.battV,rssi:n.rssi,age:n.age,lat:n.lat,lon:n.lon};})
-  };
-}
-
-async function logTick(){
-  if(!logState.recording||!data){return;}
-  if(logBusy)return; logBusy=true;
-  try{
-    var hold=await solveNow(); if(hold)logState.lastHold=hold;
-    logState.samples.push(logSample(hold||logState.lastHold||null));
-    logState.nSinceSave=(logState.nSinceSave||0)+1;
-    if(logState.nSinceSave>=20){saveLog();logState.nSinceSave=0;}
-    renderLogBar();
-    if(section==='log'){updateLogStatus();renderCharts();}
-  }finally{logBusy=false;}
-}
-function startTimer(){stopTimer();logTimer=setInterval(logTick,logCadence);}
-function stopTimer(){if(logTimer){clearInterval(logTimer);logTimer=null;}}
-function setCadence(v){logCadence=parseInt(v,10)||1000;localStorage.setItem('logCadence',logCadence);
-  if(logState.recording)startTimer();flash('log interval '+(logCadence/1000)+' s');}
-
-function startLog(){
-  if(logState.recording)return;
-  if(logState.samples.length||logState.marks.length){
-    if(!confirm('Start a new session? This clears the last one. Export it first if you want to keep it.'))return;
-  }
-  logState=newLogState();
-  logState.recording=true; logState.startedAt=Date.now();
-  logState.profileName=activeName(); logState.profileParams=snapshotProfileParams();
-  saveLog(); startTimer(); logTick(); renderLogBar();
-  if(section==='log')renderLog();
-  flash('recording started');
-}
-function stopLog(){
-  if(!logState.recording)return;
-  logState.recording=false; stopTimer(); saveLog(); renderLogBar();
-  if(section==='log')renderLog();
-  flash('stopped: '+logState.samples.length+' samples, '+logState.marks.length+' shots');
-}
-// MARK is instant: timestamp, shot number, and current wind are all local
-// data, captured synchronously the moment the button is pressed. The exact
-// wind hold (which needs a /solve round-trip to the receiver) is fetched in
-// the background and patched into this same shot once it arrives, so the
-// button never waits on the network and the recorded shot time is the real
-// moment of the press, not whenever the fetch happened to finish.
-function markShot(){
-  if(!logState.recording)return;
-  var t=Date.now();
-  var mark={shot:++logState.shotSeq, t:t,
-    tRel:logState.startedAt?((t-logState.startedAt)/1000):0,
-    wtd:curWtd(), az:fireAz, hold:logState.lastHold,
-    range:(logState.lastHold&&logState.lastHold.range)||(logState.profileParams&&parseFloat(logState.profileParams.range))||0,
-    conv:'applied', missH_in:null, missV_in:null, note:''};
-  logState.marks.push(mark);
-  saveLog(); renderLogBar();
-  if(section==='log')renderLog();
-  flash('shot '+mark.shot+' marked');
-  solveNow().then(function(hold){patchMarkHold(mark,hold);});
-}
-// Patch a freshly-solved hold into an already-recorded mark, in place —
-// targets the one table cell by id rather than rebuilding the shot table,
-// so it can never steal focus from a miss-distance field mid-edit.
-function patchMarkHold(mark,hold){
-  if(!hold)return;
-  logState.lastHold=hold;
-  mark.hold=hold;
-  if(!mark.range)mark.range=hold.range;
-  saveLog();
-  if(section!=='log')return;
-  var i=logState.marks.indexOf(mark);
-  if(i<0)return;
-  var hc=document.getElementById('hold_'+i);
-  if(hc)hc.textContent=Math.abs(hold.windMil).toFixed(2)+(hold.windMil>=0?'R':'L')+' mil';
-  updateShotComputed();
-}
-
-function delMark(i){if(!confirm('Delete shot '+(logState.marks[i]&&logState.marks[i].shot)+'?'))return;
-  logState.marks.splice(i,1);saveLog();renderLog();}
-function setMiss(i,field,v){var m=logState.marks[i];if(!m)return;
-  var f=parseFloat(v);m[field]=(v===''||isNaN(f))?null:f;saveLog();updateShotComputed();}
-function setConv(i,v){var m=logState.marks[i];if(!m)return;m.conv=v;saveLog();updateShotComputed();}
-function setNote(i,v){var m=logState.marks[i];if(!m)return;m.note=v;saveLog();}
-
-function renderLogBar(){
-  var b1=document.getElementById('btnStart'),b2=document.getElementById('btnStop'),
-      b3=document.getElementById('btnMark'),st=document.getElementById('logStat');
-  if(!b1)return;
-  var rec=logState.recording;
-  b1.disabled=rec; b2.disabled=!rec; b3.disabled=!rec;
-  b2.className='step'+(rec?' live':'');
-  if(!st)return;
-  if(rec){var el=Math.floor((Date.now()-logState.startedAt)/1000);
-    st.innerHTML='<span class="recdot"></span>REC '+fmtDur(el)+' &middot; '+logState.samples.length+
-      ' samples &middot; '+logState.marks.length+' shots';
-  }else if(logState.samples.length||logState.marks.length){
-    st.innerHTML=(logState.recovered?'recovered':'stopped')+' &middot; '+logState.samples.length+
-      ' samples, '+logState.marks.length+' shots';
-  }else{st.textContent='not recording';}
-}
-
-// ---- correlation math (pure; host-tested) ----------------------------------
-// For each shot with an entered horizontal miss we form a residual in mil:
-//   conv 'applied' (you dialed the app's wind hold): residual = miss
-//   conv 'center'  (you held point of aim, no wind hold): residual = miss + hold.windMil
-//     (expected impact when holding center is -hold.windMil, so residual is the
-//      difference between where it landed and where the call said it would).
-// + miss/residual = right; + elevation miss = high.
-function computeStats(marks){
-  var H=[],X=[],V=[],IMP=[];
-  marks.forEach(function(m){
-    if(!m.hold||!m.range)return;
-    var mpi=milPerIn(m.range);
-    if(m.missH_in!==null&&m.missH_in!==undefined&&!isNaN(m.missH_in)){
-      var missH=m.missH_in*mpi;
-      var resH=(m.conv==='center')?(missH+m.hold.windMil):missH;
-      H.push(resH); X.push(m.hold.windMil);
-      var cw=m.wtd?m.wtd.cross:0;
-      if(Math.abs(cw)>0.5&&Math.abs(m.hold.windMil)>0.02){
-        var mpmph=Math.abs(m.hold.windMil)/Math.abs(cw); IMP.push(resH/mpmph);
-      }
-    }
-    if(m.missV_in!==null&&m.missV_in!==undefined&&!isNaN(m.missV_in)){
-      V.push(m.missV_in*mpi);
-    }
+// ---- storage ----
+function wlMeta(){try{return JSON.parse(localStorage.getItem('wlMeta'))||null;}catch(e){return null;}}
+function wlSaveMeta(m){try{localStorage.setItem('wlMeta',JSON.stringify(m));}catch(e){}}
+var wlDbP=null;
+function wlDb(){
+  if(wlDbP)return wlDbP;
+  wlDbP=new Promise(function(res,rej){
+    if(!window.indexedDB){rej(new Error('this browser has no IndexedDB'));return;}
+    var q=indexedDB.open('coriolisWindLog',1);
+    q.onupgradeneeded=function(){var db=q.result;if(!db.objectStoreNames.contains('rows'))db.createObjectStore('rows',{autoIncrement:true});};
+    q.onsuccess=function(){res(q.result);};
+    q.onerror=function(){rej(q.error||new Error('log storage would not open'));};
   });
-  function mean(a){return a.reduce(function(s,x){return s+x;},0)/a.length;}
-  function sd(a){if(a.length<2)return null;var mu=mean(a);
-    var v=a.reduce(function(s,x){return s+(x-mu)*(x-mu);},0)/(a.length-1);return Math.sqrt(v);}
-  var out={nH:H.length,nV:V.length};
-  if(H.length){out.windBias=mean(H);out.windSd=sd(H);}
-  if(V.length){out.elevBias=mean(V);out.elevSd=sd(V);}
-  if(IMP.length){out.impliedWind=mean(IMP);out.nImp=IMP.length;}
-  if(H.length>=3){
-    var n=H.length,sx=0,sy=0,sxx=0,sxy=0,syy=0;
-    for(var i=0;i<n;i++){sx+=X[i];sy+=H[i];sxx+=X[i]*X[i];sxy+=X[i]*H[i];syy+=H[i]*H[i];}
-    var dxx=sxx-sx*sx/n, dxy=sxy-sx*sy/n, dyy=syy-sy*sy/n;
-    if(dxx>1e-9){var slope=dxy/dxx,intercept=(sy-slope*sx)/n;
-      var r=(dyy>1e-12)?dxy/Math.sqrt(dxx*dyy):null;
-      out.reg={slope:slope,intercept:intercept,r:r,r2:(r!==null?r*r:null),n:n};}
-  }
-  out.pts=marks.map(function(m){                          // for the scatter chart
-    if(!m.hold||!m.range||m.missH_in===null||m.missH_in===undefined||isNaN(m.missH_in))return null;
-    return {x:m.hold.windMil, y:m.missH_in*milPerIn(m.range), shot:m.shot};
-  }).filter(function(p){return p;});
-  return out;
+  wlDbP.catch(function(){wlDbP=null;});
+  return wlDbP;
+}
+function wlTx(mode,fn){return wlDb().then(function(db){return new Promise(function(res,rej){
+  var tx=db.transaction('rows',mode),out=fn(tx.objectStore('rows'));
+  tx.oncomplete=function(){res(out);};tx.onerror=tx.onabort=function(){rej(tx.error||new Error('log storage failed'));};});});}
+function wlPut(chunk){return wlTx('readwrite',function(st){st.add(chunk);});}
+function wlClearDb(){return wlTx('readwrite',function(st){st.clear();});}
+// Calls each(rows) for every stored chunk of session sess, oldest first.
+function wlEach(sess,each){return wlDb().then(function(db){return new Promise(function(res,rej){
+  var c=db.transaction('rows','readonly').objectStore('rows').openCursor();
+  c.onsuccess=function(){var cur=c.result;if(!cur){res();return;}if(cur.value&&cur.value.sess===sess)each(cur.value.rows||[]);cur.continue();};
+  c.onerror=function(){rej(c.error);};});});}
+
+// ---- one recording tab at a time ----
+function wlLease(){try{return JSON.parse(localStorage.getItem('wlLease'))||null;}catch(e){return null;}}
+function wlOtherTabRecording(){var l=wlLease();return !!(l&&l.tab!==WL_TAB&&Date.now()-l.ts<WL_LEASE_MS);}
+function wlTakeLease(){if(wlOtherTabRecording())return false;
+  try{localStorage.setItem('wlLease',JSON.stringify({tab:WL_TAB,ts:Date.now()}));}catch(e){}return true;}
+
+// ---- weighted wind + hold at one instant (base clock tb) ----
+function wlHold(spd,rel){
+  if(!data||!engineLocal()||!activeName())return null;
+  try{var p=solverParams();p.windmph=spd;p.windrel=rel;var s=Gear.solve(p);if(!s||!s.ok)return null;
+    var wmag=parseFloat(getv('zeroWindMag',0))||0,zw=(getv('zeroWindDir','right')==='right')?-wmag:wmag;
+    return s.windMil+zw/3.43774677;}catch(e){return null;}
+}
+function wlWeightedAt(tb,unixMs){
+  var used=[];
+  Object.keys(WLR).forEach(function(k){var ring=WLR[k];
+    for(var i=ring.length-1;i>=0;i--)if(ring[i].t<=tb){if(tb-ring[i].t<=WL_FRESH_MS)used.push({id:+k,s:ring[i].s,d:ring[i].d});break;}});
+  if(!used.length)return null;
+  var w=nodeWeights(),tot=0,sx=0,sy=0,n=0;
+  used.forEach(function(u){u.w=configuredNodeWeight(w,u.id,used.length);tot+=u.w;});
+  used.forEach(function(u){var f=(used.length===1||tot<=0)?1/used.length:u.w/tot;if(f<=0)return;n++;
+    var v=u.s*getMult(u.id),r=u.d*Math.PI/180;sx+=f*v*Math.cos(r);sy+=f*v*Math.sin(r);});
+  var spd=Math.sqrt(sx*sx+sy*sy),dir=Math.atan2(sy,sx)*180/Math.PI;if(dir<0)dir+=360;
+  var rel=relAngle(dir),cross=spd*Math.sin(rel*Math.PI/180),hold=wlHold(spd,rel);
+  return [unixMs,0,r2(spd),r1(dir),r2(cross),hold===null?null:Math.round(hold*1000)/1000,Math.round(curRangeYd()),fireAz,n];
+}
+function r1(v){return Math.round(v*10)/10;}
+function r2(v){return Math.round(v*100)/100;}
+
+// ---- the recorder ----
+async function wlTick(){
+  var m=wlMeta();
+  if(!m||!m.rec||wlBusy){wlRenderBar();return;}
+  if(!wlTakeLease()){wlRenderBar();return;}
+  wlBusy=true;
+  try{
+    var ks=Object.keys(m.last||{}),since=null;
+    if(m.boot&&ks.length)since=Math.min.apply(null,ks.map(function(k){return m.last[k];}))-3000;
+    var r=await fetch('/windsec'+(since!==null&&since>0?('?since='+since):''),{cache:'no-store'});
+    var j=await r.json(),recvAt=Date.now();
+    var cur=wlMeta();if(!cur||!cur.rec||cur.sess!==m.sess)return;   // stopped or cleared meanwhile
+    m=cur;
+    if(!m.boot||j.now<m.boot.baseNow-2000){
+      // First poll of this log, or the base restarted (its clock went back):
+      // pin base time to UTC once per base boot (GPS time if it has a fix,
+      // else this tablet's clock), so times never jump within a boot.
+      var first=!m.boot;
+      m.boot={offset:(j.utc!==null&&j.utc!==undefined?j.utc:recvAt)-j.now,baseNow:j.now,floor:first?j.now-1500:0};
+      m.tsrc=(j.utc!==null&&j.utc!==undefined)?'gps':'tablet';
+      m.last={};WLR={};
+      if(first)m.wSec=Math.floor((m.boot.floor+m.boot.offset)/1000);else m.boots=(m.boots||0)+1;
+    }
+    m.boot.baseNow=j.now;
+    var off=m.boot.offset,rows=[];
+    Object.keys(j.nodes||{}).forEach(function(k){
+      var list=(j.nodes[k]&&j.nodes[k].r)||[],last=m.last[k]||0,ring=WLR[k]||(WLR[k]=[]);
+      list.forEach(function(x){var t=x[0];
+        if(!ring.length||t>ring[ring.length-1].t)ring.push({t:t,s:x[1],d:x[2]});
+        if(t>last&&t>m.boot.floor){rows.push([Math.round(t+off),+k,x[1],x[2]]);last=t;m.n[k]=(m.n[k]||0)+1;}
+      });
+      if(last)m.last[k]=last;
+    });
+    var upto=Math.floor((j.now-WL_LAG_MS+off)/1000);
+    if(upto-m.wSec>WL_CATCHUP_S)m.wSec=upto-WL_CATCHUP_S;
+    for(var S=m.wSec+1;S<=upto;S++){var w=wlWeightedAt(S*1000-off,S*1000);if(w){rows.push(w);m.n.w=(m.n.w||0)+1;}}
+    if(upto>m.wSec)m.wSec=upto;
+    var keep=m.wSec*1000-off-WL_FRESH_MS-1000;
+    Object.keys(WLR).forEach(function(k){var ring=WLR[k];while(ring.length>1&&ring[0].t<keep)ring.shift();});
+    if(rows.length)await wlPut({sess:m.sess,rows:rows});
+    cur=wlMeta();if(!cur||cur.sess!==m.sess)return;   // cleared while writing
+    m.rec=cur.rec;m.stoppedAt=cur.stoppedAt;          // a STOP pressed meanwhile wins
+    wlSaveMeta(m);
+    if(wlSeriesFor===m.sess)wlAddSeries(rows);
+    wlErr='';
+  }catch(e){wlErr=(e&&e.name==='TypeError')?'base station not answering':((e&&e.message)||'error');}
+  finally{wlBusy=false;wlRenderBar();if(section==='log')renderLog();}
+}
+setInterval(wlTick,WL_POLL_MS);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)wlTick();});
+
+function wlTotal(m){var t=0;m=m||wlMeta();if(!m||!m.n)return 0;Object.keys(m.n).forEach(function(k){if(k!=='w')t+=m.n[k];});return t;}
+function wlMeters(m){return Object.keys((m&&m.n)||{}).filter(function(k){return k!=='w';}).map(Number).sort(function(a,b){return a-b;});}
+function wlStart(){
+  var m=wlMeta();
+  if(m&&m.rec){flash('already recording');return;}
+  if(m&&(wlTotal(m)||(m.n&&m.n.w))&&!confirm('Start a new log?\n\nThis clears the log you have now ('+wlTotal(m)+' meter readings). Download it on the Log tab first if you want to keep it.'))return;
+  var sess=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  wlClearDb().catch(function(){}).then(function(){
+    wlSaveMeta({sess:sess,rec:true,startedAt:Date.now(),stoppedAt:0,boot:null,last:{},n:{w:0},wSec:0,boots:0});
+    WLR={};WLS={};wlSeriesFor=sess;wlErr='';
+    try{localStorage.setItem('wlLease',JSON.stringify({tab:WL_TAB,ts:Date.now()}));}catch(e){}
+    flash('wind log started');wlTick();
+  });
+}
+function wlStop(){
+  var m=wlMeta();if(!m||!m.rec)return;
+  m.rec=false;m.stoppedAt=Date.now();wlSaveMeta(m);
+  flash('wind log stopped: '+wlTotal(m)+' readings');wlRenderBar();if(section==='log')renderLog();
+}
+function wlClear(){
+  var m=wlMeta();if(!m){flash('the log is already empty');return;}
+  if(!confirm('Delete the wind log on this phone ('+wlTotal(m)+' meter readings)?\n\nThis cannot be undone. Download it first if you want to keep it.'))return;
+  localStorage.removeItem('wlMeta');WLR={};WLS={};wlSeriesFor='';
+  wlClearDb().catch(function(){}).then(function(){wlRenderBar();if(section==='log')renderLog();flash('wind log deleted');});
+}
+// these are what the old buttons called
+function startLog(){wlStart();}
+function stopLog(){wlStop();}
+
+// ---- status ----
+function wlDurS(m){if(!m||!m.startedAt)return 0;return ((m.rec?Date.now():(m.stoppedAt||Date.now()))-m.startedAt)/1000;}
+function wlStatusHtml(){
+  var m=wlMeta();
+  if(!m)return 'not recording';
+  var n=wlMeters(m).length,txt=fmtDur(wlDurS(m))+' &middot; '+n+' meter'+(n===1?'':'s')+' &middot; '+wlTotal(m).toLocaleString()+' readings';
+  if(!m.rec)return 'stopped &middot; '+txt;
+  var s='<span class="recdot"></span>REC '+txt;
+  if(wlOtherTabRecording())s+='<br><span style="color:var(--dim)">recording in another open tab of this page</span>';
+  else if(wlErr)s+='<br><span style="color:var(--warn)">'+escHtml(wlErr)+' &middot; keeps trying</span>';
+  return s;
+}
+function wlRenderBar(){
+  var m=wlMeta(),rec=!!(m&&m.rec);
+  ['btnStart','wlBtnStart'].forEach(function(id){var b=document.getElementById(id);if(b)b.disabled=rec;});
+  ['btnStop','wlBtnStop'].forEach(function(id){var b=document.getElementById(id);if(b)b.disabled=!rec;});
+  var h=wlStatusHtml();
+  ['logStat','wlStatus'].forEach(function(id){var e=document.getElementById(id);if(e&&e.innerHTML!==h)e.innerHTML=h;});
 }
 
-// ---- analysis view ---------------------------------------------------------
-function logShellHtml(){
+// ---- chart series: 10 s averages kept in memory ----
+function wlAddSeries(rows){
+  rows.forEach(function(r){
+    var key=r[1]===0?'w':String(r[1]),S=WLS[key]||(WLS[key]={}),b=Math.floor(r[0]/WL_BUCKET_MS),a=S[b]||(S[b]=[0,0,0,0,0,0,0]);
+    var rad=r[3]*Math.PI/180;a[0]++;a[1]+=r[2];a[2]+=Math.cos(rad);a[3]+=Math.sin(rad);if(r[2]>a[4])a[4]=r[2];
+    if(r[1]===0&&r[5]!==null&&r[5]!==undefined){a[5]+=r[5];a[6]++;}
+  });
+}
+var wlLoading=false;
+function wlLoadSeries(){
+  var m=wlMeta();if(!m||wlLoading||wlSeriesFor===m.sess)return;
+  wlLoading=true;var seen=new Set(),sess=m.sess;WLS={};
+  wlEach(sess,function(rows){wlAddSeries(rows.filter(function(r){var k=r[1]+'|'+r[0];if(seen.has(k))return false;seen.add(k);return true;}));})
+    .then(function(){wlSeriesFor=sess;},function(e){wlErr='could not read the log: '+(e&&e.message);})
+    .then(function(){wlLoading=false;if(section==='log')renderLog();});
+}
+
+// ---- Log tab ----
+function wlShellHtml(){
   return '<div id="logShell">'+
-    '<h2>Session</h2>'+
+    '<h2>Wind log</h2>'+
     '<div class="wheelWrap">'+
-      '<div id="logSummary" class="statline" style="color:var(--dim)">--</div>'+
-      '<div class="field" style="margin-top:10px"><span class="lab">Log interval</span>'+
-        '<select onchange="setCadence(this.value)">'+
-          [500,1000,2000,5000].map(function(ms){return '<option value="'+ms+'"'+(ms===logCadence?' selected':'')+'>'+(ms/1000)+' s</option>';}).join('')+
-        '</select></div>'+
-      '<div class="stepRow"><button class="step" onclick="exportJson()">Export JSON</button>'+
-        '<button class="step" onclick="exportSummaryCsv()">Summary CSV</button>'+
-        '<button class="step" onclick="exportNodesCsv()">Nodes CSV</button></div>'+
-      '<div class="stepRow"><button class="step" onclick="startLog()">New session</button></div>'+
+      '<div id="wlStatus" class="logstat" style="margin-top:0;font-size:.9rem">--</div>'+
+      '<div class="stepRow"><button id="wlBtnStart" class="step" onclick="wlStart()">&#9679; START LOG</button>'+
+        '<button id="wlBtnStop" class="step" onclick="wlStop()">&#9632; STOP</button></div>'+
+      '<div class="stepRow"><button class="step" onclick="wlExport()">Download CSV</button>'+
+        '<button class="step" onclick="wlClear()">Delete log</button></div>'+
+      '<div id="wlInfo" style="color:var(--dim);font-size:.75rem;margin-top:10px;line-height:1.5"></div>'+
     '</div>'+
-    '<h2>Shots &amp; miss entry</h2>'+
-    '<div class="wheelWrap">'+
-      '<div style="color:var(--dim);font-size:.76rem;margin-bottom:8px">Enter where each shot landed '+
-        'relative to your aim point, in inches at the target (+ right / + high). Pick whether you '+
-        '<b>dialed</b> the app\'s wind hold or <b>held center</b>.</div>'+
-      '<div class="tblwrap"><div id="shotTable"></div></div>'+
-    '</div>'+
-    '<h2>Wind call vs. observed impact</h2>'+
-    '<div class="wheelWrap"><div id="logStats"></div></div>'+
-    '<div id="logCharts"></div>'+
+    '<h2>Meters</h2><div class="wheelWrap"><div class="tblwrap" id="wlTable"></div></div>'+
+    '<div id="wlCharts"></div>'+
+    '<div id="wlOld"></div>'+
     '<div id="rawHost"></div>'+
   '</div>';
 }
 function renderLog(){
   var el=document.getElementById('logView');if(!el)return;
-  if(!document.getElementById('logShell'))el.innerHTML=logShellHtml();
-  updateLogStatus();
-  renderShotTable(false);
-  renderLogStats();
-  renderCharts();
+  if(!document.getElementById('logShell'))el.innerHTML=wlShellHtml();
+  wlLoadSeries();wlRenderBar();
+  var m=wlMeta();
+  var info=document.getElementById('wlInfo');
+  if(info)info.innerHTML='Logs every second each meter reports (including the seconds a packet carries from before), plus the weighted wind and your wind hold every second. '+
+    'Keep this page open and the screen on while it records; the base station holds the last few minutes, so a short sleep fills in when the page wakes. '+
+    (m&&m.boot?('Times: '+(m.tsrc==='gps'?'GPS (UTC)':'this tablet\'s clock (no GPS fix when the log started)')+'. '):'')+
+    (m&&m.boots?('The base station restarted '+m.boots+' time'+(m.boots>1?'s':'')+' during this log. '):'')+
+    'The CSV has one row per reading: meter rows, and &quot;weighted&quot; rows with the hold (+ = right, mil and MOA), distance and direction of fire.';
+  wlRenderTable(m);wlRenderCharts(m);wlRenderOld();
 }
-function updateLogStatus(){
-  var e=document.getElementById('logSummary');if(!e)return;
-  var dur=logState.startedAt?(((logState.recording?Date.now():(logState.samples.length?logState.samples[logState.samples.length-1].t:logState.startedAt))-logState.startedAt)/1000):0;
-  var prof=logState.profileName||'(no profile)';
-  var txt=(logState.recording?'RECORDING':'stopped')+' &middot; '+prof+' &middot; '+
-    fmtDur(dur)+' &middot; '+logState.samples.length+' samples &middot; '+logState.marks.length+' shots';
-  e.innerHTML=txt;
-}
-
-var shotSig='';
-function renderShotTable(force){
-  var host=document.getElementById('shotTable');if(!host)return;
-  var sig=logState.marks.map(function(m){return m.shot;}).join(',');
-  if(force||sig!==shotSig){
-    shotSig=sig;
-    if(!logState.marks.length){
-      host.innerHTML='<div style="color:var(--dim);font-size:.8rem">No shots yet. Press MARK on the Prediction tab as each shot breaks.</div>';
-      return;
-    }
-    var h='<table class="stbl"><thead><tr>'+
-      '<th>#</th><th>time</th><th>wind</th><th>hold</th><th>held</th>'+
-      '<th>miss L/R (in)</th><th>miss U/D (in)</th><th>note</th><th>resid</th><th></th></tr></thead><tbody>';
-    logState.marks.forEach(function(m,i){
-      var hold=m.hold?(Math.abs(m.hold.windMil).toFixed(2)+(m.hold.windMil>=0?'R':'L')+' mil'):'--';
-      var wclk=m.wtd?(m.wtd.spd.toFixed(1)+' @'+(function(){var hr=Math.round(relAngle(m.wtd.dir)/30)%12;return hr===0?12:hr;})()+"o'c"):'--';
-      h+='<tr>'+
-        '<td>'+m.shot+'</td>'+
-        '<td>'+fmtDur(m.tRel)+'</td>'+
-        '<td>'+wclk+'</td>'+
-        '<td id="hold_'+i+'">'+hold+'</td>'+
-        '<td><select onchange="setConv('+i+',this.value)">'+
-          '<option value="applied"'+(m.conv==='applied'?' selected':'')+'>dialed</option>'+
-          '<option value="center"'+(m.conv==='center'?' selected':'')+'>center</option></select></td>'+
-        '<td><input class="num" type="number" step="any" value="'+(m.missH_in===null||m.missH_in===undefined?'':m.missH_in)+'" onchange="setMiss('+i+',\'missH_in\',this.value)"></td>'+
-        '<td><input class="num" type="number" step="any" value="'+(m.missV_in===null||m.missV_in===undefined?'':m.missV_in)+'" onchange="setMiss('+i+',\'missV_in\',this.value)"></td>'+
-        '<td><input type="text" value="'+(m.note||'').replace(/"/g,'&quot;')+'" onchange="setNote('+i+',this.value)"></td>'+
-        '<td id="resid_'+i+'" style="color:var(--dim)">--</td>'+
-        '<td><button class="step" style="padding:4px 8px;font-size:.7rem" onclick="delMark('+i+')">x</button></td>'+
-      '</tr>';
-    });
-    h+='</tbody></table>';
-    host.innerHTML=h;
-  }
-  updateShotComputed();
-}
-// Update residual cells + stats + charts WITHOUT rebuilding inputs (protects
-// the mobile keyboard, per the build-once rule the other panels follow).
-function updateShotComputed(){
-  logState.marks.forEach(function(m,i){
-    var el=document.getElementById('resid_'+i);if(!el)return;
-    if(!m.hold||!m.range||m.missH_in===null||m.missH_in===undefined||isNaN(m.missH_in)){el.textContent='--';return;}
-    var mpi=milPerIn(m.range),missH=m.missH_in*mpi;
-    var resH=(m.conv==='center')?(missH+m.hold.windMil):missH;
-    el.innerHTML='<span style="color:var(--'+(Math.abs(resH)<0.15?'good':'warnY')+')">'+
-      Math.abs(resH).toFixed(2)+(resH>=0?'R':'L')+'</span>';
+function wlRenderTable(m){
+  var host=document.getElementById('wlTable');if(!host)return;
+  var ids=wlMeters(m);
+  if(!ids.length){host.innerHTML='<div style="color:var(--dim);font-size:.8rem">'+(m&&m.rec?'Waiting for the first readings&hellip;':'Nothing logged yet. Press START LOG here or on the Forecast tab.')+'</div>';return;}
+  var h='<table class="wlTbl"><thead><tr><th>Meter</th><th>Readings</th><th>Avg</th><th>Max</th><th>Avg dir</th></tr></thead><tbody>';
+  ids.map(String).concat(m.n&&m.n.w?['w']:[]).forEach(function(k,i){
+    var S=WLS[k]||{},n=0,sum=0,mx=0,c=0,s=0;
+    Object.keys(S).forEach(function(b){var a=S[b];n+=a[0];sum+=a[1];c+=a[2];s+=a[3];if(a[4]>mx)mx=a[4];});
+    var dir=Math.atan2(s,c)*180/Math.PI;if(dir<0)dir+=360;
+    var col=k==='w'?'var(--ink)':WL_COLORS[i%WL_COLORS.length];
+    h+='<tr><td><span class="dot" style="background:'+col+'"></span>'+(k==='w'?'Weighted':'Meter '+k)+'</td><td>'+((k==='w'?m.n.w:m.n[k])||0).toLocaleString()+'</td>'+
+      '<td>'+(n?(sum/n).toFixed(1)+' mph':'--')+'</td><td>'+(n?mx.toFixed(1):'--')+'</td><td>'+(n?Math.round(dir)+'&deg; '+card(dir):'--')+'</td></tr>';
   });
-  renderLogStats();
-  renderCharts();
+  host.innerHTML=h+'</tbody></table>'+(wlSeriesFor!==(m&&m.sess)?'<div style="color:var(--dim);font-size:.75rem;margin-top:6px">loading&hellip;</div>':'');
 }
-function renderLogStats(){
-  var el=document.getElementById('logStats');if(!el)return;
-  var st=computeStats(logState.marks);
-  if(st.nH<1&&st.nV<1){
-    el.innerHTML='<div style="color:var(--dim);font-size:.8rem">Enter miss distances above to see how the wind call compared to where shots landed.</div>';
-    return;
+// Hold in the rifle's windage unit (number only, + = right), for the chart.
+function wlHoldUnit(){var r=activeRifle()||{},u=r.windageUnit||'MIL';return {u:u==='MOA'?'MOA':(u==='IPHY'?'IPHY':'MIL'),k:u==='MOA'?3.43774677:(u==='IPHY'?3.6:1)};}
+function wlRenderCharts(m){
+  var host=document.getElementById('wlCharts');if(!host)return;
+  var keys=wlMeters(m).map(String),all=keys.concat(['w']),b0=Infinity,b1=-Infinity;
+  all.forEach(function(k){Object.keys(WLS[k]||{}).forEach(function(b){b=+b;if(b<b0)b0=b;if(b>b1)b1=b;});});
+  if(!(b1>b0)){host.innerHTML='';return;}
+  var nb=b1-b0+1,g=Math.max(1,Math.ceil(nb/480));       // at most ~480 points across
+  function series(k,pick){var S=WLS[k]||{},out=[];
+    for(var b=b0;b<=b1;b+=g){var acc=[0,0,0,0,0,0,0];
+      for(var i=0;i<g;i++){var a=S[b+i];if(a)for(var q=0;q<7;q++)acc[q]=(q===4)?Math.max(acc[q],a[q]):acc[q]+a[q];}
+      out.push(acc[0]?pick(acc):null);}
+    return out;}
+  var W=680,H=200,pl=40,pr=10,pt=12,pb=24,np=Math.ceil(nb/g);
+  function x(i){return pl+(np>1?i/(np-1):0)*(W-pl-pr);}
+  function chart(title,lines,lo,hi,fmtY,zero,key){
+    if(!(hi>lo)){hi=lo+1;}
+    function y(v){return pt+(1-(v-lo)/(hi-lo))*(H-pt-pb);}
+    var svg='<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="max-width:none;height:200px">';
+    [lo,(lo+hi)/2,hi].forEach(function(v){svg+='<line x1="'+pl+'" y1="'+y(v).toFixed(1)+'" x2="'+(W-pr)+'" y2="'+y(v).toFixed(1)+'" stroke="var(--line)"/>'+
+      '<text x="'+(pl-4)+'" y="'+(y(v)+4).toFixed(1)+'" fill="var(--dim)" font-size="11" text-anchor="end">'+fmtY(v)+'</text>';});
+    if(zero&&lo<0&&hi>0)svg+='<line x1="'+pl+'" y1="'+y(0).toFixed(1)+'" x2="'+(W-pr)+'" y2="'+y(0).toFixed(1)+'" stroke="var(--dim)" stroke-dasharray="3 3"/>';
+    lines.forEach(function(L){
+      if(L.dots){L.v.forEach(function(v,i){if(v!==null)svg+='<circle cx="'+x(i).toFixed(1)+'" cy="'+y(v).toFixed(1)+'" r="1.8" fill="'+L.c+'"/>';});return;}
+      var d='',pen=false;L.v.forEach(function(v,i){if(v===null){pen=false;return;}d+=(pen?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1);pen=true;});
+      if(d)svg+='<path d="'+d+'" fill="none" stroke="'+L.c+'" stroke-width="'+(L.w||1.6)+'" stroke-linejoin="round"/>';});
+    var t0=new Date(b0*WL_BUCKET_MS),t1=new Date((b1+1)*WL_BUCKET_MS);
+    function hm(d){return (d.getHours()<10?'0':'')+d.getHours()+':'+(d.getMinutes()<10?'0':'')+d.getMinutes();}
+    svg+='<text x="'+pl+'" y="'+(H-6)+'" fill="var(--dim)" font-size="11">'+hm(t0)+'</text>'+
+      '<text x="'+(W-pr)+'" y="'+(H-6)+'" fill="var(--dim)" font-size="11" text-anchor="end">'+hm(t1)+'</text></svg>';
+    return '<h2>'+title+'</h2><div class="chartbox" style="margin-top:0">'+svg+key+'</div>';
   }
-  var h='';
-  if(st.nH>=1)h+='<div class="statline">Windage: shots averaged <b>'+Math.abs(st.windBias).toFixed(2)+' mil '+(st.windBias>=0?'right':'left')+'</b> of aim'+
-    (st.windSd!==null?(' (spread '+st.windSd.toFixed(2)+' mil, n='+st.nH+')'):(' (n='+st.nH+')'))+'.</div>';
-  if(st.nV>=1)h+='<div class="statline">Elevation: shots averaged <b>'+Math.abs(st.elevBias).toFixed(2)+' mil '+(st.elevBias>=0?'high':'low')+'</b>'+
-    (st.elevSd!==null?(' (spread '+st.elevSd.toFixed(2)+' mil, n='+st.nV+')'):(' (n='+st.nV+')'))+'.</div>';
-  if(st.impliedWind!==undefined)h+='<div class="statline">Implied wind error: about <b>'+Math.abs(st.impliedWind).toFixed(1)+' mph '+(st.impliedWind>=0?'under':'over')+'-called</b> on average (n='+st.nImp+').</div>';
-  if(st.reg){h+='<div class="statline" style="color:var(--dim)">Regression (miss vs. predicted hold): slope '+st.reg.slope.toFixed(2)+', intercept '+st.reg.intercept.toFixed(2)+' mil, r&sup2; '+((st.reg.r2===null?0:st.reg.r2).toFixed(2))+', n='+st.reg.n+'.</div>';
-    h+='<div class="statline" style="color:var(--dim)">'+(Math.abs(st.reg.slope)>0.15?'Error grows with wind &rarr; possible calibration/scale issue.':'Error is roughly wind-independent &rarr; looks like scatter (shooter / turbulence), not a scale error.')+'</div>';
-  }
-  h+='<div class="warn" style="margin-top:10px">Rough, indicative only. Observed miss also contains your shooting/rifle precision and the solver&apos;s known hot-elevation bias; a handful of shots can&apos;t separate those. Treat as a trend, verify against known dope.</div>';
-  el.innerHTML=h;
-}
-
-// ---- charts (hand-rolled SVG; modular, safe to remove) ---------------------
-function renderCharts(){
-  var host=document.getElementById('logCharts');if(!host)return;
-  var samples=logState.samples, marks=logState.marks;
-  var h='';
-  // 1) wind speed + signed crosswind over time, with shot markers
-  if(samples.length>=2){
-    var W=680,Hh=200,pad=34;
-    var t0=samples[0].tRel, t1=samples[samples.length-1].tRel; if(t1<=t0)t1=t0+1;
-    var vals=[]; samples.forEach(function(s){vals.push(s.wtd.spd);vals.push(s.wtd.cross);});
-    var vmax=Math.max.apply(null,vals.map(Math.abs)); if(!(vmax>0))vmax=1; vmax*=1.15;
-    function sx(t){return pad+(t-t0)/(t1-t0)*(W-2*pad);}
-    function sy(v){return Hh/2-(v/vmax)*(Hh/2-pad/2);}
-    function path(sel){return samples.map(function(s,i){return (i?'L':'M')+sx(s.tRel).toFixed(1)+' '+sy(sel(s)).toFixed(1);}).join(' ');}
-    var svg='<svg viewBox="0 0 '+W+' '+Hh+'" preserveAspectRatio="xMidYMid meet">'+
-      '<line x1="'+pad+'" y1="'+(Hh/2)+'" x2="'+(W-pad)+'" y2="'+(Hh/2)+'" stroke="var(--line)"/>'+
-      '<path d="'+path(function(s){return s.wtd.spd;})+'" fill="none" stroke="var(--wind)" stroke-width="2"/>'+
-      '<path d="'+path(function(s){return s.wtd.cross;})+'" fill="none" stroke="var(--fire)" stroke-width="1.6" stroke-dasharray="4 3"/>';
-    marks.forEach(function(m){var x=sx(m.tRel);svg+='<line x1="'+x.toFixed(1)+'" y1="'+(pad/2)+'" x2="'+x.toFixed(1)+'" y2="'+(Hh-pad/2)+'" stroke="var(--good)" stroke-width="1"/>'+
-      '<text x="'+x.toFixed(1)+'" y="'+(pad/2-2)+'" fill="var(--good)" font-size="10" text-anchor="middle">'+m.shot+'</text>';});
-    svg+='<text x="'+pad+'" y="'+(Hh-4)+'" fill="var(--dim)" font-size="10">0s</text>'+
-      '<text x="'+(W-pad)+'" y="'+(Hh-4)+'" fill="var(--dim)" font-size="10" text-anchor="end">'+Math.round(t1-t0)+'s</text>'+
-      '<text x="'+(pad+2)+'" y="'+(pad-4)+'" fill="var(--dim)" font-size="10">max '+vmax.toFixed(1)+'</text></svg>';
-    h+='<div class="chartbox"><div class="k" style="margin-bottom:6px">Wind over time &mdash; <span style="color:var(--wind)">speed</span> / <span style="color:var(--fire)">crosswind (+R)</span> &middot; <span style="color:var(--good)">shots</span></div><div class="tblwrap">'+svg+'</div></div>';
-  }
-  // 2) predicted hold vs observed miss scatter + fit line
-  var st=computeStats(marks);
-  if(st.pts&&st.pts.length>=2){
-    var W2=680,H2=220,p2=40;
-    var xs=st.pts.map(function(p){return p.x;}), ys=st.pts.map(function(p){return p.y;});
-    var xmin=Math.min.apply(null,xs),xmax=Math.max.apply(null,xs);
-    var ymin=Math.min.apply(null,ys),ymax=Math.max.apply(null,ys);
-    var xr=(xmax-xmin)||1, yr=(ymax-ymin)||1; xmin-=xr*0.1;xmax+=xr*0.1;ymin-=yr*0.1;ymax+=yr*0.1;
-    function px(x){return p2+(x-xmin)/(xmax-xmin)*(W2-2*p2);}
-    function py(y){return H2-p2-(y-ymin)/(ymax-ymin)*(H2-2*p2);}
-    var svg2='<svg viewBox="0 0 '+W2+' '+H2+'" preserveAspectRatio="xMidYMid meet">';
-    if(ymin<0&&ymax>0)svg2+='<line x1="'+p2+'" y1="'+py(0).toFixed(1)+'" x2="'+(W2-p2)+'" y2="'+py(0).toFixed(1)+'" stroke="var(--line)"/>';
-    if(xmin<0&&xmax>0)svg2+='<line x1="'+px(0).toFixed(1)+'" y1="'+p2+'" x2="'+px(0).toFixed(1)+'" y2="'+(H2-p2)+'" stroke="var(--line)"/>';
-    if(st.reg){var x1=xmin,x2=xmax,y1=st.reg.slope*x1+st.reg.intercept,y2=st.reg.slope*x2+st.reg.intercept;
-      svg2+='<line x1="'+px(x1).toFixed(1)+'" y1="'+py(y1).toFixed(1)+'" x2="'+px(x2).toFixed(1)+'" y2="'+py(y2).toFixed(1)+'" stroke="var(--warnY)" stroke-width="1.5" stroke-dasharray="5 4"/>';}
-    st.pts.forEach(function(p){svg2+='<circle cx="'+px(p.x).toFixed(1)+'" cy="'+py(p.y).toFixed(1)+'" r="4" fill="var(--wind)"/>'+
-      '<text x="'+(px(p.x)+6).toFixed(1)+'" y="'+(py(p.y)+3).toFixed(1)+'" fill="var(--dim)" font-size="9">'+p.shot+'</text>';});
-    svg2+='<text x="'+(W2/2)+'" y="'+(H2-6)+'" fill="var(--dim)" font-size="10" text-anchor="middle">predicted wind hold (mil, +R)</text>'+
-      '<text x="12" y="'+(H2/2)+'" fill="var(--dim)" font-size="10" transform="rotate(-90 12 '+(H2/2)+')" text-anchor="middle">observed miss (mil, +R)</text></svg>';
-    h+='<div class="chartbox"><div class="k" style="margin-bottom:6px">Predicted hold vs. observed miss</div><div class="tblwrap">'+svg2+'</div></div>';
-  }
+  var key='<div class="wlKey">'+keys.map(function(k,i){return '<span><span class="dot" style="background:'+WL_COLORS[i%WL_COLORS.length]+'"></span>Meter '+k+'</span>';}).join('')+
+    '<span><span class="dot" style="background:var(--ink)"></span>Weighted</span></div>';
+  var spd=[],mx=1;
+  keys.forEach(function(k,i){var v=series(k,function(a){return a[1]/a[0];});v.forEach(function(q){if(q!==null&&q>mx)mx=q;});spd.push({v:v,c:WL_COLORS[i%WL_COLORS.length]});});
+  var wv=series('w',function(a){return a[1]/a[0];});wv.forEach(function(q){if(q!==null&&q>mx)mx=q;});spd.push({v:wv,c:'var(--ink)',w:2.6});
+  var dirs=keys.map(function(k,i){return {dots:true,c:WL_COLORS[i%WL_COLORS.length],v:series(k,function(a){var d=Math.atan2(a[3],a[2])*180/Math.PI;return d<0?d+360:d;})};});
+  dirs.push({dots:true,c:'var(--ink)',v:series('w',function(a){var d=Math.atan2(a[3],a[2])*180/Math.PI;return d<0?d+360:d;})});
+  var hu=wlHoldUnit(),hv=series('w',function(a){return a[6]?a[5]/a[6]*hu.k:null;}),hlo=0,hhi=0;
+  hv.forEach(function(q){if(q!==null){if(q<hlo)hlo=q;if(q>hhi)hhi=q;}});
+  var pad=Math.max(0.2,(hhi-hlo)*0.1);
+  var h=chart('Wind speed (10 s averages)',spd,0,Math.ceil(mx*1.1),function(v){return v.toFixed(0);},false,key)+
+    chart('Wind direction (from)',dirs,0,360,function(v){return Math.round(v)+'°';},false,key);
+  if(hv.some(function(q){return q!==null;}))
+    h+=chart('Wind hold ('+hu.u+')',[{v:hv,c:'var(--fireInk)',w:2.4}],hlo-pad,hhi+pad,function(v){return v.toFixed(1);},true,
+      '<div class="wlKey">Weighted wind hold for the rifle and distance at the time, + = right</div>');
   host.innerHTML=h;
 }
-
-// ---- export ----------------------------------------------------------------
-function csvCell(v){if(v===null||v===undefined||(typeof v==='number'&&isNaN(v)))return '';
-  var s=''+v; return (/[",\n]/.test(s))?('"'+s.replace(/"/g,'""')+'"'):s;}
-function csvRow(a){return a.map(csvCell).join(',');}
-function isoT(ms){try{return new Date(ms).toISOString();}catch(e){return ''+ms;}}
-
-function buildSessionJson(){
-  return JSON.stringify({
-    meta:{app:'Wind Lab',generatedAt:isoT(Date.now()),profile:logState.profileName,
-      profileParams:logState.profileParams,startedAt:isoT(logState.startedAt),
-      cadenceMs:logCadence,nSamples:logState.samples.length,nShots:logState.marks.length,
-      units:'wind mph/deg, hold+miss mil (+R/+high), distance in, DA ft'},
-    stats:computeStats(logState.marks),
-    marks:logState.marks, samples:logState.samples
-  },null,1);
+function wlRenderOld(){
+  var host=document.getElementById('wlOld');if(!host)return;
+  var raw=localStorage.getItem('windlog');
+  if(!raw){host.innerHTML='';return;}
+  var n=0;try{n=(JSON.parse(raw).samples||[]).length;}catch(e){}
+  host.innerHTML='<h2>Older log</h2><div class="wheelWrap"><div style="color:var(--dim);font-size:.8rem">A shot log from before this update is still saved on this phone ('+n+' samples).</div>'+
+    '<div class="stepRow"><button class="step" onclick="wlOldDownload()">Download it (JSON)</button><button class="step" onclick="wlOldDelete()">Delete it</button></div></div>';
 }
-function buildSummaryCsv(){
-  var head=['iso','t_rel_s','event','shot','n_nodes','wtd_spd_mph','wtd_dir_deg','wtd_reldir_deg',
-    'cross_mph_R','head_mph','gust_mph','hold_wind_mil','hold_wind_moa','hold_elev_mil','hold_elev_moa',
-    'dialed_wind_mil','dialed_elev_mil','tof_s','vrem_fps','sg','da_ft','stab_tier',
-    'field_xw_mph','field_xw_mil','field_gust_mph','field_spread_mph','field_drift60_mph','field_drift5m_mph',
-    'cur_spdSd','cur_dirSd','w60_spdSd','w60_dirSd','sent_agree_frac','base_tempF','base_presInHg','conv','missH_in','missV_in','note'];
-  var rows=[head];
-  var evs=[];
-  logState.samples.forEach(function(s){evs.push({t:s.t,kind:'sample',o:s});});
-  logState.marks.forEach(function(m){evs.push({t:m.t,kind:'mark',o:m});});
-  evs.sort(function(a,b){return a.t-b.t;});
-  evs.forEach(function(e){
-    var s=e.o, hold=s.hold||{}, w=s.wtd||{}, stab=s.stab||{}, sent=s.sent||{}, base=s.base||{};
-    rows.push([isoT(s.t), (s.tRel!=null?s.tRel.toFixed(2):''), e.kind, (e.kind==='mark'?s.shot:''),
-      s.nCount, num(w.spd,2), num(w.dir,0), num(w.relDir,0), num(w.cross,2), num(w.head,2), num(w.gust,2),
-      num(hold.windMil,2), num(hold.windMOA,2), num(hold.elevMil,2), num(hold.elevMOA,2),
-      num(hold.dialedWindMil,2), num(hold.dialedElevMil,2), num(hold.tof,2), num(hold.vRemain,0), num(hold.sg,2),
-      num(s.da,0), (stab.tier||''),
-      num(stab.totalMph,2), num(stab.totalMil,3), num(stab.gustMph,2), num(stab.spreadMph,2), num(stab.driftMph,2), num(stab.drift300Mph,2),
-      num(stab.curSpdSd,2), num(stab.curDirSd,0), num(stab.w60SpdSd,2), num(stab.w60DirSd,0),
-      (sent&&sent.frac!=null?num(sent.frac,2):''), num(base.tempF,1), num(base.presInHg,2),
-      (e.kind==='mark'?s.conv:''), (e.kind==='mark'?num(s.missH_in,2):''), (e.kind==='mark'?num(s.missV_in,2):''),
-      (e.kind==='mark'?(s.note||''):'')]);
-  });
-  return rows.map(csvRow).join('\n');
-}
-function buildNodesCsv(){
-  var head=['iso','t_rel_s','node_id','spd_mph','dir_deg','gust_mph','spd_sd','dir_sd','xw_wobble_mph','gust_factor','drift60_mph','tempF','presInHg','battV','rssi','age_s','lat','lon'];
-  var rows=[head];
-  logState.samples.forEach(function(s){(s.nodes||[]).forEach(function(n){
-    rows.push([isoT(s.t),(s.tRel!=null?s.tRel.toFixed(2):''),n.id,num(n.spd,2),num(n.dir,0),num(n.gust,2),
-      num(n.spdSd,2),num(n.dirSd,1),num(n.xwMph,2),num(n.gf,2),num(n.drift60Mph,2),num(n.tempF,1),num(n.presInHg,2),num(n.battV,2),num(n.rssi,0),n.age,
-      num(n.lat,6),num(n.lon,6)]);
-  });});
-  return rows.map(csvRow).join('\n');
-}
-function num(v,d){return (v===null||v===undefined||isNaN(v))?'':(+v).toFixed(d);}
+function wlOldDownload(){var raw=localStorage.getItem('windlog');if(raw)downloadFile('windlog_old_'+tstamp()+'.json','application/json',raw);}
+function wlOldDelete(){if(!confirm('Delete the older shot log on this phone? This cannot be undone.'))return;localStorage.removeItem('windlog');wlRenderOld();}
 
-function tstamp(){return isoT(Date.now()).replace(/[:.]/g,'-').slice(0,19);}
-function exportJson(){downloadFile('windlog_'+tstamp()+'.json','application/json',buildSessionJson());}
-function exportSummaryCsv(){downloadFile('windlog_'+tstamp()+'_summary.csv','text/csv',buildSummaryCsv());}
-function exportNodesCsv(){downloadFile('windlog_'+tstamp()+'_nodes.csv','text/csv',buildNodesCsv());}
-
-function downloadFile(name,mime,text){
-  if(!text||(!logState.samples.length&&!logState.marks.length)){flash('nothing logged yet');return;}
+// ---- export: one CSV, one row per reading, oldest first ----
+var WL_HEAD='time_utc,unix_ms,meter,speed_mph,dir_deg,crosswind_mph,hold_mil,hold_moa,distance_yd,fire_az_deg,meters_used';
+function wlCsvLine(r){
+  var iso=new Date(r[0]).toISOString();
+  if(r[1]!==0)return iso+','+r[0]+','+r[1]+','+(+r[2]).toFixed(2)+','+(+r[3]).toFixed(1)+',,,,,,';
+  var h=r[5];
+  return iso+','+r[0]+',weighted,'+(+r[2]).toFixed(2)+','+(+r[3]).toFixed(1)+','+(+r[4]).toFixed(2)+','+
+    (h===null||h===undefined?'':h.toFixed(3))+','+(h===null||h===undefined?'':(h*3.43774677).toFixed(2))+','+r[6]+','+r[7]+','+r[8];
+}
+var wlExporting=false;
+async function wlExport(){
+  var m=wlMeta();if(!m||!(wlTotal(m)||(m.n&&m.n.w))){flash('nothing logged yet');return;}
+  if(wlExporting)return;wlExporting=true;flash('preparing the CSV…');
   try{
-    var blob=new Blob([text],{type:mime});
+    var rows=[],seen=new Set();
+    await wlEach(m.sess,function(chunk){chunk.forEach(function(r){var k=r[1]+'|'+r[0];if(seen.has(k))return;seen.add(k);rows.push(r);});});
+    seen=null;
+    rows.sort(function(a,b){return (a[0]-b[0])||((a[1]||999)-(b[1]||999));});
+    var parts=[WL_HEAD+'\r\n'],buf=[];
+    for(var i=0;i<rows.length;i++){buf.push(wlCsvLine(rows[i]));if(buf.length>=5000){parts.push(buf.join('\r\n')+'\r\n');buf=[];}}
+    if(buf.length)parts.push(buf.join('\r\n')+'\r\n');
+    var d=new Date(m.startedAt||Date.now());
+    function p2(n){return (n<10?'0':'')+n;}
+    var name='windlog_'+d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'_'+p2(d.getHours())+p2(d.getMinutes())+'.csv';
+    downloadFile(name,'text/csv',new Blob(parts,{type:'text/csv'}));
+  }catch(e){alert('Export failed: '+((e&&e.message)||e));}
+  finally{wlExporting=false;}
+}
+
+// ---- file download ----
+function fmtDur(s){s=Math.max(0,Math.floor(s));var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;
+  function p(n){return (n<10?'0':'')+n;}
+  return (h>0?(h+':'):'')+p(m)+':'+p(ss);}
+function isoT(ms){try{return new Date(ms).toISOString();}catch(e){return ''+ms;}}
+function tstamp(){return isoT(Date.now()).replace(/[:.]/g,'-').slice(0,19);}
+function downloadFile(name,mime,body){
+  if(!body){flash('nothing to export');return;}
+  try{
+    var blob=(body instanceof Blob)?body:new Blob([body],{type:mime});
     var url=URL.createObjectURL(blob);
     var a=document.createElement('a');a.href=url;a.download=name;
     document.body.appendChild(a);a.click();
-    setTimeout(function(){try{document.body.removeChild(a);}catch(e){}URL.revokeObjectURL(url);},1500);
+    setTimeout(function(){try{document.body.removeChild(a);}catch(e){}URL.revokeObjectURL(url);},4000);
     flash('exported '+name);
-  }catch(e){showRaw(name,text);}
+  }catch(e){if(typeof body==='string')showRaw(name,body);else flash('download failed');}
 }
 // iOS Safari sometimes ignores the download attribute -- fallback shows the raw
 // text in a selectable box so it can be copied out.
@@ -2076,6 +2061,7 @@ function setSection(s){
   document.getElementById('tabs').className=isLog?'tabs hide':'tabs';
   document.getElementById('wheelBlock').className=isLog?'hide':'';
   document.getElementById('logView').className=isLog?'':'hide';
+  document.getElementById('predBottom').className='hide';   // render() shows it again on PRED
   if(isLog){
     view='log';
     // Hide the sandbox view too. This branch returns before the shared
@@ -2126,6 +2112,8 @@ function setView(v){
   document.getElementById('windView').className=isSolver?'hide':'';
   document.getElementById('solveView').className=isSolver?'':'hide';
   document.getElementById('stabView').className=isPred?'':'hide';
+  document.getElementById('predBottom').className=isPred?'':'hide';
+  renderCallCard();
   if(isSolver){renderSolver();if(window.Gear)Gear.sync();}
   render();
 }
@@ -2193,12 +2181,15 @@ function render(){
   var mpm=curMilPerMph();
   document.getElementById('xwSd').innerHTML=(xw==null)?'--':('\u00B1'+xw.toFixed(1)+(mpm?'<div style="font-size:.7em;color:var(--dim)">'+(xw*mpm.v).toFixed(2)+' mil</div>':''));
   document.getElementById('gustLbl').innerHTML=(w.gust!=null)?('Gust '+w.gust.toFixed(1)+' mph'):'';
+  // The SD / dir SD / crosswind cards are per-meter detail: kept on a node's
+  // tab, left off the field views (AVG, PRED) to keep those simple.
+  var field=(view==='avg'||view==='pred');
+  document.getElementById('sdRow').className=field?'row hide':'row';
+  document.getElementById('predBottom').className=(view==='pred')?'':'hide';
   tele();drawWheel();renderWeightsPanel();renderMetersPanel();
-  if(view==='pred'){renderStability();updateWindHold();renderLogBar();}
-  // BASIC (avg) also needs a live hold so the Aimbot button has a current value
-  // to dial. The windHold div isn't shown here, but updateWindHold still sets
-  // aimHoldMOA; the throttle + in-flight guard keep this from adding load.
-  else if(view==='avg'&&data&&data.aim&&data.aim.present){updateWindHold();}
+  if(view==='pred'){renderStability();wlRenderBar();}
+  // AVG and PRED both show the big wind hold (throttled, one solve in flight).
+  if(field)updateWindHold();else renderCallCard();
   var b=data.base;
   document.getElementById('base').innerHTML='Base station &middot; '+
     (b.gps?(b.lat.toFixed(5)+', '+b.lon.toFixed(5)):'no GPS fix')+'<br>'+
