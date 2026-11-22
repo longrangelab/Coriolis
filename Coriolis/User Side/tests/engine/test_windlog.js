@@ -140,7 +140,9 @@ const server = http.createServer((req, res) => {
   const mil = await A.evaluate(() => { const r = Gear.rifle('r1'); const save = r.windageUnit; r.windageUnit = 'MIL'; r.windageClick = 0.1;
     const f = holdFmt(0.42); r.windageUnit = save; r.windageClick = 0.25; return f; });
   check('Basic: MIL rifle shows MIL', mil.unit === 'MIL' && /0\.4/.test(mil.text), mil);
-  check('Basic: aimbot buttons stay off the Basic tab', await A.evaluate(() => document.getElementById('aimRow').className === 'hide'));
+  base.aim = true; await sleep(800);
+  check('Basic: aimbot buttons stay off the Basic tab (even with a stepper)', await A.evaluate(() => getComputedStyle(document.getElementById('aimRow')).display === 'none'));
+  base.aim = false;
 
   // ---- Forecast ----
   base.aim = true;
@@ -162,9 +164,9 @@ const server = http.createServer((req, res) => {
   check('Forecast: no MARK (shot) button', !fc.mark, fc);
   check('Forecast: aimbot shows with a stepper and the switch on', fc.aim, fc);
   await A.click('#aimSw', { force: true });
-  check('Forecast: switch off hides AIMBOT / ZERO', await A.evaluate(() => document.getElementById('aimRow').className === 'hide' && localStorage.getItem('aimOn') === '0'));
+  check('Forecast: switch off hides AIMBOT / ZERO', await A.evaluate(() => getComputedStyle(document.getElementById('aimRow')).display === 'none' && localStorage.getItem('aimOn') === '0'));
   await A.click('#aimSw', { force: true });
-  check('Forecast: switch on shows them again', await A.evaluate(() => document.getElementById('aimRow').className !== 'hide'));
+  check('Forecast: switch on shows them again', await A.evaluate(() => getComputedStyle(document.getElementById('aimRow')).display === 'flex'));
   base.aim = false;
 
   // ---- wind log ----

@@ -430,7 +430,7 @@ try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',wlTheme
     </div>
     <!-- AIMBOT: drives the windage stepper to the hold above (Forecast, when
          switched on at the bottom of that tab and a stepper is connected). -->
-    <div id="aimRow" class="hide" style="display:flex;gap:8px;margin-top:12px">
+    <div id="aimRow" class="hide" style="gap:8px;margin-top:12px">
       <button id="aimBtn" onclick="aimGo()" style="flex:2;padding:14px;border-radius:12px;
         border:1px solid var(--fire);background:var(--fire);color:var(--onFire);font-weight:800;
         letter-spacing:.06em;font-size:1rem">AIMBOT</button>
@@ -1203,7 +1203,7 @@ function renderAimRow(){
   if(sub)sub.textContent=(aimOn()?'Shown under the wind hold':'Hidden')+' · '+(present?'stepper connected':'no stepper connected');
   var show=present&&aimOn()&&view==='pred'&&activeName();
   row.className=show?'':'hide';
-  if(show)row.style.display='flex';
+  row.style.display=show?'flex':'none';   // inline, so no stylesheet rule can show a dead button
   if(show){
     var btn=document.getElementById('aimBtn');
     if(data.aim.moving){btn.textContent='MOVING\u2026';}
